@@ -1,0 +1,35 @@
+﻿namespace DesktopAgent.Core.Models;
+
+public enum ActionType
+{
+    Find,
+    Click,
+    TypeText,
+    OpenApp,
+    KeyCombo,
+    WaitFor,
+    ReadText,
+    Invoke,
+    SetValue,
+    CaptureScreen,
+    GetClipboard,
+    SetClipboard,
+    OpenUrl,
+    FileWrite,
+    FileAppend,
+    FileRead,
+    FileList,
+    ClipboardHistory,
+    Notify,
+    MouseJiggle,
+    DoubleClick,
+    RightClick,
+    Drag,
+    WaitForText,
+    VolumeUp,
+    VolumeDown,
+    VolumeMute,
+    BrightnessUp,
+    BrightnessDown,
+    LockScreen
+}

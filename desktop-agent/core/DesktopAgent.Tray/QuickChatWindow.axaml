@@ -1,0 +1,79 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="DesktopAgent.Tray.QuickChatWindow"
+        Title="DesktopAgent Quick Chat"
+        RequestedThemeVariant="Dark"
+        Width="760"
+        Height="620"
+        MinWidth="640"
+        MinHeight="480"
+        Background="#07090D">
+  <Grid RowDefinitions="Auto,Auto,*,Auto,Auto,Auto" Margin="14">
+    <StackPanel>
+      <TextBlock Text="DesktopAgent Quick Chat" FontSize="19" FontWeight="SemiBold" />
+      <TextBlock Text="Type naturally. Confirm before execution." FontSize="12" Opacity="0.75" Margin="0,2,0,0" />
+    </StackPanel>
+
+    <Grid Grid.Row="1" ColumnDefinitions="*,Auto,Auto" Margin="0,10,0,10">
+      <WrapPanel Grid.Column="0" Orientation="Horizontal" ItemWidth="104" ItemHeight="34">
+        <Button x:Name="StatusButton" Content="Status" MinWidth="90" />
+        <Button x:Name="ArmButton" Content="Arm" MinWidth="90" />
+        <Button x:Name="DisarmButton" Content="Disarm" MinWidth="90" />
+        <Button x:Name="OpenWebButton" Content="Open Web UI" MinWidth="110" />
+      </WrapPanel>
+      <Button x:Name="CopyButton" Grid.Column="1" Content="Copy Log" MinWidth="96" Margin="8,0,0,0" />
+      <Button x:Name="ClearButton" Grid.Column="2" Content="Clear" MinWidth="76" Margin="8,0,0,0" />
+    </Grid>
+
+    <Border Grid.Row="2"
+            BorderBrush="#2A2F3A"
+            BorderThickness="1"
+            CornerRadius="8"
+            Background="#0E1116">
+      <Grid RowDefinitions="Auto,*">
+        <TextBlock Text="Conversation"
+                   Margin="10,8,10,2"
+                   FontWeight="SemiBold"
+                   Foreground="#E6EAF2"
+                   Opacity="0.8" />
+        <ScrollViewer x:Name="HistoryScroll"
+                      Grid.Row="1"
+                      Margin="0"
+                      VerticalScrollBarVisibility="Auto"
+                      HorizontalScrollBarVisibility="Disabled">
+          <TextBlock x:Name="HistoryBox"
+                     TextWrapping="Wrap"
+                     FontFamily="Consolas, Cascadia Mono, Menlo, monospace"
+                     FontSize="13"
+                     Padding="10"
+                     Foreground="#E6EAF2" />
+        </ScrollViewer>
+      </Grid>
+    </Border>
+
+    <StackPanel Grid.Row="3" Orientation="Horizontal" Spacing="8" Margin="0,10,0,8">
+      <TextBlock x:Name="StatusText" VerticalAlignment="Center" Opacity="0.85" />
+    </StackPanel>
+
+    <StackPanel x:Name="ConfirmPanel"
+                Grid.Row="4"
+                Orientation="Horizontal"
+                Spacing="8"
+                Margin="0,0,0,8"
+                IsVisible="False">
+      <TextBlock x:Name="ConfirmText" Text="Confirmation required." VerticalAlignment="Center" />
+      <Button x:Name="ConfirmButton" Content="Confirm" MinWidth="110" />
+      <Button x:Name="CancelButton" Content="Cancel" MinWidth="100" />
+    </StackPanel>
+
+    <Grid Grid.Row="5" ColumnDefinitions="*,Auto" Margin="0,2,0,0">
+      <TextBox x:Name="InputBox"
+               Watermark="Write a command (e.g. open notepad, search docs on chrome)..."
+               TextWrapping="Wrap"
+               AcceptsReturn="False"
+               FontSize="13"
+               Padding="10" />
+      <Button x:Name="SendButton" Grid.Column="1" Content="Send" MinWidth="110" Margin="10,0,0,0" />
+    </Grid>
+  </Grid>
+</Window>

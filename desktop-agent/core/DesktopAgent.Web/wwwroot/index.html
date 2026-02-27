@@ -1,0 +1,319 @@
+﻿<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DesktopAgent Web UI</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app">
+    <header>
+      <h1>DesktopAgent</h1>
+      <p class="sub">Local web UI for control and chat</p>
+    </header>
+
+    <nav class="tabs" role="tablist" aria-label="DesktopAgent sections">
+      <button class="tab-button active" data-tab-target="chat" role="tab" aria-selected="true">Chat</button>
+      <button class="tab-button" data-tab-target="tasks" role="tab">Tasks</button>
+      <button class="tab-button" data-tab-target="inspector" role="tab">Inspector</button>
+      <button class="tab-button" data-tab-target="config" role="tab">Configuration</button>
+      <button class="tab-button" data-tab-target="audit" role="tab">
+        Audit
+        <span id="auditBadge" class="tab-badge hidden">0</span>
+      </button>
+    </nav>
+
+    <section class="tab-panel chat active" data-tab-panel="chat" role="tabpanel">
+      <div class="panel-head">
+        <h2>Chat</h2>
+        <div class="toolbar">
+          <button id="clearHistory">Clear history</button>
+        </div>
+      </div>
+
+      <div class="chat-status-inline">
+        <h3>Adapter Status</h3>
+        <div id="statusText">Loading...</div>
+        <div id="statusBadges" class="status-badges"></div>
+        <div class="buttons">
+          <button data-cmd="status">Status</button>
+          <button data-cmd="arm">Arm</button>
+          <button data-cmd="disarm">Disarm</button>
+          <button data-cmd="simulate presence">Simulate presence</button>
+          <button data-cmd="require presence">Require presence</button>
+        </div>
+      </div>
+
+      <div id="chatLog" class="chat-log"></div>
+      <form id="chatForm">
+        <input id="chatInput" type="text" placeholder="Type a command..." />
+        <button type="submit">Send</button>
+      </form>
+      <div id="confirmArea" class="confirm"></div>
+    </section>
+
+    <section class="tab-panel tasks" data-tab-panel="tasks" role="tabpanel">
+      <div class="panel-head">
+        <h2>Task Library</h2>
+      </div>
+      <div class="tasks-editor">
+        <label>
+          Recording name
+          <input id="recordName" type="text" placeholder="my-macro" />
+        </label>
+        <div class="tasks-actions">
+          <button id="recordStart" type="button">Start recording</button>
+          <button id="recordStop" type="button">Stop recording</button>
+          <button id="recordSave" type="button">Save recording as task</button>
+          <span id="recordingStatus" class="config-status"></span>
+        </div>
+      </div>
+      <div class="tasks-editor">
+        <label>
+          Task name
+          <input id="taskName" type="text" placeholder="open-vscode-new-file" />
+        </label>
+        <label>
+          Task intent
+          <input id="taskIntent" type="text" placeholder="open vs code and create new file" />
+        </label>
+        <label>
+          Description
+          <input id="taskDescription" type="text" placeholder="Optional description" />
+        </label>
+        <div class="tasks-actions">
+          <button id="taskSave" type="button">Save task</button>
+          <button id="taskRun" type="button">Run task</button>
+          <button id="taskRefresh" type="button">Refresh</button>
+          <span id="taskStatus" class="config-status"></span>
+        </div>
+      </div>
+      <div id="taskList" class="task-list"></div>
+
+      <div class="tasks-editor">
+        <h3>Scheduler</h3>
+        <label>
+          Schedule ID
+          <input id="scheduleId" type="text" placeholder="auto-generated" />
+        </label>
+        <label>
+          Task name
+          <input id="scheduleTaskName" type="text" placeholder="open-vscode-new-file" />
+        </label>
+        <label>
+          Start at (local)
+          <input id="scheduleStartAt" type="datetime-local" />
+        </label>
+        <label>
+          Interval (seconds, optional)
+          <input id="scheduleIntervalSeconds" type="number" min="5" max="86400" />
+        </label>
+        <label class="config-row">
+          <span>Enabled</span>
+          <input id="scheduleEnabled" type="checkbox" checked />
+        </label>
+        <div class="tasks-actions">
+          <button id="scheduleSave" type="button">Save schedule</button>
+          <button id="scheduleRunNow" type="button">Run now</button>
+          <button id="scheduleRefresh" type="button">Refresh schedules</button>
+          <span id="scheduleStatus" class="config-status"></span>
+        </div>
+      </div>
+      <div id="scheduleList" class="task-list"></div>
+    </section>
+
+    <section class="tab-panel inspector" data-tab-panel="inspector" role="tabpanel">
+      <div class="panel-head">
+        <h2>Inspector</h2>
+      </div>
+      <div class="inspector-controls">
+        <input id="inspectorQuery" type="text" placeholder="Find text (optional)" />
+        <button id="inspectorRefresh" type="button">Refresh inspector</button>
+      </div>
+      <div id="inspectorStatus" class="config-status"></div>
+      <pre id="inspectorOutput" class="audit-log">Inspector not loaded.</pre>
+    </section>
+
+    <section class="tab-panel config" data-tab-panel="config" role="tabpanel">
+      <h2>Configuration</h2>
+      <div class="config-block">
+        <h3>LLM</h3>
+        <div class="config-grid">
+          <label class="config-row">
+            <span>LLM enabled</span>
+            <input id="llmEnabled" type="checkbox" />
+          </label>
+          <label>
+            Provider
+            <select id="llmProvider">
+              <option value="ollama">Ollama</option>
+              <option value="openai">OpenAI-compatible</option>
+              <option value="llama.cpp">llama.cpp</option>
+            </select>
+          </label>
+          <label>
+            Endpoint
+            <input id="llmEndpoint" type="text" placeholder="http://localhost:11434/api/generate" />
+          </label>
+          <label>
+            Model
+            <input id="llmModel" type="text" placeholder="llama3" />
+          </label>
+          <label>
+            Timeout (seconds)
+            <input id="llmTimeout" type="number" min="1" />
+          </label>
+          <label>
+            Max tokens
+            <input id="llmMaxTokens" type="number" min="1" />
+          </label>
+          <label class="config-row">
+            <span>Audit LLM interactions</span>
+            <input id="auditLlmInteractions" type="checkbox" />
+          </label>
+          <label class="config-row">
+            <span>Include raw text in AI logs</span>
+            <input id="auditLlmIncludeRawText" type="checkbox" />
+          </label>
+        </div>
+      </div>
+
+      <div class="config-block">
+        <h3>Profile</h3>
+        <div class="config-grid">
+          <label class="config-row">
+            <span>Enable profile mode</span>
+            <input id="profileModeEnabled" type="checkbox" />
+          </label>
+          <label>
+            Active profile
+            <select id="activeProfile">
+              <option value="safe">Safe</option>
+              <option value="balanced">Balanced</option>
+              <option value="power">Power</option>
+            </select>
+          </label>
+        </div>
+      </div>
+
+      <div class="config-block">
+        <h3>Safety</h3>
+        <div class="config-grid">
+          <label class="config-row">
+            <span>Require confirmation</span>
+            <input id="requireConfirmation" type="checkbox" />
+          </label>
+          <label class="config-row">
+            <span>Quiz safe mode</span>
+            <input id="quizSafeMode" type="checkbox" />
+          </label>
+          <label>
+            Max actions per second
+            <input id="maxActionsPerSecond" type="number" min="1" max="60" />
+          </label>
+          <label>
+            Find retry count
+            <input id="findRetryCount" type="number" min="0" max="20" />
+          </label>
+          <label>
+            Find retry delay (ms)
+            <input id="findRetryDelayMs" type="number" min="0" max="2000" />
+          </label>
+          <label>
+            Post-check timeout (ms)
+            <input id="postCheckTimeoutMs" type="number" min="100" max="5000" />
+          </label>
+          <label>
+            Post-check poll (ms)
+            <input id="postCheckPollMs" type="number" min="20" max="1000" />
+          </label>
+          <label>
+            Clipboard history max items
+            <input id="clipboardHistoryMaxItems" type="number" min="1" max="500" />
+          </label>
+        </div>
+      </div>
+
+      <div class="config-block">
+        <h3>Plugins</h3>
+        <div class="config-grid wide">
+          <label>
+            Filesystem allowed roots (one per line)
+            <textarea id="filesystemAllowedRoots" rows="4" placeholder=".&#10;D:\Git\Ale\DesktopAgent"></textarea>
+          </label>
+        </div>
+      </div>
+
+      <div class="config-block">
+        <h3>Apps</h3>
+        <div class="config-grid wide">
+          <label>
+            Allowed apps (one per line)
+            <textarea id="allowedApps" rows="5" placeholder="notepad&#10;calc"></textarea>
+          </label>
+          <label>
+            App aliases (alias=appIdOrPath)
+            <textarea id="appAliases" rows="5" placeholder="vs code=code"></textarea>
+          </label>
+        </div>
+      </div>
+
+      <div class="config-block">
+        <h3>OCR
+          <span id="ocrRestartBadge" class="config-badge hidden">Restart required</span>
+          <button id="ocrRestartAck" type="button" class="config-ack hidden">Acknowledge</button>
+        </h3>
+        <div class="config-grid">
+          <label class="config-row">
+            <span>OCR enabled</span>
+            <input id="ocrEnabled" type="checkbox" />
+          </label>
+          <label>
+            OCR engine
+            <input id="ocrEngine" type="text" placeholder="tesseract" />
+          </label>
+          <label>
+            Tesseract path
+            <input id="ocrTesseractPath" type="text" placeholder="tesseract" />
+          </label>
+        </div>
+      </div>
+
+      <div class="config-block">
+        <h3>Adapter</h3>
+        <div class="config-grid wide">
+          <label>
+            Restart command
+            <input id="adapterRestartCommand" type="text" placeholder="dotnet run --project .../DesktopAgent.Adapter.Windows.csproj" />
+          </label>
+          <label>
+            Restart working directory (optional)
+            <input id="adapterRestartWorkingDir" type="text" placeholder="D:\\Git\\Ale\\DesktopAgent\\desktop-agent" />
+          </label>
+        </div>
+      </div>
+      <div class="config-actions">
+        <button id="saveConfig">Save config</button>
+        <button id="reloadConfig" type="button">Reload</button>
+        <button id="restartService" type="button" class="danger">Restart server</button>
+        <button id="restartAdapter" type="button" class="danger-outline">Restart adapter</button>
+        <span id="configStatus" class="config-status"></span>
+      </div>
+      <p class="config-hint">LLM endpoints must be local (loopback). Changes are saved to appsettings.json. OCR changes may require restart.</p>
+    </section>
+
+    <section class="tab-panel audit" data-tab-panel="audit" role="tabpanel">
+      <h2>Audit Log</h2>
+      <div class="filters">
+        <label><input type="checkbox" data-filter="action" checked /> Actions</label>
+        <label><input type="checkbox" data-filter="policy" checked /> Policy</label>
+        <label><input type="checkbox" data-filter="system" checked /> System</label>
+      </div>
+      <pre id="auditLog" class="audit-log">Loading...</pre>
+    </section>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
