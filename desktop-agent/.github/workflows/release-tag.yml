@@ -1,0 +1,105 @@
+name: Release (GitHub)
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (example: v0.2.0)"
+        required: true
+        default: "v0.1.0"
+        type: string
+      version:
+        description: "Version label (optional, default: tag without v)"
+        required: false
+        default: ""
+        type: string
+      build_installer:
+        description: "Build Inno Setup installer"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  release-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve tag/version
+        id: meta
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $tag = "${{ inputs.tag }}".Trim()
+            $version = "${{ inputs.version }}".Trim()
+            if ([string]::IsNullOrWhiteSpace($version)) {
+              $version = $tag.TrimStart('v', 'V')
+            }
+          } else {
+            $tag = "${{ github.ref_name }}"
+            $version = $tag.TrimStart('v', 'V')
+          }
+
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Setup .NET 9
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+          cache: true
+
+      - name: Restore
+        run: dotnet restore DesktopAgentSolution.sln
+
+      - name: Build
+        run: dotnet build DesktopAgentSolution.sln -c Release --no-restore
+
+      - name: Test
+        run: dotnet test core/DesktopAgent.Tests/DesktopAgent.Tests.csproj -c Release --no-build
+
+      - name: Publish portable package
+        shell: pwsh
+        run: |
+          ./scripts/publish-windows.ps1 -Configuration Release -SkipTests -OutputRoot dist/win-x64
+
+      - name: Zip portable package
+        id: portable
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist/release -Force | Out-Null
+          $zipPath = "dist/release/DesktopAgent-win-x64-${{ steps.meta.outputs.version }}.zip"
+          if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
+          Compress-Archive -Path dist/win-x64/* -DestinationPath $zipPath -CompressionLevel Optimal
+          "zip=$zipPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Install Inno Setup
+        if: ${{ github.event_name == 'push' || inputs.build_installer == true }}
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installer
+        if: ${{ github.event_name == 'push' || inputs.build_installer == true }}
+        shell: pwsh
+        run: |
+          ./scripts/build-installer.ps1 -SkipPublish -Version "${{ steps.meta.outputs.version }}"
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: DesktopAgent ${{ steps.meta.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: true
+          fail_on_unmatched_files: false
+          files: |
+            ${{ steps.portable.outputs.zip }}
+            dist/installer/*.exe

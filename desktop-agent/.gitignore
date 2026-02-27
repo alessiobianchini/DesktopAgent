@@ -1,0 +1,58 @@
+# Build outputs
+**/bin/
+**/obj/
+**/out/
+**/publish/
+TestResults/
+
+# Temporary/generated folders
+.tmp-build/
+dist/
+
+# Logs and runtime artifacts
+*.log
+*.tmp
+*.pid
+*.stackdump
+audit.log.jsonl
+**/audit.log.jsonl
+
+# .NET / Visual Studio
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# JetBrains / VS Code
+.idea/
+.vscode/
+
+# Python (Linux adapter tooling)
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# Swift / Xcode (macOS adapter)
+.build/
+DerivedData/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+*.xcuserstate
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Environment / local overrides
+.env
+.env.*
+*.local
+appsettings.Development.json
+appsettings.Local.json
+**/appsettings.Development.json
+**/appsettings.Local.json

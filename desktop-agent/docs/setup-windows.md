@@ -68,6 +68,22 @@ powershell -ExecutionPolicy Bypass -File desktop-agent/scripts/build-installer.p
 Output:
 - `dist/installer/DesktopAgent-Setup-0.1.0.exe`
 
+## GitHub Release Automation
+Repository includes workflow:
+- `.github/workflows/release-tag.yml`
+
+How to trigger:
+1. Create and push a tag (example):
+```
+git tag v0.2.0
+git push origin v0.2.0
+```
+2. GitHub Action builds portable zip + installer and publishes a GitHub Release.
+
+Release assets:
+- `DesktopAgent-win-x64-<version>.zip`
+- `DesktopAgent-Setup-<version>.exe`
+
 ## Auto Updates (Tray / Velopack)
 The tray app now supports automatic update checks via Velopack.
 
