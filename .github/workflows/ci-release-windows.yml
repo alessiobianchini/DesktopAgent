@@ -37,7 +37,6 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           global-json-file: desktop-agent/global.json
-          cache: true
 
       - name: Restore
         run: dotnet restore DesktopAgentSolution.sln
