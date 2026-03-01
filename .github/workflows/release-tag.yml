@@ -28,6 +28,9 @@ permissions:
 jobs:
   release-windows:
     runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: desktop-agent
 
     steps:
       - name: Checkout
@@ -79,7 +82,7 @@ jobs:
           $zipPath = "dist/release/DesktopAgent-win-x64-${{ steps.meta.outputs.version }}.zip"
           if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
           Compress-Archive -Path dist/win-x64/* -DestinationPath $zipPath -CompressionLevel Optimal
-          "zip=$zipPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "zip=desktop-agent/$zipPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: Install Inno Setup
         if: ${{ github.event_name == 'push' || inputs.build_installer == true }}
@@ -102,4 +105,4 @@ jobs:
           fail_on_unmatched_files: false
           files: |
             ${{ steps.portable.outputs.zip }}
-            dist/installer/*.exe
+            desktop-agent/dist/installer/*.exe

@@ -25,6 +25,9 @@ permissions:
 jobs:
   build-test-publish:
     runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: desktop-agent
 
     steps:
       - name: Checkout
@@ -54,7 +57,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: desktop-agent-win-x64
-          path: dist/win-x64/**
+          path: desktop-agent/dist/win-x64/**
           if-no-files-found: error
 
       - name: Install Inno Setup
@@ -74,5 +77,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: desktop-agent-installer
-          path: dist/installer/*.exe
+          path: desktop-agent/dist/installer/*.exe
           if-no-files-found: error
