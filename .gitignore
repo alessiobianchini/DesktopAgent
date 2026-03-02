@@ -60,3 +60,6 @@ appsettings.Local.json
 **/appsettings.Local.json
 
 replacements.txt
+
+audit.log.jsonl
+replacements.txt
