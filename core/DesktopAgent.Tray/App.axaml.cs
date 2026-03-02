@@ -529,8 +529,8 @@ internal sealed class TraySettings
     public bool RequireUserPresenceOnArm { get; set; } = true;
     public int StatusRefreshSeconds { get; set; } = 5;
     public int ApiTimeoutSeconds { get; set; } = 600;
-    public bool AutoUpdateEnabled { get; set; } = false;
-    public string AutoUpdateSource { get; set; } = "";
+    public bool AutoUpdateEnabled { get; set; } = true;
+    public string AutoUpdateSource { get; set; } = "https://github.com/alessiobianchini/DesktopAgent/releases/latest/download";
     public int AutoUpdateCheckIntervalMinutes { get; set; } = 60;
     public bool AutoUpdateAutoApply { get; set; } = false;
 }

@@ -39,7 +39,7 @@ public sealed class AgentConfig
     public OcrConfig Ocr { get; set; } = new();
     public LlmFallbackConfig LlmFallback { get; set; } = new();
     public bool LlmFallbackEnabled { get; set; } = false;
-    public bool AllowNonLoopbackLlmEndpoint { get; set; } = false;
+    public bool AllowNonLoopbackLlmEndpoint { get; set; } = true;
     public bool AuditLlmInteractions { get; set; } = true;
     public bool AuditLlmIncludeRawText { get; set; } = false;
     public string AdapterRestartCommand { get; set; } = "";
