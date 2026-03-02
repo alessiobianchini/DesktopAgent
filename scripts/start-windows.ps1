@@ -1,8 +1,9 @@
 param(
-    [int]$AdapterPort = 50051,
-    [int]$WebPort = 5000,
+    [int]$AdapterPort = 51877,
+    [int]$WebPort = 51878,
     [switch]$StartTray,
     [switch]$NoTray,
+    [switch]$ShowConsoles,
     [switch]$Build,
     [switch]$NoBrowser,
     [switch]$DryRun
@@ -44,12 +45,13 @@ function Invoke-Checked {
     }
 }
 
-function Start-ProjectWindow {
+function Start-ProjectProcess {
     param(
         [string]$Title,
         [string]$ProjectPath,
         [hashtable]$EnvironmentVariables,
         [string]$Root,
+        [switch]$VisibleConsole,
         [switch]$DryRunMode
     )
 
@@ -74,11 +76,19 @@ function Start-ProjectWindow {
         return
     }
 
-    Start-Process -FilePath "powershell" -WorkingDirectory $Root -ArgumentList @(
-        "-NoExit",
+    $arguments = @(
         "-ExecutionPolicy", "Bypass",
         "-Command", $command
-    ) | Out-Null
+    )
+    if ($VisibleConsole) {
+        $arguments = @("-NoExit") + $arguments
+    }
+
+    if ($VisibleConsole) {
+        Start-Process -FilePath "powershell" -WorkingDirectory $Root -ArgumentList $arguments | Out-Null
+    } else {
+        Start-Process -FilePath "powershell" -WorkingDirectory $Root -ArgumentList $arguments -WindowStyle Hidden | Out-Null
+    }
 }
 
 Ensure-Command -Name "dotnet"
@@ -108,17 +118,17 @@ if ($Build) {
     }
 }
 
-Start-ProjectWindow -Title "DesktopAgent Adapter (Windows)" -ProjectPath $adapterProject -EnvironmentVariables @{
+Start-ProjectProcess -Title "DesktopAgent Adapter (Windows)" -ProjectPath $adapterProject -EnvironmentVariables @{
     DESKTOP_AGENT_PORT = "$AdapterPort"
-} -Root $root -DryRunMode:$DryRun
+} -Root $root -VisibleConsole:$ShowConsoles -DryRunMode:$DryRun
 
-Start-ProjectWindow -Title "DesktopAgent Web" -ProjectPath $webProject -EnvironmentVariables @{
+Start-ProjectProcess -Title "DesktopAgent Web" -ProjectPath $webProject -EnvironmentVariables @{
     ASPNETCORE_URLS = "http://localhost:$WebPort"
     DESKTOP_AGENT_ADAPTERENDPOINT = "http://localhost:$AdapterPort"
-} -Root $root -DryRunMode:$DryRun
+} -Root $root -VisibleConsole:$ShowConsoles -DryRunMode:$DryRun
 
 if ($useTray) {
-    Start-ProjectWindow -Title "DesktopAgent Tray" -ProjectPath $trayProject -EnvironmentVariables @{} -Root $root -DryRunMode:$DryRun
+    Start-ProjectProcess -Title "DesktopAgent Tray" -ProjectPath $trayProject -EnvironmentVariables @{} -Root $root -VisibleConsole:$ShowConsoles -DryRunMode:$DryRun
 }
 
 if (-not $NoBrowser) {

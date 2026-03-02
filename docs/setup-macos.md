@@ -25,7 +25,7 @@ swift build
 
 ## Run Adapter
 ```
-export DESKTOP_AGENT_PORT=50051
+export DESKTOP_AGENT_PORT=51877
 swift run
 ```
 

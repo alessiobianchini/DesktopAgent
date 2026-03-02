@@ -78,9 +78,10 @@ Copy-Item -Path (Join-Path $repoRoot "core/DesktopAgent.Tray/appsettings.json") 
 
 $startScript = @'
 param(
-    [int]$AdapterPort = 50051,
-    [int]$WebPort = 5000,
+    [int]$AdapterPort = 51877,
+    [int]$WebPort = 51878,
     [switch]$NoTray,
+    [switch]$ShowConsoles,
     [switch]$NoBrowser
 )
 
@@ -115,7 +116,8 @@ function Start-AgentProcess {
     param(
         [string]$Name,
         [string]$FilePath,
-        [string]$WorkingDirectory
+        [string]$WorkingDirectory,
+        [switch]$HideWindow
     )
 
     if (-not (Test-Path $FilePath)) {
@@ -123,6 +125,10 @@ function Start-AgentProcess {
     }
 
     Write-Host "Starting $Name..."
+    if ($HideWindow -and -not $ShowConsoles) {
+        return Start-Process -FilePath $FilePath -WorkingDirectory $WorkingDirectory -WindowStyle Hidden -PassThru
+    }
+
     return Start-Process -FilePath $FilePath -WorkingDirectory $WorkingDirectory -PassThru
 }
 
@@ -130,7 +136,7 @@ $pids = @{}
 
 if (-not (Test-PortOpen -Port $AdapterPort)) {
     $env:DESKTOP_AGENT_PORT = "$AdapterPort"
-    $adapter = Start-AgentProcess -Name "Adapter" -FilePath $adapterExe -WorkingDirectory (Split-Path -Parent $adapterExe)
+    $adapter = Start-AgentProcess -Name "Adapter" -FilePath $adapterExe -WorkingDirectory (Split-Path -Parent $adapterExe) -HideWindow
     $pids.Adapter = $adapter.Id
 } else {
     Write-Host "Adapter already listening on port $AdapterPort"
@@ -139,7 +145,7 @@ if (-not (Test-PortOpen -Port $AdapterPort)) {
 if (-not (Test-PortOpen -Port $WebPort)) {
     $env:ASPNETCORE_URLS = "http://localhost:$WebPort"
     $env:DESKTOP_AGENT_ADAPTERENDPOINT = "http://localhost:$AdapterPort"
-    $web = Start-AgentProcess -Name "Web" -FilePath $webExe -WorkingDirectory (Split-Path -Parent $webExe)
+    $web = Start-AgentProcess -Name "Web" -FilePath $webExe -WorkingDirectory (Split-Path -Parent $webExe) -HideWindow
     $pids.Web = $web.Id
 } else {
     Write-Host "Web already listening on port $WebPort"

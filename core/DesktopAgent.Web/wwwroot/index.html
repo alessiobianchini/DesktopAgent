@@ -11,6 +11,7 @@
     <header>
       <h1>DesktopAgent</h1>
       <p class="sub">Local web UI for control and chat</p>
+      <p class="sub version" id="versionText">Version: loading...</p>
     </header>
 
     <nav class="tabs" role="tablist" aria-label="DesktopAgent sections">
@@ -156,6 +157,10 @@
             Endpoint
             <input id="llmEndpoint" type="text" placeholder="http://localhost:11434/api/generate" />
           </label>
+          <label class="config-row">
+            <span>Allow remote LLM endpoint</span>
+            <input id="llmAllowRemote" type="checkbox" />
+          </label>
           <label>
             Model
             <input id="llmModel" type="text" placeholder="llama3" />
@@ -300,7 +305,7 @@
         <button id="restartAdapter" type="button" class="danger-outline">Restart adapter</button>
         <span id="configStatus" class="config-status"></span>
       </div>
-      <p class="config-hint">LLM endpoints must be local (loopback). Changes are saved to appsettings.json. OCR changes may require restart.</p>
+      <p class="config-hint">Changes are saved to appsettings.json. Enable remote LLM endpoint only on trusted networks. OCR changes may require restart.</p>
     </section>
 
     <section class="tab-panel audit" data-tab-panel="audit" role="tabpanel">

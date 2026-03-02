@@ -1,9 +1,9 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Text.RegularExpressions;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
-using Avalonia.Interactivity;
 using Avalonia.Threading;
 
 namespace DesktopAgent.Tray;
@@ -12,11 +12,16 @@ internal partial class QuickChatWindow : Window
 {
     private readonly WebApiClient _apiClient;
     private readonly string _webUiUrl;
+    private readonly Queue<string> _historyLines = new();
+    private readonly CancellationTokenSource _pollingCts = new();
+    private readonly List<WebTaskItem> _taskItems = new();
+    private readonly List<WebScheduleItem> _scheduleItems = new();
+    private const int MaxHistoryLines = 500;
 
-    private TextBlock? _historyBox;
-    private ScrollViewer? _historyScroll;
+    private TextBox? _historyBox;
     private TextBox? _inputBox;
     private TextBlock? _statusText;
+    private TextBlock? _versionText;
     private StackPanel? _confirmPanel;
     private TextBlock? _confirmText;
     private Button? _sendButton;
@@ -25,14 +30,64 @@ internal partial class QuickChatWindow : Window
     private Button? _statusButton;
     private Button? _armButton;
     private Button? _disarmButton;
+    private Button? _simPresenceButton;
+    private Button? _reqPresenceButton;
+    private Button? _killButton;
+    private Button? _resetKillButton;
+    private Button? _restartAdapterButton;
+    private Button? _restartServerButton;
+    private Button? _lockWindowButton;
+    private Button? _lockAppButton;
+    private Button? _unlockButton;
+    private Button? _profileSafeButton;
+    private Button? _profileBalancedButton;
+    private Button? _profilePowerButton;
     private Button? _openWebButton;
     private Button? _copyButton;
     private Button? _clearButton;
 
+    private CheckBox? _cfgLlmEnabled;
+    private ComboBox? _cfgLlmProvider;
+    private TextBox? _cfgLlmEndpoint;
+    private TextBox? _cfgLlmModel;
+    private TextBox? _cfgLlmTimeout;
+    private TextBox? _cfgLlmMaxTokens;
+    private CheckBox? _cfgLlmAllowRemote;
+    private Button? _cfgLoadButton;
+    private Button? _cfgSaveButton;
+    private Button? _cfgTestLlmButton;
+    private TextBox? _cfgStatusBox;
+
+    private Button? _tasksRefreshButton;
+    private Button? _tasksRunButton;
+    private Button? _tasksDeleteButton;
+    private ListBox? _tasksList;
+    private TextBox? _taskNameInput;
+    private TextBox? _taskIntentInput;
+    private TextBox? _taskDescriptionInput;
+    private Button? _taskSaveButton;
+    private TextBlock? _tasksStatusText;
+
+    private Button? _schedulesRefreshButton;
+    private Button? _schedulesRunButton;
+    private Button? _schedulesDeleteButton;
+    private ListBox? _schedulesList;
+    private TextBox? _scheduleIdInput;
+    private TextBox? _scheduleTaskNameInput;
+    private TextBox? _scheduleStartAtInput;
+    private TextBox? _scheduleIntervalInput;
+    private CheckBox? _scheduleEnabledInput;
+    private Button? _scheduleSaveButton;
+    private TextBlock? _schedulesStatusText;
+
+    private Button? _auditRefreshButton;
+    private Button? _auditCopyButton;
+    private Button? _auditClearButton;
+    private TextBox? _auditBox;
+
     private string? _pendingToken;
     private bool _busy;
-    private readonly Queue<string> _historyLines = new();
-    private const int MaxHistoryLines = 300;
+    private string _lastStatusLine = string.Empty;
 
     public QuickChatWindow(WebApiClient apiClient, string webUiUrl)
     {
@@ -44,10 +99,10 @@ internal partial class QuickChatWindow : Window
 
     private void WireControls()
     {
-        _historyBox = this.FindControl<TextBlock>("HistoryBox");
-        _historyScroll = this.FindControl<ScrollViewer>("HistoryScroll");
+        _historyBox = this.FindControl<TextBox>("HistoryBox");
         _inputBox = this.FindControl<TextBox>("InputBox");
         _statusText = this.FindControl<TextBlock>("StatusText");
+        _versionText = this.FindControl<TextBlock>("VersionText");
         _confirmPanel = this.FindControl<StackPanel>("ConfirmPanel");
         _confirmText = this.FindControl<TextBlock>("ConfirmText");
         _sendButton = this.FindControl<Button>("SendButton");
@@ -56,9 +111,60 @@ internal partial class QuickChatWindow : Window
         _statusButton = this.FindControl<Button>("StatusButton");
         _armButton = this.FindControl<Button>("ArmButton");
         _disarmButton = this.FindControl<Button>("DisarmButton");
+        _simPresenceButton = this.FindControl<Button>("SimPresenceButton");
+        _reqPresenceButton = this.FindControl<Button>("ReqPresenceButton");
+        _killButton = this.FindControl<Button>("KillButton");
+        _resetKillButton = this.FindControl<Button>("ResetKillButton");
+        _restartAdapterButton = this.FindControl<Button>("RestartAdapterButton");
+        _restartServerButton = this.FindControl<Button>("RestartServerButton");
+        _lockWindowButton = this.FindControl<Button>("LockWindowButton");
+        _lockAppButton = this.FindControl<Button>("LockAppButton");
+        _unlockButton = this.FindControl<Button>("UnlockButton");
+        _profileSafeButton = this.FindControl<Button>("ProfileSafeButton");
+        _profileBalancedButton = this.FindControl<Button>("ProfileBalancedButton");
+        _profilePowerButton = this.FindControl<Button>("ProfilePowerButton");
         _openWebButton = this.FindControl<Button>("OpenWebButton");
         _copyButton = this.FindControl<Button>("CopyButton");
         _clearButton = this.FindControl<Button>("ClearButton");
+
+        _cfgLlmEnabled = this.FindControl<CheckBox>("CfgLlmEnabled");
+        _cfgLlmProvider = this.FindControl<ComboBox>("CfgLlmProvider");
+        _cfgLlmEndpoint = this.FindControl<TextBox>("CfgLlmEndpoint");
+        _cfgLlmModel = this.FindControl<TextBox>("CfgLlmModel");
+        _cfgLlmTimeout = this.FindControl<TextBox>("CfgLlmTimeout");
+        _cfgLlmMaxTokens = this.FindControl<TextBox>("CfgLlmMaxTokens");
+        _cfgLlmAllowRemote = this.FindControl<CheckBox>("CfgLlmAllowRemote");
+        _cfgLoadButton = this.FindControl<Button>("CfgLoadButton");
+        _cfgSaveButton = this.FindControl<Button>("CfgSaveButton");
+        _cfgTestLlmButton = this.FindControl<Button>("CfgTestLlmButton");
+        _cfgStatusBox = this.FindControl<TextBox>("CfgStatusBox");
+
+        _tasksRefreshButton = this.FindControl<Button>("TasksRefreshButton");
+        _tasksRunButton = this.FindControl<Button>("TasksRunButton");
+        _tasksDeleteButton = this.FindControl<Button>("TasksDeleteButton");
+        _tasksList = this.FindControl<ListBox>("TasksList");
+        _taskNameInput = this.FindControl<TextBox>("TaskNameInput");
+        _taskIntentInput = this.FindControl<TextBox>("TaskIntentInput");
+        _taskDescriptionInput = this.FindControl<TextBox>("TaskDescriptionInput");
+        _taskSaveButton = this.FindControl<Button>("TaskSaveButton");
+        _tasksStatusText = this.FindControl<TextBlock>("TasksStatusText");
+
+        _schedulesRefreshButton = this.FindControl<Button>("SchedulesRefreshButton");
+        _schedulesRunButton = this.FindControl<Button>("SchedulesRunButton");
+        _schedulesDeleteButton = this.FindControl<Button>("SchedulesDeleteButton");
+        _schedulesList = this.FindControl<ListBox>("SchedulesList");
+        _scheduleIdInput = this.FindControl<TextBox>("ScheduleIdInput");
+        _scheduleTaskNameInput = this.FindControl<TextBox>("ScheduleTaskNameInput");
+        _scheduleStartAtInput = this.FindControl<TextBox>("ScheduleStartAtInput");
+        _scheduleIntervalInput = this.FindControl<TextBox>("ScheduleIntervalInput");
+        _scheduleEnabledInput = this.FindControl<CheckBox>("ScheduleEnabledInput");
+        _scheduleSaveButton = this.FindControl<Button>("ScheduleSaveButton");
+        _schedulesStatusText = this.FindControl<TextBlock>("SchedulesStatusText");
+
+        _auditRefreshButton = this.FindControl<Button>("AuditRefreshButton");
+        _auditCopyButton = this.FindControl<Button>("AuditCopyButton");
+        _auditClearButton = this.FindControl<Button>("AuditClearButton");
+        _auditBox = this.FindControl<TextBox>("AuditBox");
 
         if (_sendButton != null)
         {
@@ -87,20 +193,27 @@ internal partial class QuickChatWindow : Window
             _cancelButton.Click += async (_, _) => await ConfirmAsync(false);
         }
 
-        if (_statusButton != null)
+        HookCommandButton(_statusButton, "status");
+        HookCommandButton(_armButton, "arm");
+        HookCommandButton(_disarmButton, "disarm");
+        HookCommandButton(_simPresenceButton, "simulate presence");
+        HookCommandButton(_reqPresenceButton, "require presence");
+        HookCommandButton(_killButton, "kill");
+        HookCommandButton(_resetKillButton, "reset kill");
+        if (_restartAdapterButton != null)
         {
-            _statusButton.Click += async (_, _) => await SendMessageAsync("status");
+            _restartAdapterButton.Click += async (_, _) => await RestartAdapterAsync();
         }
-
-        if (_armButton != null)
+        if (_restartServerButton != null)
         {
-            _armButton.Click += async (_, _) => await SendMessageAsync("arm");
+            _restartServerButton.Click += async (_, _) => await RestartServerAsync();
         }
-
-        if (_disarmButton != null)
-        {
-            _disarmButton.Click += async (_, _) => await SendMessageAsync("disarm");
-        }
+        HookCommandButton(_lockWindowButton, "lock on current window");
+        HookCommandButton(_lockAppButton, "lock on app");
+        HookCommandButton(_unlockButton, "unlock");
+        HookCommandButton(_profileSafeButton, "profile safe");
+        HookCommandButton(_profileBalancedButton, "profile balanced");
+        HookCommandButton(_profilePowerButton, "profile power");
 
         if (_openWebButton != null)
         {
@@ -109,7 +222,7 @@ internal partial class QuickChatWindow : Window
 
         if (_copyButton != null)
         {
-            _copyButton.Click += async (_, _) => await CopyHistoryAsync();
+            _copyButton.Click += async (_, _) => await CopyTextAsync(_historyBox?.Text, "Conversation copied.");
         }
 
         if (_clearButton != null)
@@ -117,20 +230,109 @@ internal partial class QuickChatWindow : Window
             _clearButton.Click += (_, _) =>
             {
                 _historyLines.Clear();
-                if (_historyBox != null)
-                {
-                    _historyBox.Text = string.Empty;
-                }
+                SetText(_historyBox, string.Empty);
             };
         }
 
+        if (_cfgLoadButton != null)
+        {
+            _cfgLoadButton.Click += async (_, _) => await LoadConfigAsync();
+        }
+        if (_cfgSaveButton != null)
+        {
+            _cfgSaveButton.Click += async (_, _) => await SaveConfigAsync();
+        }
+        if (_cfgTestLlmButton != null)
+        {
+            _cfgTestLlmButton.Click += async (_, _) => await TestLlmAsync();
+        }
+
+        if (_tasksRefreshButton != null)
+        {
+            _tasksRefreshButton.Click += async (_, _) => await LoadTasksAsync();
+        }
+        if (_taskSaveButton != null)
+        {
+            _taskSaveButton.Click += async (_, _) => await SaveTaskAsync();
+        }
+        if (_tasksRunButton != null)
+        {
+            _tasksRunButton.Click += async (_, _) => await RunSelectedTaskAsync();
+        }
+        if (_tasksDeleteButton != null)
+        {
+            _tasksDeleteButton.Click += async (_, _) => await DeleteSelectedTaskAsync();
+        }
+
+        if (_schedulesRefreshButton != null)
+        {
+            _schedulesRefreshButton.Click += async (_, _) => await LoadSchedulesAsync();
+        }
+        if (_scheduleSaveButton != null)
+        {
+            _scheduleSaveButton.Click += async (_, _) => await SaveScheduleAsync();
+        }
+        if (_schedulesRunButton != null)
+        {
+            _schedulesRunButton.Click += async (_, _) => await RunSelectedScheduleAsync();
+        }
+        if (_schedulesDeleteButton != null)
+        {
+            _schedulesDeleteButton.Click += async (_, _) => await DeleteSelectedScheduleAsync();
+        }
+
+        if (_auditRefreshButton != null)
+        {
+            _auditRefreshButton.Click += async (_, _) => await LoadAuditAsync();
+        }
+        if (_auditCopyButton != null)
+        {
+            _auditCopyButton.Click += async (_, _) => await CopyTextAsync(_auditBox?.Text, "Audit copied.");
+        }
+        if (_auditClearButton != null)
+        {
+            _auditClearButton.Click += (_, _) => SetText(_auditBox, string.Empty);
+        }
+
         Opened += OnOpened;
+        Closed += (_, _) => _pollingCts.Cancel();
+    }
+
+    private void HookCommandButton(Button? button, string command)
+    {
+        if (button == null)
+        {
+            return;
+        }
+
+        button.Click += async (_, _) => await ExecuteQuickCommandAsync(command);
     }
 
     private async void OnOpened(object? sender, EventArgs e)
     {
         AppendSystem("Quick chat ready.");
-        await RefreshStatusLineAsync();
+        await RefreshStatusAsync();
+        await LoadConfigAsync();
+        await LoadTasksAsync();
+        await LoadSchedulesAsync();
+        await LoadAuditAsync();
+        _ = Task.Run(() => PollStatusAsync(_pollingCts.Token));
+    }
+
+    private async Task PollStatusAsync(CancellationToken cancellationToken)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(3));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(cancellationToken))
+            {
+                await RefreshStatusAsync();
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Normal shutdown.
+        }
     }
 
     private async Task SendFromInputAsync()
@@ -156,6 +358,11 @@ internal partial class QuickChatWindow : Window
         await SendMessageAsync(text);
     }
 
+    private async Task ExecuteQuickCommandAsync(string command)
+    {
+        await SendMessageAsync(command);
+    }
+
     private async Task SendMessageAsync(string message)
     {
         if (_busy)
@@ -177,7 +384,7 @@ internal partial class QuickChatWindow : Window
         finally
         {
             SetBusy(false);
-            await RefreshStatusLineAsync();
+            await RefreshStatusAsync();
         }
     }
 
@@ -203,7 +410,7 @@ internal partial class QuickChatWindow : Window
             _pendingToken = null;
             ShowConfirm(false, null);
             SetBusy(false);
-            await RefreshStatusLineAsync();
+            await RefreshStatusAsync();
         }
     }
 
@@ -240,29 +447,416 @@ internal partial class QuickChatWindow : Window
         }
     }
 
-    private async Task RefreshStatusLineAsync()
+    private async Task RefreshStatusAsync()
     {
         try
         {
-            var line = await _apiClient.GetStatusLineAsync(CancellationToken.None);
-            Dispatcher.UIThread.Post(() =>
+            var snapshot = await _apiClient.GetStatusAsync(CancellationToken.None);
+            if (snapshot?.Adapter == null)
             {
-                if (_statusText != null)
-                {
-                    _statusText.Text = line;
-                }
-            });
+                SetText(_statusText, "Status unavailable");
+                return;
+            }
+
+            var llmLabel = snapshot.Llm == null
+                ? "LLM:unknown"
+                : snapshot.Llm.Enabled && snapshot.Llm.Available ? "LLM:on" : "LLM:off";
+            var killLabel = snapshot.KillSwitch?.Tripped == true ? "KILL:on" : "KILL:off";
+            var armedLabel = snapshot.Adapter.Armed ? "ARMED:on" : "ARMED:off";
+            var presenceLabel = snapshot.Adapter.RequireUserPresence ? "PRESENCE:req" : "PRESENCE:off";
+            var statusLine = $"{armedLabel} | {presenceLabel} | {llmLabel} | {killLabel}";
+            if (!string.Equals(statusLine, _lastStatusLine, StringComparison.Ordinal))
+            {
+                _lastStatusLine = statusLine;
+                SetText(_statusText, statusLine);
+            }
+
+            if (!string.IsNullOrWhiteSpace(snapshot.Version))
+            {
+                SetText(_versionText, $"Version: {snapshot.Version}");
+            }
         }
         catch
         {
-            Dispatcher.UIThread.Post(() =>
-            {
-                if (_statusText != null)
-                {
-                    _statusText.Text = "status unavailable";
-                }
-            });
+            SetText(_statusText, "Status unavailable");
         }
+    }
+
+    private async Task RestartAdapterAsync()
+    {
+        try
+        {
+            var response = await _apiClient.RestartAdapterAsync(CancellationToken.None);
+            AppendSystem(response?.Message ?? "Adapter restart requested.");
+        }
+        catch (Exception ex)
+        {
+            AppendSystem($"Adapter restart failed: {ex.Message}");
+        }
+
+        await Task.Delay(700);
+        await RefreshStatusAsync();
+    }
+
+    private async Task RestartServerAsync()
+    {
+        try
+        {
+            var response = await _apiClient.RestartServerAsync(CancellationToken.None);
+            AppendSystem(response?.Message ?? "Server restart requested.");
+        }
+        catch (Exception ex)
+        {
+            AppendSystem($"Server restart failed: {ex.Message}");
+        }
+    }
+
+    private async Task LoadConfigAsync()
+    {
+        try
+        {
+            var config = await _apiClient.GetConfigAsync(CancellationToken.None);
+            if (config?.Llm == null)
+            {
+                AppendConfigStatus("Config unavailable.");
+                return;
+            }
+
+            if (_cfgLlmEnabled != null)
+            {
+                _cfgLlmEnabled.IsChecked = config.Llm.Enabled;
+            }
+
+            if (_cfgLlmAllowRemote != null)
+            {
+                _cfgLlmAllowRemote.IsChecked = config.Llm.AllowNonLoopbackEndpoint;
+            }
+
+            SetText(_cfgLlmEndpoint, config.Llm.Endpoint ?? string.Empty);
+            SetText(_cfgLlmModel, config.Llm.Model ?? string.Empty);
+            SetText(_cfgLlmTimeout, config.Llm.TimeoutSeconds.ToString(CultureInfo.InvariantCulture));
+            SetText(_cfgLlmMaxTokens, config.Llm.MaxTokens.ToString(CultureInfo.InvariantCulture));
+
+            SelectProvider(config.Llm.Provider ?? "ollama");
+            AppendConfigStatus("Config loaded.");
+        }
+        catch (Exception ex)
+        {
+            AppendConfigStatus($"Config load failed: {ex.Message}");
+        }
+    }
+
+    private async Task SaveConfigAsync()
+    {
+        try
+        {
+            var update = new WebConfigUpdate(
+                Llm: new WebConfigUpdateLlm(
+                    Enabled: _cfgLlmEnabled?.IsChecked ?? false,
+                    AllowNonLoopbackEndpoint: _cfgLlmAllowRemote?.IsChecked ?? false,
+                    Provider: GetSelectedProvider(),
+                    Endpoint: _cfgLlmEndpoint?.Text?.Trim(),
+                    Model: _cfgLlmModel?.Text?.Trim(),
+                    TimeoutSeconds: ParseInt(_cfgLlmTimeout?.Text),
+                    MaxTokens: ParseInt(_cfgLlmMaxTokens?.Text)),
+                ProfileModeEnabled: null,
+                ActiveProfile: null,
+                RequireConfirmation: null,
+                MaxActionsPerSecond: null,
+                QuizSafeModeEnabled: null,
+                OcrEnabled: null,
+                AdapterRestartCommand: null,
+                AdapterRestartWorkingDir: null,
+                FindRetryCount: null,
+                FindRetryDelayMs: null,
+                PostCheckTimeoutMs: null,
+                PostCheckPollMs: null,
+                ClipboardHistoryMaxItems: null,
+                FilesystemAllowedRoots: null,
+                AllowedApps: null,
+                AppAliases: null,
+                AuditLlmInteractions: null,
+                AuditLlmIncludeRawText: null);
+
+            var response = await _apiClient.SaveConfigAsync(update, CancellationToken.None);
+            if (response == null)
+            {
+                AppendConfigStatus("Config save failed.");
+                return;
+            }
+
+            AppendConfigStatus("Config saved.");
+            await TestLlmAsync();
+        }
+        catch (Exception ex)
+        {
+            AppendConfigStatus($"Config save failed: {ex.Message}");
+        }
+    }
+
+    private async Task TestLlmAsync()
+    {
+        try
+        {
+            var status = await _apiClient.GetStatusAsync(CancellationToken.None);
+            var llm = status?.Llm;
+            if (llm == null)
+            {
+                AppendConfigStatus("LLM status unavailable.");
+                return;
+            }
+
+            var availability = llm.Enabled && llm.Available ? "available" : "not available";
+            AppendConfigStatus($"LLM {availability}. Provider={llm.Provider}; Message={llm.Message}; Endpoint={llm.Endpoint}");
+        }
+        catch (Exception ex)
+        {
+            AppendConfigStatus($"LLM test failed: {ex.Message}");
+        }
+    }
+
+    private async Task LoadTasksAsync()
+    {
+        try
+        {
+            var response = await _apiClient.GetTasksAsync(CancellationToken.None);
+            _taskItems.Clear();
+            if (response?.Tasks != null)
+            {
+                _taskItems.AddRange(response.Tasks.OrderByDescending(t => t.UpdatedAt));
+            }
+
+            if (_tasksList != null)
+            {
+                _tasksList.ItemsSource = _taskItems.Select(FormatTask).ToList();
+            }
+
+            SetText(_tasksStatusText, $"Tasks: {_taskItems.Count}");
+        }
+        catch (Exception ex)
+        {
+            SetText(_tasksStatusText, $"Tasks load failed: {ex.Message}");
+        }
+    }
+
+    private async Task SaveTaskAsync()
+    {
+        var name = _taskNameInput?.Text?.Trim() ?? string.Empty;
+        var intent = _taskIntentInput?.Text?.Trim() ?? string.Empty;
+        var description = _taskDescriptionInput?.Text?.Trim();
+        if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(intent))
+        {
+            SetText(_tasksStatusText, "Task name and intent are required.");
+            return;
+        }
+
+        try
+        {
+            var response = await _apiClient.SaveTaskAsync(new WebTaskUpsertRequest(name, intent, description, null), CancellationToken.None);
+            SetText(_tasksStatusText, response?.Message ?? "Task saved.");
+            await LoadTasksAsync();
+        }
+        catch (Exception ex)
+        {
+            SetText(_tasksStatusText, $"Task save failed: {ex.Message}");
+        }
+    }
+
+    private async Task RunSelectedTaskAsync()
+    {
+        var selected = SelectedTask();
+        if (selected == null)
+        {
+            SetText(_tasksStatusText, "Select a task.");
+            return;
+        }
+
+        try
+        {
+            var result = await _apiClient.RunTaskAsync(selected.Name, false, CancellationToken.None);
+            if (result == null)
+            {
+                SetText(_tasksStatusText, "Task run failed.");
+                return;
+            }
+
+            AppendSystem($"Task '{selected.Name}' run: {result.Reply}");
+            if (result.Steps != null)
+            {
+                foreach (var step in result.Steps)
+                {
+                    AppendSystem(step);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            SetText(_tasksStatusText, $"Task run failed: {ex.Message}");
+        }
+    }
+
+    private async Task DeleteSelectedTaskAsync()
+    {
+        var selected = SelectedTask();
+        if (selected == null)
+        {
+            SetText(_tasksStatusText, "Select a task.");
+            return;
+        }
+
+        try
+        {
+            var result = await _apiClient.DeleteTaskAsync(selected.Name, CancellationToken.None);
+            SetText(_tasksStatusText, result?.Message ?? "Task deleted.");
+            await LoadTasksAsync();
+        }
+        catch (Exception ex)
+        {
+            SetText(_tasksStatusText, $"Task delete failed: {ex.Message}");
+        }
+    }
+
+    private async Task LoadSchedulesAsync()
+    {
+        try
+        {
+            var response = await _apiClient.GetSchedulesAsync(CancellationToken.None);
+            _scheduleItems.Clear();
+            if (response?.Schedules != null)
+            {
+                _scheduleItems.AddRange(response.Schedules.OrderByDescending(s => s.UpdatedAt));
+            }
+
+            if (_schedulesList != null)
+            {
+                _schedulesList.ItemsSource = _scheduleItems.Select(FormatSchedule).ToList();
+            }
+
+            SetText(_schedulesStatusText, $"Schedules: {_scheduleItems.Count}");
+        }
+        catch (Exception ex)
+        {
+            SetText(_schedulesStatusText, $"Schedules load failed: {ex.Message}");
+        }
+    }
+
+    private async Task SaveScheduleAsync()
+    {
+        var taskName = _scheduleTaskNameInput?.Text?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(taskName))
+        {
+            SetText(_schedulesStatusText, "Task name is required.");
+            return;
+        }
+
+        DateTimeOffset? startAtUtc = null;
+        var startRaw = _scheduleStartAtInput?.Text?.Trim();
+        if (!string.IsNullOrWhiteSpace(startRaw))
+        {
+            if (!DateTimeOffset.TryParse(startRaw, CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out var parsed))
+            {
+                SetText(_schedulesStatusText, "Invalid Start UTC format.");
+                return;
+            }
+            startAtUtc = parsed.ToUniversalTime();
+        }
+
+        var interval = ParseInt(_scheduleIntervalInput?.Text);
+
+        try
+        {
+            var request = new WebScheduleUpsertRequest(
+                Id: string.IsNullOrWhiteSpace(_scheduleIdInput?.Text) ? null : _scheduleIdInput?.Text?.Trim(),
+                TaskName: taskName,
+                StartAtUtc: startAtUtc,
+                IntervalSeconds: interval,
+                Enabled: _scheduleEnabledInput?.IsChecked ?? true);
+
+            var result = await _apiClient.SaveScheduleAsync(request, CancellationToken.None);
+            SetText(_schedulesStatusText, result?.Message ?? "Schedule saved.");
+            await LoadSchedulesAsync();
+        }
+        catch (Exception ex)
+        {
+            SetText(_schedulesStatusText, $"Schedule save failed: {ex.Message}");
+        }
+    }
+
+    private async Task RunSelectedScheduleAsync()
+    {
+        var selected = SelectedSchedule();
+        if (selected == null)
+        {
+            SetText(_schedulesStatusText, "Select a schedule.");
+            return;
+        }
+
+        try
+        {
+            var result = await _apiClient.RunScheduleNowAsync(selected.Id, CancellationToken.None);
+            SetText(_schedulesStatusText, result?.Message ?? "Schedule triggered.");
+        }
+        catch (Exception ex)
+        {
+            SetText(_schedulesStatusText, $"Schedule run failed: {ex.Message}");
+        }
+    }
+
+    private async Task DeleteSelectedScheduleAsync()
+    {
+        var selected = SelectedSchedule();
+        if (selected == null)
+        {
+            SetText(_schedulesStatusText, "Select a schedule.");
+            return;
+        }
+
+        try
+        {
+            var result = await _apiClient.DeleteScheduleAsync(selected.Id, CancellationToken.None);
+            SetText(_schedulesStatusText, result?.Message ?? "Schedule deleted.");
+            await LoadSchedulesAsync();
+        }
+        catch (Exception ex)
+        {
+            SetText(_schedulesStatusText, $"Schedule delete failed: {ex.Message}");
+        }
+    }
+
+    private async Task LoadAuditAsync()
+    {
+        try
+        {
+            var response = await _apiClient.GetAuditAsync(200, CancellationToken.None);
+            var lines = response?.Lines ?? Array.Empty<string>();
+            SetText(_auditBox, string.Join(Environment.NewLine, lines));
+        }
+        catch (Exception ex)
+        {
+            SetText(_auditBox, $"Audit load failed: {ex.Message}");
+        }
+    }
+
+    private WebTaskItem? SelectedTask()
+    {
+        var index = _tasksList?.SelectedIndex ?? -1;
+        if (index < 0 || index >= _taskItems.Count)
+        {
+            return null;
+        }
+
+        return _taskItems[index];
+    }
+
+    private WebScheduleItem? SelectedSchedule()
+    {
+        var index = _schedulesList?.SelectedIndex ?? -1;
+        if (index < 0 || index >= _scheduleItems.Count)
+        {
+            return null;
+        }
+
+        return _scheduleItems[index];
     }
 
     private void ShowConfirm(bool show, string? text)
@@ -286,24 +880,34 @@ internal partial class QuickChatWindow : Window
         _busy = busy;
         Dispatcher.UIThread.Post(() =>
         {
-            if (_sendButton != null) _sendButton.IsEnabled = !busy;
-            if (_confirmButton != null) _confirmButton.IsEnabled = !busy;
-            if (_cancelButton != null) _cancelButton.IsEnabled = !busy;
-            if (_statusButton != null) _statusButton.IsEnabled = !busy;
-            if (_armButton != null) _armButton.IsEnabled = !busy;
-            if (_disarmButton != null) _disarmButton.IsEnabled = !busy;
-            if (_copyButton != null) _copyButton.IsEnabled = !busy;
-            if (_clearButton != null) _clearButton.IsEnabled = !busy;
+            foreach (var button in AllButtons())
+            {
+                button.IsEnabled = !busy;
+            }
         });
+    }
+
+    private IEnumerable<Button> AllButtons()
+    {
+        return new[]
+        {
+            _sendButton, _confirmButton, _cancelButton, _statusButton, _armButton, _disarmButton, _simPresenceButton,
+            _reqPresenceButton, _killButton, _resetKillButton, _restartAdapterButton, _restartServerButton,
+            _lockWindowButton, _lockAppButton, _unlockButton, _profileSafeButton,
+            _profileBalancedButton, _profilePowerButton, _openWebButton, _copyButton, _clearButton,
+            _cfgLoadButton, _cfgSaveButton, _cfgTestLlmButton, _tasksRefreshButton, _tasksRunButton,
+            _tasksDeleteButton, _taskSaveButton, _schedulesRefreshButton, _schedulesRunButton, _schedulesDeleteButton,
+            _scheduleSaveButton, _auditRefreshButton, _auditCopyButton, _auditClearButton
+        }.Where(button => button != null).Cast<Button>();
     }
 
     private void AppendUser(string text) => AppendLine("YOU", text);
     private void AppendAgent(string text) => AppendLine("AGENT", text);
     private void AppendSystem(string text) => AppendLine("SYSTEM", text);
 
-    private async Task CopyHistoryAsync()
+    private async Task CopyTextAsync(string? text, string successMessage)
     {
-        var value = _historyBox?.Text ?? string.Empty;
+        var value = text ?? string.Empty;
         if (string.IsNullOrWhiteSpace(value))
         {
             AppendSystem("Nothing to copy.");
@@ -320,7 +924,7 @@ internal partial class QuickChatWindow : Window
             }
 
             await clipboard.SetTextAsync(value);
-            AppendSystem("Conversation copied.");
+            AppendSystem(successMessage);
         }
         catch (Exception ex)
         {
@@ -332,26 +936,110 @@ internal partial class QuickChatWindow : Window
     {
         Dispatcher.UIThread.Post(() =>
         {
-            if (_historyBox == null)
-            {
-                return;
-            }
-
-            var timestamp = DateTime.Now.ToString("HH:mm:ss");
+            var timestamp = DateTime.Now.ToString("HH:mm:ss", CultureInfo.InvariantCulture);
             var cleanText = text.Replace("\r", string.Empty).Replace('\n', ' ').Trim();
-            var line = $"[{timestamp}] {role,-6} {cleanText}";
-            _historyLines.Enqueue(line);
+            _historyLines.Enqueue($"[{timestamp}] {role,-6} {cleanText}");
             while (_historyLines.Count > MaxHistoryLines)
             {
                 _historyLines.Dequeue();
             }
 
-            _historyBox.Text = string.Join(Environment.NewLine, _historyLines);
-            if (_historyScroll != null)
+            SetText(_historyBox, string.Join(Environment.NewLine, _historyLines));
+            if (_historyBox != null)
             {
-                _historyScroll.Offset = new Vector(_historyScroll.Offset.X, double.MaxValue);
+                _historyBox.CaretIndex = _historyBox.Text?.Length ?? 0;
             }
         });
+    }
+
+    private void AppendConfigStatus(string line)
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            var current = _cfgStatusBox?.Text ?? string.Empty;
+            var stamp = DateTime.Now.ToString("HH:mm:ss", CultureInfo.InvariantCulture);
+            var entry = $"[{stamp}] {line}";
+            SetText(_cfgStatusBox, string.IsNullOrWhiteSpace(current) ? entry : $"{current}{Environment.NewLine}{entry}");
+            if (_cfgStatusBox != null)
+            {
+                _cfgStatusBox.CaretIndex = _cfgStatusBox.Text?.Length ?? 0;
+            }
+        });
+    }
+
+    private static void SetText(TextBox? textBox, string value)
+    {
+        if (textBox == null)
+        {
+            return;
+        }
+
+        textBox.Text = value;
+    }
+
+    private static void SetText(TextBlock? textBlock, string value)
+    {
+        if (textBlock == null)
+        {
+            return;
+        }
+
+        textBlock.Text = value;
+    }
+
+    private void SelectProvider(string provider)
+    {
+        if (_cfgLlmProvider == null)
+        {
+            return;
+        }
+
+        var normalized = provider.Trim().ToLowerInvariant();
+        for (var i = 0; i < _cfgLlmProvider.ItemCount; i++)
+        {
+            if (_cfgLlmProvider.Items[i] is ComboBoxItem item &&
+                string.Equals(item.Content?.ToString(), normalized, StringComparison.OrdinalIgnoreCase))
+            {
+                _cfgLlmProvider.SelectedIndex = i;
+                return;
+            }
+        }
+
+        _cfgLlmProvider.SelectedIndex = 0;
+    }
+
+    private string GetSelectedProvider()
+    {
+        if (_cfgLlmProvider?.SelectedItem is ComboBoxItem combo && combo.Content != null)
+        {
+            return combo.Content.ToString() ?? "ollama";
+        }
+
+        return "ollama";
+    }
+
+    private static int? ParseInt(string? value)
+    {
+        if (int.TryParse(value?.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
+        {
+            return parsed;
+        }
+
+        return null;
+    }
+
+    private static string FormatTask(WebTaskItem task)
+    {
+        var description = string.IsNullOrWhiteSpace(task.Description) ? task.Intent : task.Description;
+        return $"{task.Name} | {description} | {task.UpdatedAt:yyyy-MM-dd HH:mm}";
+    }
+
+    private static string FormatSchedule(WebScheduleItem schedule)
+    {
+        var start = schedule.StartAtUtc?.ToString("yyyy-MM-dd HH:mm 'UTC'", CultureInfo.InvariantCulture) ?? "immediate";
+        var interval = schedule.IntervalSeconds.HasValue ? $"{schedule.IntervalSeconds.Value}s" : "once";
+        var enabled = schedule.Enabled ? "enabled" : "disabled";
+        return $"{schedule.Id} | {schedule.TaskName} | {start} | {interval} | {enabled}";
     }
 
     private static string SanitizeInputForCommand(string input)

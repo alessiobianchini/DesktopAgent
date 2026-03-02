@@ -3,8 +3,8 @@ import GRPC
 import NIO
 import AppKit
 
-let portEnv = ProcessInfo.processInfo.environment["DESKTOP_AGENT_PORT"] ?? "50051"
-let port = Int(portEnv) ?? 50051
+let portEnv = ProcessInfo.processInfo.environment["DESKTOP_AGENT_PORT"] ?? "51877"
+let port = Int(portEnv) ?? 51877
 
 if !AccessibilityHelper.isTrusted(prompt: true) {
     print("Accessibility permission not granted. The adapter will start but UI automation may fail.")

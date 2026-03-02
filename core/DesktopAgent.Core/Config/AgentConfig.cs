@@ -4,7 +4,7 @@ public sealed class AgentConfig
 {
     public bool ProfileModeEnabled { get; set; } = false;
     public string ActiveProfile { get; set; } = "balanced";
-    public string AdapterEndpoint { get; set; } = "http://localhost:50051";
+    public string AdapterEndpoint { get; set; } = "http://localhost:51877";
     public List<string> AllowedApps { get; set; } = new();
     public Dictionary<string, string> AppAliases { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public string AppIndexCachePath { get; set; } = "app-index.json";
@@ -39,6 +39,7 @@ public sealed class AgentConfig
     public OcrConfig Ocr { get; set; } = new();
     public LlmFallbackConfig LlmFallback { get; set; } = new();
     public bool LlmFallbackEnabled { get; set; } = false;
+    public bool AllowNonLoopbackLlmEndpoint { get; set; } = false;
     public bool AuditLlmInteractions { get; set; } = true;
     public bool AuditLlmIncludeRawText { get; set; } = false;
     public string AdapterRestartCommand { get; set; } = "";

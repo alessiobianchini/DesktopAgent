@@ -3,7 +3,7 @@
 )
 
 $root = Split-Path -Parent $PSScriptRoot
-$env:DESKTOP_AGENT_PORT = $env:DESKTOP_AGENT_PORT ?? "50051"
+$env:DESKTOP_AGENT_PORT = $env:DESKTOP_AGENT_PORT ?? "51877"
 
 Write-Host "Starting Windows adapter on port $env:DESKTOP_AGENT_PORT"
 Start-Process dotnet -ArgumentList "run --project $root\adapters\windows\DesktopAgent.Adapter.Windows\DesktopAgent.Adapter.Windows.csproj" -WorkingDirectory $root

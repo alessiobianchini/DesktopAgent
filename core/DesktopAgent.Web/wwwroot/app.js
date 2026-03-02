@@ -3,6 +3,7 @@ const chatForm = document.getElementById('chatForm');
 const chatInput = document.getElementById('chatInput');
 const statusText = document.getElementById('statusText');
 const statusBadges = document.getElementById('statusBadges');
+const versionText = document.getElementById('versionText');
 const confirmArea = document.getElementById('confirmArea');
 const auditLog = document.getElementById('auditLog');
 const clearHistoryBtn = document.getElementById('clearHistory');
@@ -13,6 +14,7 @@ const auditBadge = document.getElementById('auditBadge');
 const llmEnabledToggle = document.getElementById('llmEnabled');
 const llmProviderInput = document.getElementById('llmProvider');
 const llmEndpointInput = document.getElementById('llmEndpoint');
+const llmAllowRemoteToggle = document.getElementById('llmAllowRemote');
 const llmModelInput = document.getElementById('llmModel');
 const llmTimeoutInput = document.getElementById('llmTimeout');
 const llmMaxTokensInput = document.getElementById('llmMaxTokens');
@@ -101,10 +103,14 @@ async function fetchStatus() {
   const res = await fetch('/api/status');
   if (!res.ok) {
     statusText.textContent = 'Unable to contact adapter.';
+    if (versionText) versionText.textContent = 'Version: unavailable';
     if (statusBadges) statusBadges.innerHTML = '';
     return;
   }
   const data = await res.json();
+  if (versionText) {
+    versionText.textContent = `Version: ${data.version || 'unknown'}`;
+  }
   let lockText = 'ContextLock: off';
   if (data.contextLock && data.contextLock.enabled) {
     if (data.contextLock.scope === 'window') {
@@ -136,6 +142,7 @@ async function loadConfig() {
   llmEnabledToggle.checked = !!llm.enabled;
   if (llmProviderInput) llmProviderInput.value = llm.provider || 'ollama';
   if (llmEndpointInput) llmEndpointInput.value = llm.endpoint || '';
+  if (llmAllowRemoteToggle) llmAllowRemoteToggle.checked = !!llm.allowNonLoopbackEndpoint;
   if (llmModelInput) llmModelInput.value = llm.model || '';
   if (llmTimeoutInput) llmTimeoutInput.value = llm.timeoutSeconds || 10;
   if (llmMaxTokensInput) llmMaxTokensInput.value = llm.maxTokens || 128;
@@ -190,6 +197,7 @@ async function saveConfig() {
     adapterRestartWorkingDir: adapterRestartDirInput ? adapterRestartDirInput.value.trim() : null,
     llm: {
       enabled: llmEnabledToggle.checked,
+      allowNonLoopbackEndpoint: llmAllowRemoteToggle ? llmAllowRemoteToggle.checked : null,
       provider: llmProviderInput ? llmProviderInput.value.trim() : null,
       endpoint: llmEndpointInput ? llmEndpointInput.value.trim() : null,
       model: llmModelInput ? llmModelInput.value.trim() : null,

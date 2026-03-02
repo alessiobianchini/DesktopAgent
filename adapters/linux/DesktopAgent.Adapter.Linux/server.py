@@ -629,7 +629,7 @@ def shutil_which(cmd):
 
 
 def serve():
-    port = os.environ.get("DESKTOP_AGENT_PORT", "50051")
+    port = os.environ.get("DESKTOP_AGENT_PORT", "51877")
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=4))
     state = AdapterState()
     pb2_grpc.add_DesktopAdapterServicer_to_server(DesktopAdapterService(state), server)

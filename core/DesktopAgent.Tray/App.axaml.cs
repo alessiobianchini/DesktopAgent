@@ -27,6 +27,14 @@ public partial class App : Application
     private NativeMenuItem? _statusItem;
     private NativeMenuItem? _armItem;
     private NativeMenuItem? _disarmItem;
+    private NativeMenuItem? _killItem;
+    private NativeMenuItem? _resetKillItem;
+    private NativeMenuItem? _lockWindowItem;
+    private NativeMenuItem? _lockAppItem;
+    private NativeMenuItem? _unlockItem;
+    private NativeMenuItem? _profileSafeItem;
+    private NativeMenuItem? _profileBalancedItem;
+    private NativeMenuItem? _profilePowerItem;
     private NativeMenuItem? _refreshItem;
     private NativeMenuItem? _openQuickChatItem;
     private NativeMenuItem? _openWebUiItem;
@@ -109,6 +117,30 @@ public partial class App : Application
             UpdateStatusUi(status);
         };
 
+        _killItem = new NativeMenuItem("Kill Switch ON");
+        _killItem.Click += async (_, _) => await RunQuickCommandAsync("kill");
+
+        _resetKillItem = new NativeMenuItem("Kill Switch Reset");
+        _resetKillItem.Click += async (_, _) => await RunQuickCommandAsync("reset kill");
+
+        _lockWindowItem = new NativeMenuItem("Lock Current Window");
+        _lockWindowItem.Click += async (_, _) => await RunQuickCommandAsync("lock on current window");
+
+        _lockAppItem = new NativeMenuItem("Lock Current App");
+        _lockAppItem.Click += async (_, _) => await RunQuickCommandAsync("lock on app");
+
+        _unlockItem = new NativeMenuItem("Unlock Context");
+        _unlockItem.Click += async (_, _) => await RunQuickCommandAsync("unlock");
+
+        _profileSafeItem = new NativeMenuItem("Profile: Safe");
+        _profileSafeItem.Click += async (_, _) => await RunQuickCommandAsync("profile safe");
+
+        _profileBalancedItem = new NativeMenuItem("Profile: Balanced");
+        _profileBalancedItem.Click += async (_, _) => await RunQuickCommandAsync("profile balanced");
+
+        _profilePowerItem = new NativeMenuItem("Profile: Power");
+        _profilePowerItem.Click += async (_, _) => await RunQuickCommandAsync("profile power");
+
         _openQuickChatItem = new NativeMenuItem("Open Quick Chat");
         _openQuickChatItem.Click += (_, _) => ShowQuickChat();
 
@@ -142,8 +174,17 @@ public partial class App : Application
         menu.Add(_refreshItem);
         menu.Add(_checkUpdatesItem);
         menu.Add(_applyUpdateItem);
+        menu.Add(new NativeMenuItemSeparator());
         menu.Add(_armItem);
         menu.Add(_disarmItem);
+        menu.Add(_killItem);
+        menu.Add(_resetKillItem);
+        menu.Add(_lockWindowItem);
+        menu.Add(_lockAppItem);
+        menu.Add(_unlockItem);
+        menu.Add(_profileSafeItem);
+        menu.Add(_profileBalancedItem);
+        menu.Add(_profilePowerItem);
         menu.Add(new NativeMenuItemSeparator());
         menu.Add(_openQuickChatItem);
         menu.Add(_openWebUiItem);
@@ -198,6 +239,25 @@ public partial class App : Application
         UpdateStatusUi(status);
     }
 
+    private async Task RunQuickCommandAsync(string command)
+    {
+        if (_webApiClient == null)
+        {
+            return;
+        }
+
+        try
+        {
+            await _webApiClient.SendChatAsync(command, _shutdown.Token);
+        }
+        catch
+        {
+            // ignore
+        }
+
+        await RefreshStatusAsync();
+    }
+
     private void UpdateStatusUi(Status status)
     {
         var armed = status.Armed;
@@ -205,11 +265,11 @@ public partial class App : Application
         var detail = string.IsNullOrWhiteSpace(status.Message)
             ? "ok"
             : Compact(status.Message, 64);
-        var armedIcon = armed ? "●" : "○";
-        var presenceIcon = requirePresence ? "●" : "○";
+        var armedIcon = armed ? "[+]" : "[-]";
+        var presenceIcon = requirePresence ? "[+]" : "[-]";
 
         var line = $"Status: {armedIcon} Armed {(armed ? "ON" : "OFF")} | {presenceIcon} Presence {(requirePresence ? "REQ" : "OFF")} | {detail}";
-        var tooltip = $"DesktopAgent: {armedIcon}A {presenceIcon}P";
+        var tooltip = $"DesktopAgent: A={(armed ? "ON" : "OFF")} P={(requirePresence ? "REQ" : "OFF")}";
 
         Dispatcher.UIThread.Post(() =>
         {
@@ -427,12 +487,12 @@ public partial class App : Application
 
         if (string.IsNullOrWhiteSpace(settings.AdapterEndpoint))
         {
-            settings.AdapterEndpoint = "http://localhost:50051";
+            settings.AdapterEndpoint = "http://localhost:51877";
         }
 
         if (string.IsNullOrWhiteSpace(settings.WebUiUrl))
         {
-            settings.WebUiUrl = "http://localhost:5000";
+            settings.WebUiUrl = "http://localhost:51878";
         }
 
         settings.StatusRefreshSeconds = Math.Clamp(settings.StatusRefreshSeconds, 1, 60);
@@ -464,8 +524,8 @@ public partial class App : Application
 
 internal sealed class TraySettings
 {
-    public string AdapterEndpoint { get; set; } = "http://localhost:50051";
-    public string WebUiUrl { get; set; } = "http://localhost:5000";
+    public string AdapterEndpoint { get; set; } = "http://localhost:51877";
+    public string WebUiUrl { get; set; } = "http://localhost:51878";
     public bool RequireUserPresenceOnArm { get; set; } = true;
     public int StatusRefreshSeconds { get; set; } = 5;
     public int ApiTimeoutSeconds { get; set; } = 600;

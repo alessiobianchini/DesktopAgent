@@ -3,77 +3,216 @@
         x:Class="DesktopAgent.Tray.QuickChatWindow"
         Title="DesktopAgent Quick Chat"
         RequestedThemeVariant="Dark"
-        Width="760"
-        Height="620"
-        MinWidth="640"
-        MinHeight="480"
-        Background="#07090D">
-  <Grid RowDefinitions="Auto,Auto,*,Auto,Auto,Auto" Margin="14">
-    <StackPanel>
-      <TextBlock Text="DesktopAgent Quick Chat" FontSize="19" FontWeight="SemiBold" />
-      <TextBlock Text="Type naturally. Confirm before execution." FontSize="12" Opacity="0.75" Margin="0,2,0,0" />
-    </StackPanel>
-
-    <Grid Grid.Row="1" ColumnDefinitions="*,Auto,Auto" Margin="0,10,0,10">
-      <WrapPanel Grid.Column="0" Orientation="Horizontal" ItemWidth="104" ItemHeight="34">
-        <Button x:Name="StatusButton" Content="Status" MinWidth="90" />
-        <Button x:Name="ArmButton" Content="Arm" MinWidth="90" />
-        <Button x:Name="DisarmButton" Content="Disarm" MinWidth="90" />
-        <Button x:Name="OpenWebButton" Content="Open Web UI" MinWidth="110" />
-      </WrapPanel>
-      <Button x:Name="CopyButton" Grid.Column="1" Content="Copy Log" MinWidth="96" Margin="8,0,0,0" />
-      <Button x:Name="ClearButton" Grid.Column="2" Content="Clear" MinWidth="76" Margin="8,0,0,0" />
+        Width="960"
+        Height="760"
+        MinWidth="860"
+        MinHeight="620"
+        Background="#0A0E14"
+        Foreground="#E6EDF7">
+  <Grid RowDefinitions="Auto,Auto,*" Margin="12">
+    <Grid ColumnDefinitions="*,Auto,Auto" RowDefinitions="Auto,Auto">
+      <TextBlock Text="DesktopAgent Control Center" FontSize="20" FontWeight="SemiBold" />
+      <TextBlock x:Name="VersionText" Grid.Row="1" Text="Version: -" FontSize="12" Opacity="0.8" Margin="0,2,0,0" />
+      <TextBlock x:Name="StatusText" Grid.Column="1" Grid.RowSpan="2" VerticalAlignment="Center" Margin="12,0,0,0" />
+      <Button x:Name="OpenWebButton" Grid.Column="2" Grid.RowSpan="2" Content="Open Web UI" MinWidth="120" Margin="12,0,0,0" />
     </Grid>
 
-    <Border Grid.Row="2"
-            BorderBrush="#2A2F3A"
+    <Border Grid.Row="1"
+            Margin="0,10,0,10"
+            Padding="8"
+            Background="#101723"
+            BorderBrush="#2A3950"
             BorderThickness="1"
-            CornerRadius="8"
-            Background="#0E1116">
-      <Grid RowDefinitions="Auto,*">
-        <TextBlock Text="Conversation"
-                   Margin="10,8,10,2"
-                   FontWeight="SemiBold"
-                   Foreground="#E6EAF2"
-                   Opacity="0.8" />
-        <ScrollViewer x:Name="HistoryScroll"
-                      Grid.Row="1"
-                      Margin="0"
-                      VerticalScrollBarVisibility="Auto"
-                      HorizontalScrollBarVisibility="Disabled">
-          <TextBlock x:Name="HistoryBox"
-                     TextWrapping="Wrap"
-                     FontFamily="Consolas, Cascadia Mono, Menlo, monospace"
-                     FontSize="13"
-                     Padding="10"
-                     Foreground="#E6EAF2" />
-        </ScrollViewer>
-      </Grid>
+            CornerRadius="8">
+      <WrapPanel ItemHeight="34">
+        <Button x:Name="StatusButton" Content="Status" MinWidth="88" Margin="0,0,8,0" />
+        <Button x:Name="ArmButton" Content="Arm" MinWidth="88" Margin="0,0,8,0" />
+        <Button x:Name="DisarmButton" Content="Disarm" MinWidth="88" Margin="0,0,8,0" />
+        <Button x:Name="SimPresenceButton" Content="Sim Presence" MinWidth="106" Margin="0,0,8,0" />
+        <Button x:Name="ReqPresenceButton" Content="Req Presence" MinWidth="106" Margin="0,0,8,0" />
+        <Button x:Name="KillButton" Content="Kill" MinWidth="88" Margin="0,0,8,0" />
+        <Button x:Name="ResetKillButton" Content="Reset Kill" MinWidth="96" Margin="0,0,8,0" />
+        <Button x:Name="RestartAdapterButton" Content="Restart Adapter" MinWidth="126" Margin="0,0,8,0" />
+        <Button x:Name="RestartServerButton" Content="Restart Server" MinWidth="122" Margin="0,0,8,0" />
+        <Button x:Name="LockWindowButton" Content="Lock Window" MinWidth="108" Margin="0,0,8,0" />
+        <Button x:Name="LockAppButton" Content="Lock App" MinWidth="98" Margin="0,0,8,0" />
+        <Button x:Name="UnlockButton" Content="Unlock" MinWidth="90" Margin="0,0,8,0" />
+        <Button x:Name="ProfileSafeButton" Content="Profile Safe" MinWidth="108" Margin="0,0,8,0" />
+        <Button x:Name="ProfileBalancedButton" Content="Profile Balanced" MinWidth="126" Margin="0,0,8,0" />
+        <Button x:Name="ProfilePowerButton" Content="Profile Power" MinWidth="116" Margin="0,0,8,0" />
+        <Button x:Name="CopyButton" Content="Copy Log" MinWidth="96" Margin="0,0,8,0" />
+        <Button x:Name="ClearButton" Content="Clear" MinWidth="76" />
+      </WrapPanel>
     </Border>
 
-    <StackPanel Grid.Row="3" Orientation="Horizontal" Spacing="8" Margin="0,10,0,8">
-      <TextBlock x:Name="StatusText" VerticalAlignment="Center" Opacity="0.85" />
-    </StackPanel>
+    <TabControl Grid.Row="2" x:Name="MainTabs">
+      <TabItem Header="Chat">
+        <Grid RowDefinitions="*,Auto,Auto" Margin="2">
+          <Border BorderBrush="#2A3950"
+                  BorderThickness="1"
+                  CornerRadius="8"
+                  Background="#0F1520"
+                  Padding="8">
+            <TextBox x:Name="HistoryBox"
+                     IsReadOnly="True"
+                     AcceptsReturn="True"
+                     TextWrapping="Wrap"
+                     VerticalContentAlignment="Top"
+                     Background="#0F1520"
+                     Foreground="#E6EDF7"
+                     BorderThickness="0"
+                     FontFamily="Cascadia Mono, Consolas, monospace"
+                     FontSize="13" />
+          </Border>
 
-    <StackPanel x:Name="ConfirmPanel"
-                Grid.Row="4"
-                Orientation="Horizontal"
-                Spacing="8"
-                Margin="0,0,0,8"
-                IsVisible="False">
-      <TextBlock x:Name="ConfirmText" Text="Confirmation required." VerticalAlignment="Center" />
-      <Button x:Name="ConfirmButton" Content="Confirm" MinWidth="110" />
-      <Button x:Name="CancelButton" Content="Cancel" MinWidth="100" />
-    </StackPanel>
+          <StackPanel x:Name="ConfirmPanel"
+                      Grid.Row="1"
+                      Orientation="Horizontal"
+                      Spacing="8"
+                      Margin="0,10,0,10"
+                      IsVisible="False">
+            <TextBlock x:Name="ConfirmText" Text="Confirmation required." VerticalAlignment="Center" />
+            <Button x:Name="ConfirmButton" Content="Confirm" MinWidth="110" />
+            <Button x:Name="CancelButton" Content="Cancel" MinWidth="100" />
+          </StackPanel>
 
-    <Grid Grid.Row="5" ColumnDefinitions="*,Auto" Margin="0,2,0,0">
-      <TextBox x:Name="InputBox"
-               Watermark="Write a command (e.g. open notepad, search docs on chrome)..."
-               TextWrapping="Wrap"
-               AcceptsReturn="False"
-               FontSize="13"
-               Padding="10" />
-      <Button x:Name="SendButton" Grid.Column="1" Content="Send" MinWidth="110" Margin="10,0,0,0" />
-    </Grid>
+          <Grid Grid.Row="2" ColumnDefinitions="*,Auto">
+            <TextBox x:Name="InputBox"
+                     Watermark="Write command in natural language..."
+                     TextWrapping="Wrap"
+                     AcceptsReturn="False"
+                     Background="#0F1520"
+                     Foreground="#E6EDF7"
+                     BorderBrush="#2A3950"
+                     BorderThickness="1"
+                     Padding="10" />
+            <Button x:Name="SendButton" Grid.Column="1" Content="Send" MinWidth="110" Margin="10,0,0,0" />
+          </Grid>
+        </Grid>
+      </TabItem>
+
+      <TabItem Header="Config">
+        <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,*" ColumnDefinitions="220,*" Margin="8">
+          <TextBlock Text="LLM Enabled" />
+          <CheckBox x:Name="CfgLlmEnabled" Grid.Column="1" />
+
+          <TextBlock Grid.Row="1" Text="Provider" Margin="0,8,0,0" />
+          <ComboBox x:Name="CfgLlmProvider" Grid.Row="1" Grid.Column="1" Margin="0,8,0,0" SelectedIndex="0">
+            <ComboBoxItem Content="ollama" />
+            <ComboBoxItem Content="openai" />
+            <ComboBoxItem Content="llama.cpp" />
+          </ComboBox>
+
+          <TextBlock Grid.Row="2" Text="Endpoint" Margin="0,8,0,0" />
+          <TextBox x:Name="CfgLlmEndpoint" Grid.Row="2" Grid.Column="1" Margin="0,8,0,0" />
+
+          <TextBlock Grid.Row="3" Text="Model" Margin="0,8,0,0" />
+          <TextBox x:Name="CfgLlmModel" Grid.Row="3" Grid.Column="1" Margin="0,8,0,0" />
+
+          <TextBlock Grid.Row="4" Text="Timeout Seconds" Margin="0,8,0,0" />
+          <TextBox x:Name="CfgLlmTimeout" Grid.Row="4" Grid.Column="1" Margin="0,8,0,0" />
+
+          <TextBlock Grid.Row="5" Text="Max Tokens" Margin="0,8,0,0" />
+          <TextBox x:Name="CfgLlmMaxTokens" Grid.Row="5" Grid.Column="1" Margin="0,8,0,0" />
+
+          <TextBlock Grid.Row="6" Text="Allow Remote Endpoint" Margin="0,8,0,0" />
+          <CheckBox x:Name="CfgLlmAllowRemote" Grid.Row="6" Grid.Column="1" Margin="0,8,0,0" />
+
+          <StackPanel Grid.Row="7" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="8" Margin="0,12,0,0">
+            <Button x:Name="CfgLoadButton" Content="Reload Config" MinWidth="120" />
+            <Button x:Name="CfgSaveButton" Content="Save Config" MinWidth="120" />
+            <Button x:Name="CfgTestLlmButton" Content="Test LLM" MinWidth="120" />
+          </StackPanel>
+
+          <TextBox x:Name="CfgStatusBox"
+                   Grid.Row="8"
+                   Grid.ColumnSpan="2"
+                   Margin="0,12,0,0"
+                   IsReadOnly="True"
+                   AcceptsReturn="True"
+                   TextWrapping="Wrap"
+                   Background="#0F1520"
+                   BorderBrush="#2A3950"
+                   BorderThickness="1" />
+        </Grid>
+      </TabItem>
+
+      <TabItem Header="Tasks">
+        <Grid RowDefinitions="Auto,*,Auto,Auto" Margin="8">
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <Button x:Name="TasksRefreshButton" Content="Refresh Tasks" MinWidth="120" />
+            <Button x:Name="TasksRunButton" Content="Run Selected" MinWidth="120" />
+            <Button x:Name="TasksDeleteButton" Content="Delete Selected" MinWidth="130" />
+          </StackPanel>
+
+          <ListBox x:Name="TasksList" Grid.Row="1" Margin="0,10,0,10" />
+
+          <Grid Grid.Row="2" ColumnDefinitions="150,*" RowDefinitions="Auto,Auto,Auto">
+            <TextBlock Text="Task Name" VerticalAlignment="Center" />
+            <TextBox x:Name="TaskNameInput" Grid.Column="1" Margin="8,0,0,0" />
+            <TextBlock Grid.Row="1" Text="Intent" VerticalAlignment="Center" Margin="0,8,0,0" />
+            <TextBox x:Name="TaskIntentInput" Grid.Row="1" Grid.Column="1" Margin="8,8,0,0" />
+            <TextBlock Grid.Row="2" Text="Description" VerticalAlignment="Center" Margin="0,8,0,0" />
+            <TextBox x:Name="TaskDescriptionInput" Grid.Row="2" Grid.Column="1" Margin="8,8,0,0" />
+          </Grid>
+
+          <StackPanel Grid.Row="3" Orientation="Horizontal" Spacing="8" Margin="0,10,0,0">
+            <Button x:Name="TaskSaveButton" Content="Save Task" MinWidth="120" />
+            <TextBlock x:Name="TasksStatusText" VerticalAlignment="Center" />
+          </StackPanel>
+        </Grid>
+      </TabItem>
+
+      <TabItem Header="Schedules">
+        <Grid RowDefinitions="Auto,*,Auto,Auto" Margin="8">
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <Button x:Name="SchedulesRefreshButton" Content="Refresh Schedules" MinWidth="140" />
+            <Button x:Name="SchedulesRunButton" Content="Run Selected" MinWidth="120" />
+            <Button x:Name="SchedulesDeleteButton" Content="Delete Selected" MinWidth="130" />
+          </StackPanel>
+
+          <ListBox x:Name="SchedulesList" Grid.Row="1" Margin="0,10,0,10" />
+
+          <Grid Grid.Row="2" ColumnDefinitions="170,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto">
+            <TextBlock Text="Schedule Id (optional)" VerticalAlignment="Center" />
+            <TextBox x:Name="ScheduleIdInput" Grid.Column="1" Margin="8,0,0,0" />
+            <TextBlock Grid.Row="1" Text="Task Name" VerticalAlignment="Center" Margin="0,8,0,0" />
+            <TextBox x:Name="ScheduleTaskNameInput" Grid.Row="1" Grid.Column="1" Margin="8,8,0,0" />
+            <TextBlock Grid.Row="2" Text="Start UTC (yyyy-MM-dd HH:mm)" VerticalAlignment="Center" Margin="0,8,0,0" />
+            <TextBox x:Name="ScheduleStartAtInput" Grid.Row="2" Grid.Column="1" Margin="8,8,0,0" />
+            <TextBlock Grid.Row="3" Text="Interval Seconds" VerticalAlignment="Center" Margin="0,8,0,0" />
+            <TextBox x:Name="ScheduleIntervalInput" Grid.Row="3" Grid.Column="1" Margin="8,8,0,0" />
+            <TextBlock Grid.Row="4" Text="Enabled" VerticalAlignment="Center" Margin="0,8,0,0" />
+            <CheckBox x:Name="ScheduleEnabledInput" Grid.Row="4" Grid.Column="1" Margin="8,8,0,0" IsChecked="True" />
+          </Grid>
+
+          <StackPanel Grid.Row="3" Orientation="Horizontal" Spacing="8" Margin="0,10,0,0">
+            <Button x:Name="ScheduleSaveButton" Content="Save Schedule" MinWidth="130" />
+            <TextBlock x:Name="SchedulesStatusText" VerticalAlignment="Center" />
+          </StackPanel>
+        </Grid>
+      </TabItem>
+
+      <TabItem Header="Audit">
+        <Grid RowDefinitions="Auto,*" Margin="8">
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <Button x:Name="AuditRefreshButton" Content="Refresh Audit" MinWidth="120" />
+            <Button x:Name="AuditCopyButton" Content="Copy Audit" MinWidth="110" />
+            <Button x:Name="AuditClearButton" Content="Clear View" MinWidth="110" />
+          </StackPanel>
+          <TextBox x:Name="AuditBox"
+                   Grid.Row="1"
+                   Margin="0,10,0,0"
+                   IsReadOnly="True"
+                   AcceptsReturn="True"
+                   TextWrapping="Wrap"
+                   Background="#0F1520"
+                   BorderBrush="#2A3950"
+                   BorderThickness="1"
+                   FontFamily="Cascadia Mono, Consolas, monospace"
+                   FontSize="12" />
+        </Grid>
+      </TabItem>
+    </TabControl>
   </Grid>
 </Window>

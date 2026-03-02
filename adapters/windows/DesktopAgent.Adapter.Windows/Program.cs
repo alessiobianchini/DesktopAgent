@@ -4,7 +4,7 @@ using Microsoft.AspNetCore.Server.Kestrel.Core;
 
 var builder = WebApplication.CreateBuilder(args);
 
-var port = Environment.GetEnvironmentVariable("DESKTOP_AGENT_PORT") ?? "50051";
+var port = Environment.GetEnvironmentVariable("DESKTOP_AGENT_PORT") ?? "51877";
 builder.WebHost.ConfigureKestrel(options =>
 {
     options.ListenAnyIP(int.Parse(port), listenOptions =>

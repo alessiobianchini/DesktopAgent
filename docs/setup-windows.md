@@ -35,7 +35,10 @@ powershell -ExecutionPolicy Bypass -File scripts/start-windows.ps1 -Build
 powershell -ExecutionPolicy Bypass -File scripts/start-windows.ps1 -NoTray
 
 # Custom ports
-powershell -ExecutionPolicy Bypass -File scripts/start-windows.ps1 -AdapterPort 50051 -WebPort 5000
+powershell -ExecutionPolicy Bypass -File scripts/start-windows.ps1 -AdapterPort 51877 -WebPort 51878
+
+# Show adapter/web consoles (disabled by default)
+powershell -ExecutionPolicy Bypass -File scripts/start-windows.ps1 -ShowConsoles
 ```
 
 ## Notes

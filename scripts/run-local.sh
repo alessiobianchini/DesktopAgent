@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PORT="${DESKTOP_AGENT_PORT:-50051}"
+PORT="${DESKTOP_AGENT_PORT:-51877}"
 
 if [[ "$(uname)" == "Darwin" ]]; then
   echo "Starting macOS adapter on port $PORT"

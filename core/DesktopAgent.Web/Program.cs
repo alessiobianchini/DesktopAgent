@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Reflection;
 using System.Text.Json;
 using DesktopAgent.Core.Abstractions;
 using DesktopAgent.Core.Config;
@@ -66,6 +67,7 @@ builder.Services.AddSingleton<ScheduledTaskRunner>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ScheduledTaskRunner>());
 
 var app = builder.Build();
+var serverVersion = AppVersionHelper.Resolve();
 
 app.UseDefaultFiles();
 app.UseStaticFiles(new StaticFileOptions
@@ -79,6 +81,7 @@ app.MapGet("/api/status", async (IDesktopAdapterClient client, AgentConfig confi
     var llmStatus = await llmCache.GetAsync(CancellationToken.None);
     return Results.Ok(new
     {
+        version = serverVersion,
         adapter = new { status.Armed, status.RequireUserPresence, status.Message },
         config = new
         {
@@ -155,6 +158,7 @@ app.MapGet("/api/config", (AgentConfig config, RestartRequirementTracker restart
         llm = new
         {
             enabled = config.LlmFallbackEnabled,
+            allowNonLoopbackEndpoint = config.AllowNonLoopbackLlmEndpoint,
             provider = config.LlmFallback.Provider,
             endpoint = config.LlmFallback.Endpoint,
             model = config.LlmFallback.Model,
@@ -208,9 +212,9 @@ app.MapPost("/api/config", async (ConfigUpdateRequest request, AgentConfig confi
         {
             errors.Add("Endpoint must be a valid absolute URL.");
         }
-        else if (!uri.IsLoopback)
+        else if (!ConfigValidators.IsEndpointAllowed(uri, request.Llm?.AllowNonLoopbackEndpoint ?? config.AllowNonLoopbackLlmEndpoint))
         {
-            errors.Add("Endpoint must be local (loopback).");
+            errors.Add("Endpoint must be local (loopback) unless remote endpoints are enabled.");
         }
     }
 
@@ -429,6 +433,11 @@ app.MapPost("/api/config", async (ConfigUpdateRequest request, AgentConfig confi
         config.LlmFallbackEnabled = request.Llm.Enabled.Value;
     }
 
+    if (request.Llm?.AllowNonLoopbackEndpoint.HasValue == true)
+    {
+        config.AllowNonLoopbackLlmEndpoint = request.Llm.AllowNonLoopbackEndpoint.Value;
+    }
+
     if (!string.IsNullOrWhiteSpace(provider))
     {
         config.LlmFallback.Provider = provider;
@@ -507,6 +516,7 @@ app.MapPost("/api/config", async (ConfigUpdateRequest request, AgentConfig confi
         llm = new
         {
             enabled = config.LlmFallbackEnabled,
+            allowNonLoopbackEndpoint = config.AllowNonLoopbackLlmEndpoint,
             provider = config.LlmFallback.Provider,
             endpoint = config.LlmFallback.Endpoint,
             model = config.LlmFallback.Model,
@@ -532,6 +542,8 @@ app.MapPost("/api/restart", (HttpContext context, IHostApplicationLifetime lifet
 
     return Results.Ok(new { message = "Restarting server..." });
 });
+
+app.MapGet("/api/version", () => Results.Ok(new { version = serverVersion }));
 
 app.MapPost("/api/adapter/restart", (HttpContext context, AgentConfig config) =>
 {
@@ -2481,7 +2493,7 @@ internal sealed class AutoApproveConfirmation : IUserConfirmation
 }
 
 internal sealed record LlmStatus(bool Enabled, bool Available, string Provider, string Message, string? Endpoint);
-internal sealed record LlmConfigUpdate(bool? Enabled, string? Provider, string? Endpoint, string? Model, int? TimeoutSeconds, int? MaxTokens);
+internal sealed record LlmConfigUpdate(bool? Enabled, bool? AllowNonLoopbackEndpoint, string? Provider, string? Endpoint, string? Model, int? TimeoutSeconds, int? MaxTokens);
 internal sealed record OcrConfigUpdate(string? Engine, string? TesseractPath);
 internal sealed record ConfigUpdateRequest(
     LlmConfigUpdate? Llm,
@@ -3091,9 +3103,9 @@ internal sealed class LlmAvailabilityCache
             return new LlmStatus(true, false, provider, "Invalid endpoint", endpoint);
         }
 
-        if (!uri.IsLoopback)
+        if (!ConfigValidators.IsEndpointAllowed(uri, _config.AllowNonLoopbackLlmEndpoint))
         {
-            return new LlmStatus(true, false, provider, "Endpoint must be local", endpoint);
+            return new LlmStatus(true, false, provider, "Endpoint blocked by policy (local only)", endpoint);
         }
 
         var port = uri.Port > 0 ? uri.Port : (uri.Scheme == "https" ? 443 : 80);
@@ -3167,6 +3179,32 @@ internal static class ConfigValidators
     {
         var normalized = provider.Trim().ToLowerInvariant();
         return normalized is "ollama" or "openai" or "llama.cpp";
+    }
+
+    internal static bool IsEndpointAllowed(Uri uri, bool allowNonLoopbackEndpoint)
+    {
+        return uri.IsLoopback || allowNonLoopbackEndpoint;
+    }
+}
+
+internal static class AppVersionHelper
+{
+    internal static string Resolve()
+    {
+        var assembly = Assembly.GetExecutingAssembly();
+        var informational = assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
+        if (!string.IsNullOrWhiteSpace(informational))
+        {
+            return informational;
+        }
+
+        var fileVersion = assembly.GetCustomAttribute<AssemblyFileVersionAttribute>()?.Version;
+        if (!string.IsNullOrWhiteSpace(fileVersion))
+        {
+            return fileVersion;
+        }
+
+        return assembly.GetName().Version?.ToString() ?? "unknown";
     }
 }
 
