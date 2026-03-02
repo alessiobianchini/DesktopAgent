@@ -18,10 +18,24 @@ function Find-SignTool {
         return $cmd.Source
     }
 
-    $candidates = @(
-        "$env:ProgramFiles(x86)\Windows Kits\10\bin\x64\signtool.exe",
-        "$env:ProgramFiles(x86)\Windows Kits\10\App Certification Kit\signtool.exe"
-    )
+    $candidates = New-Object System.Collections.Generic.List[string]
+    $candidates.Add("$env:ProgramFiles(x86)\Windows Kits\10\bin\x64\signtool.exe")
+    $candidates.Add("$env:ProgramFiles(x86)\Windows Kits\10\App Certification Kit\signtool.exe")
+    $candidates.Add("$env:ProgramFiles\Microsoft SDKs\ClickOnce\SignTool\signtool.exe")
+
+    $kitBinRoot = Join-Path "${env:ProgramFiles(x86)}" "Windows Kits\10\bin"
+    if (Test-Path $kitBinRoot) {
+        Get-ChildItem -Path $kitBinRoot -Directory -ErrorAction SilentlyContinue |
+            Sort-Object Name -Descending |
+            ForEach-Object {
+                $x64 = Join-Path $_.FullName "x64\signtool.exe"
+                $x86 = Join-Path $_.FullName "x86\signtool.exe"
+                $arm64 = Join-Path $_.FullName "arm64\signtool.exe"
+                $candidates.Add($x64)
+                $candidates.Add($x86)
+                $candidates.Add($arm64)
+            }
+    }
 
     foreach ($candidate in $candidates) {
         if (Test-Path $candidate) {
