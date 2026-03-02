@@ -1,6 +1,10 @@
-name: Package Windows (Manual)
+name: Package Windows
 
 on:
+  push:
+    branches:
+      - main
+      - master
   workflow_dispatch:
     inputs:
       build_installer:
@@ -25,6 +29,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Resolve package version
+        id: meta
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $version = "${{ inputs.version }}".Trim()
+            if ([string]::IsNullOrWhiteSpace($version)) { $version = "0.1.0" }
+          } else {
+            $version = "0.0.${{ github.run_number }}"
+          }
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
       - name: Setup .NET 9
         uses: actions/setup-dotnet@v4
         with:
@@ -42,7 +58,7 @@ jobs:
       - name: Publish Windows package
         shell: pwsh
         run: |
-          ./scripts/publish-windows.ps1 -Configuration Release -SkipTests -OutputRoot dist/win-x64 -Version "${{ inputs.version }}"
+          ./scripts/publish-windows.ps1 -Configuration Release -SkipTests -OutputRoot dist/win-x64 -Version "${{ steps.meta.outputs.version }}"
 
       - name: Upload portable artifact
         uses: actions/upload-artifact@v4
@@ -52,18 +68,18 @@ jobs:
           if-no-files-found: error
 
       - name: Install Inno Setup
-        if: ${{ inputs.build_installer == true }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_installer == true }}
         shell: pwsh
         run: choco install innosetup --no-progress -y
 
       - name: Build installer
-        if: ${{ inputs.build_installer == true }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_installer == true }}
         shell: pwsh
         run: |
-          ./scripts/build-installer.ps1 -SkipPublish -Version "${{ inputs.version }}"
+          ./scripts/build-installer.ps1 -SkipPublish -Version "${{ steps.meta.outputs.version }}"
 
       - name: Upload installer artifact
-        if: ${{ inputs.build_installer == true }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_installer == true }}
         uses: actions/upload-artifact@v4
         with:
           name: desktop-agent-installer
