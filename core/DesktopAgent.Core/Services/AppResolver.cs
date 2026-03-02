@@ -179,7 +179,7 @@ public sealed class AppResolver : IAppResolver
     private static double ScoreMatch(string normalizedQuery, AppEntry entry)
     {
         var nameScore = ScoreMatch(normalizedQuery, entry.Name);
-        var pathScore = ScoreMatch(normalizedQuery, Path.GetFileNameWithoutExtension(entry.Path));
+        var pathScore = ScoreMatch(normalizedQuery, GetFileNameWithoutExtensionCrossPlatform(entry.Path));
         return Math.Max(nameScore, pathScore);
     }
 
@@ -245,7 +245,7 @@ public sealed class AppResolver : IAppResolver
         }
 
         var nameTokens = Tokenize(Normalize(entry.Name));
-        var pathTokens = Tokenize(Normalize(Path.GetFileNameWithoutExtension(entry.Path)));
+        var pathTokens = Tokenize(Normalize(GetFileNameWithoutExtensionCrossPlatform(entry.Path)));
         var candidateTokens = nameTokens.Count >= pathTokens.Count ? nameTokens : pathTokens;
         if (candidateTokens.Count == 0)
         {
@@ -273,7 +273,7 @@ public sealed class AppResolver : IAppResolver
         var apps = _catalog.GetAll();
 
         var exactExecutable = apps.FirstOrDefault(entry =>
-            string.Equals(Path.GetFileName(entry.Path), expectedFileName, StringComparison.OrdinalIgnoreCase));
+            string.Equals(GetFileNameCrossPlatform(entry.Path), expectedFileName, StringComparison.OrdinalIgnoreCase));
         if (exactExecutable != null)
         {
             executablePath = exactExecutable.Path;
@@ -282,7 +282,7 @@ public sealed class AppResolver : IAppResolver
 
         var normalizedExecutable = Normalize(Path.GetFileNameWithoutExtension(expectedFileName));
         var exactByName = apps.FirstOrDefault(entry =>
-            string.Equals(Normalize(Path.GetFileNameWithoutExtension(entry.Path)), normalizedExecutable, StringComparison.OrdinalIgnoreCase));
+            string.Equals(Normalize(GetFileNameWithoutExtensionCrossPlatform(entry.Path)), normalizedExecutable, StringComparison.OrdinalIgnoreCase));
         if (exactByName != null)
         {
             executablePath = exactByName.Path;
@@ -414,5 +414,22 @@ public sealed class AppResolver : IAppResolver
             || input.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase)
             || input.EndsWith(".appref-ms", StringComparison.OrdinalIgnoreCase)
             || input.EndsWith(".app", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string GetFileNameCrossPlatform(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return string.Empty;
+        }
+
+        var normalized = path.Replace('\\', '/');
+        return Path.GetFileName(normalized);
+    }
+
+    private static string GetFileNameWithoutExtensionCrossPlatform(string path)
+    {
+        var fileName = GetFileNameCrossPlatform(path);
+        return Path.GetFileNameWithoutExtension(fileName);
     }
 }
