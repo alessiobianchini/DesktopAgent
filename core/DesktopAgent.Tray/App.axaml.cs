@@ -17,6 +17,7 @@ public partial class App : Application
 {
     private readonly CancellationTokenSource _shutdown = new();
     private TraySettings _settings = new();
+    private Process? _managedAdapterProcess;
     private ILoggerFactory? _loggerFactory;
     private DesktopGrpcClient? _client;
     private WebApiClient? _webApiClient;
@@ -59,6 +60,7 @@ public partial class App : Application
     public override void OnFrameworkInitializationCompleted()
     {
         _settings = LoadSettings();
+        EnsureBackendProcesses();
         _loggerFactory = LoggerFactory.Create(logging =>
         {
             logging.SetMinimumLevel(LogLevel.Information);
@@ -69,8 +71,9 @@ public partial class App : Application
             _settings.AdapterEndpoint,
             _loggerFactory.CreateLogger<DesktopGrpcClient>());
         _webApiClient = new WebApiClient(
-            _settings.WebUiUrl,
-            TimeSpan.FromSeconds(_settings.ApiTimeoutSeconds));
+            _settings.AdapterEndpoint,
+            TimeSpan.FromSeconds(_settings.ApiTimeoutSeconds),
+            _settings.AgentConfigPath);
         InitializeUpdater();
 
         ConfigureTray();
@@ -144,7 +147,7 @@ public partial class App : Application
         _openQuickChatItem = new NativeMenuItem("Open Quick Chat");
         _openQuickChatItem.Click += (_, _) => ShowQuickChat();
 
-        _openWebUiItem = new NativeMenuItem("Open Web UI");
+        _openWebUiItem = new NativeMenuItem("Open Data Folder");
         _openWebUiItem.Click += (_, _) => OpenWebUi();
 
         _checkUpdatesItem = new NativeMenuItem("Check updates now");
@@ -418,9 +421,13 @@ public partial class App : Application
     {
         try
         {
+            var dataRoot = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "DesktopAgent");
+            Directory.CreateDirectory(dataRoot);
             Process.Start(new ProcessStartInfo
             {
-                FileName = _settings.WebUiUrl,
+                FileName = dataRoot,
                 UseShellExecute = true
             });
         }
@@ -441,7 +448,7 @@ public partial class App : Application
         {
             if (_quickChatWindow == null)
             {
-                _quickChatWindow = new QuickChatWindow(_webApiClient, _settings.WebUiUrl);
+                _quickChatWindow = new QuickChatWindow(_webApiClient);
                 _quickChatWindow.Closed += (_, _) => _quickChatWindow = null;
             }
 
@@ -490,9 +497,9 @@ public partial class App : Application
             settings.AdapterEndpoint = "http://localhost:51877";
         }
 
-        if (string.IsNullOrWhiteSpace(settings.WebUiUrl))
+        if (string.IsNullOrWhiteSpace(settings.AgentConfigPath))
         {
-            settings.WebUiUrl = "http://localhost:51878";
+            settings.AgentConfigPath = "agentsettings.json";
         }
 
         settings.StatusRefreshSeconds = Math.Clamp(settings.StatusRefreshSeconds, 1, 60);
@@ -511,6 +518,207 @@ public partial class App : Application
         return value[..max] + "...";
     }
 
+    private void EnsureBackendProcesses()
+    {
+        var startedAny = false;
+        if (_settings.AutoStartAdapter && !IsTcpPortOpen(_settings.AdapterEndpoint))
+        {
+            var command = string.IsNullOrWhiteSpace(_settings.AdapterStartCommand)
+                ? BuildDefaultAdapterStartCommand()
+                : _settings.AdapterStartCommand;
+            _managedAdapterProcess = TryStartManagedProcess(command, ("DESKTOP_AGENT_PORT", ExtractPort(_settings.AdapterEndpoint)?.ToString()));
+            startedAny = _managedAdapterProcess != null;
+        }
+
+        // Tray-only mode: web backend is optional and disabled by default.
+        // If users still want the web host, they can launch it manually.
+
+        if (startedAny)
+        {
+            Thread.Sleep(800);
+        }
+    }
+
+    private static Process? TryStartManagedProcess(string command, params (string Key, string? Value)[] env)
+    {
+        if (!TryParseCommand(command, out var fileName, out var args))
+        {
+            return null;
+        }
+
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = fileName,
+                Arguments = args,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WindowStyle = ProcessWindowStyle.Hidden
+            };
+
+            foreach (var (key, value) in env)
+            {
+                if (!string.IsNullOrWhiteSpace(key) && !string.IsNullOrWhiteSpace(value))
+                {
+                    psi.Environment[key] = value;
+                }
+            }
+
+            return Process.Start(psi);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static void TryStopManagedProcess(Process? process)
+    {
+        if (process == null)
+        {
+            return;
+        }
+
+        try
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(true);
+            }
+        }
+        catch
+        {
+            // ignored
+        }
+    }
+
+    private static bool IsTcpPortOpen(string endpoint)
+    {
+        if (!Uri.TryCreate(endpoint, UriKind.Absolute, out var uri))
+        {
+            return false;
+        }
+
+        var port = ExtractPort(uri) ?? (uri.Scheme == "https" ? 443 : 80);
+        var host = string.IsNullOrWhiteSpace(uri.Host) ? "127.0.0.1" : uri.Host;
+
+        try
+        {
+            using var client = new System.Net.Sockets.TcpClient();
+            var connectTask = client.ConnectAsync(host, port);
+            var ok = connectTask.Wait(TimeSpan.FromMilliseconds(300));
+            return ok && client.Connected;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static int? ExtractPort(string endpoint)
+    {
+        if (!Uri.TryCreate(endpoint, UriKind.Absolute, out var uri))
+        {
+            return null;
+        }
+
+        return ExtractPort(uri);
+    }
+
+    private static int? ExtractPort(Uri uri)
+    {
+        return uri.IsDefaultPort ? null : uri.Port;
+    }
+
+    private static string BuildDefaultAdapterStartCommand()
+    {
+        var baseDir = AppContext.BaseDirectory;
+        if (OperatingSystem.IsWindows())
+        {
+            var path = Path.GetFullPath(Path.Combine(baseDir, "..", "adapter", "DesktopAgent.Adapter.Windows.exe"));
+            return $"\"{path}\"";
+        }
+
+        var dllPath = Path.GetFullPath(Path.Combine(baseDir, "..", "adapter", "DesktopAgent.Adapter.Windows.dll"));
+        return $"dotnet \"{dllPath}\"";
+    }
+
+    private static bool TryParseCommand(string commandLine, out string fileName, out string args)
+    {
+        fileName = string.Empty;
+        args = string.Empty;
+        if (string.IsNullOrWhiteSpace(commandLine))
+        {
+            return false;
+        }
+
+        var tokens = SplitCommandLine(commandLine);
+        if (tokens.Count == 0)
+        {
+            return false;
+        }
+
+        fileName = tokens[0];
+        if (tokens.Count > 1)
+        {
+            args = string.Join(' ', tokens.Skip(1));
+        }
+
+        return true;
+    }
+
+    private static List<string> SplitCommandLine(string commandLine)
+    {
+        var results = new List<string>();
+        var current = new System.Text.StringBuilder();
+        var inQuotes = false;
+        char quoteChar = '\0';
+
+        for (var i = 0; i < commandLine.Length; i++)
+        {
+            var ch = commandLine[i];
+            if (inQuotes)
+            {
+                if (ch == quoteChar)
+                {
+                    inQuotes = false;
+                }
+                else
+                {
+                    current.Append(ch);
+                }
+                continue;
+            }
+
+            if (ch == '"' || ch == '\'')
+            {
+                inQuotes = true;
+                quoteChar = ch;
+                continue;
+            }
+
+            if (char.IsWhiteSpace(ch))
+            {
+                if (current.Length > 0)
+                {
+                    results.Add(current.ToString());
+                    current.Clear();
+                }
+                continue;
+            }
+
+            current.Append(ch);
+        }
+
+        if (current.Length > 0)
+        {
+            results.Add(current.ToString());
+        }
+
+        return results;
+    }
+
     private void DisposeResources()
     {
         _shutdown.Cancel();
@@ -519,13 +727,14 @@ public partial class App : Application
         _client?.Dispose();
         _webApiClient?.Dispose();
         _loggerFactory?.Dispose();
+        TryStopManagedProcess(_managedAdapterProcess);
     }
 }
 
 internal sealed class TraySettings
 {
     public string AdapterEndpoint { get; set; } = "http://localhost:51877";
-    public string WebUiUrl { get; set; } = "http://localhost:51878";
+    public string AgentConfigPath { get; set; } = "agentsettings.json";
     public bool RequireUserPresenceOnArm { get; set; } = true;
     public int StatusRefreshSeconds { get; set; } = 5;
     public int ApiTimeoutSeconds { get; set; } = 600;
@@ -533,4 +742,6 @@ internal sealed class TraySettings
     public string AutoUpdateSource { get; set; } = "https://github.com/alessiobianchini/DesktopAgent/releases/latest/download";
     public int AutoUpdateCheckIntervalMinutes { get; set; } = 60;
     public bool AutoUpdateAutoApply { get; set; } = false;
+    public bool AutoStartAdapter { get; set; } = true;
+    public string AdapterStartCommand { get; set; } = "";
 }

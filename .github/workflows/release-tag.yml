@@ -68,7 +68,7 @@ jobs:
       - name: Publish portable package
         shell: pwsh
         run: |
-          ./scripts/publish-windows.ps1 -Configuration Release -SkipTests -OutputRoot dist/win-x64
+          ./scripts/publish-windows.ps1 -Configuration Release -SkipTests -OutputRoot dist/win-x64 -Version "${{ steps.meta.outputs.version }}"
 
       - name: Prepare code signing certificate
         id: codesign_cert

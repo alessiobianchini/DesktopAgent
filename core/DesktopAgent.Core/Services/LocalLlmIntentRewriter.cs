@@ -39,7 +39,8 @@ public sealed class LocalLlmIntentRewriter : ILlmIntentRewriter
             return null;
         }
 
-        if (!Uri.TryCreate(endpoint, UriKind.Absolute, out var uri) || !uri.IsLoopback)
+        if (!Uri.TryCreate(endpoint, UriKind.Absolute, out var uri)
+            || (!uri.IsLoopback && !_config.AllowNonLoopbackLlmEndpoint))
         {
             WriteAudit("llm_error", "LLM endpoint invalid", new { provider = _config.LlmFallback.Provider, model = _config.LlmFallback.Model, endpoint });
             return null;

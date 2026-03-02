@@ -14,10 +14,40 @@
 python adapters/linux/DesktopAgent.Adapter.Linux/server.py
 ```
 
+## Run Tray (recommended)
+In a second terminal:
+```
+DESKTOP_AGENT_TRAY_ADAPTERENDPOINT=http://localhost:51877 \
+DESKTOP_AGENT_TRAY_AGENTCONFIGPATH=core/DesktopAgent.Cli/appsettings.json \
+DESKTOP_AGENT_TRAY_AUTOSTARTWEB=false \
+dotnet run --project core/DesktopAgent.Tray/DesktopAgent.Tray.csproj
+```
+
+## Start Everything (Linux)
+```
+bash scripts/start-linux.sh
+```
+
+Stop:
+```
+bash scripts/stop-linux.sh
+```
+
 ## Run CLI
 ```
 dotnet run --project core/DesktopAgent.Cli/DesktopAgent.Cli.csproj -- status
 ```
+
+## Publish Portable (Linux)
+```
+bash scripts/publish-linux.sh
+```
+
+Output:
+- `dist/linux-x64/adapter`
+- `dist/linux-x64/tray`
+- `dist/linux-x64/start-desktopagent.sh`
+- `dist/linux-x64/stop-desktopagent.sh`
 
 ## Wayland Notes
 - Wayland restricts global input injection. Expect limited automation.

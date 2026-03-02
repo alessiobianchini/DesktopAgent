@@ -3,6 +3,7 @@
     <OutputType>WinExe</OutputType>
     <AssemblyName>DesktopAgent.Tray</AssemblyName>
     <RootNamespace>DesktopAgent.Tray</RootNamespace>
+    <ApplicationIcon>Assets\DesktopAgent.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>

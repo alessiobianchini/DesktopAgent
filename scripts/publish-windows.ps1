@@ -2,6 +2,7 @@ param(
     [string]$Configuration = "Release",
     [string]$Runtime = "win-x64",
     [string]$OutputRoot = "dist/win-x64",
+    [string]$Version = "0.1.0",
     [switch]$NoSingleFile,
     [switch]$FrameworkDependent,
     [switch]$SkipTests
@@ -37,10 +38,25 @@ function Write-TextFile {
     Set-Content -Path $Path -Value $Text -Encoding UTF8
 }
 
+function Resolve-AssemblyVersion {
+    param([string]$VersionLabel)
+
+    $normalized = $VersionLabel.Trim().TrimStart('v', 'V')
+    $match = [regex]::Match($normalized, '^(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)(?:\.(?<rev>\d+))?')
+    if (-not $match.Success) {
+        return "1.0.0.0"
+    }
+
+    $major = $match.Groups["major"].Value
+    $minor = $match.Groups["minor"].Value
+    $patch = $match.Groups["patch"].Value
+    $rev = if ($match.Groups["rev"].Success) { $match.Groups["rev"].Value } else { "0" }
+    return "$major.$minor.$patch.$rev"
+}
+
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $output = Join-Path $repoRoot $OutputRoot
 $adapterOut = Join-Path $output "adapter"
-$webOut = Join-Path $output "web"
 $trayOut = Join-Path $output "tray"
 
 if (-not $SkipTests) {
@@ -52,45 +68,49 @@ if (Test-Path $output) {
 }
 
 New-Item -ItemType Directory -Path $adapterOut -Force | Out-Null
-New-Item -ItemType Directory -Path $webOut -Force | Out-Null
 New-Item -ItemType Directory -Path $trayOut -Force | Out-Null
 
 $singleFile = if ($NoSingleFile) { "false" } else { "true" }
 $selfContained = if ($FrameworkDependent) { "false" } else { "true" }
+$normalizedVersion = $Version.Trim().TrimStart('v', 'V')
+if ([string]::IsNullOrWhiteSpace($normalizedVersion)) {
+    $normalizedVersion = "0.1.0"
+}
+$assemblyVersion = Resolve-AssemblyVersion -VersionLabel $normalizedVersion
 
 $commonPublishArgs = @(
     "-c", $Configuration,
     "-r", $Runtime,
     "--self-contained", $selfContained,
-    "-p:PublishSingleFile=$singleFile"
+    "-p:PublishSingleFile=$singleFile",
+    "-p:Version=$normalizedVersion",
+    "-p:InformationalVersion=$normalizedVersion",
+    "-p:AssemblyVersion=$assemblyVersion",
+    "-p:FileVersion=$assemblyVersion"
 )
 
 $adapterPublishArgs = @("publish", "adapters/windows/DesktopAgent.Adapter.Windows/DesktopAgent.Adapter.Windows.csproj") + $commonPublishArgs + @("-o", $adapterOut)
-$webPublishArgs = @("publish", "core/DesktopAgent.Web/DesktopAgent.Web.csproj") + $commonPublishArgs + @("-o", $webOut)
 $trayPublishArgs = @("publish", "core/DesktopAgent.Tray/DesktopAgent.Tray.csproj") + $commonPublishArgs + @("-o", $trayOut)
 
 Invoke-Checked -FileName "dotnet" -Arguments $adapterPublishArgs -WorkingDirectory $repoRoot
-Invoke-Checked -FileName "dotnet" -Arguments $webPublishArgs -WorkingDirectory $repoRoot
 Invoke-Checked -FileName "dotnet" -Arguments $trayPublishArgs -WorkingDirectory $repoRoot
 
-Copy-Item -Path (Join-Path $repoRoot "core/DesktopAgent.Web/appsettings.json") -Destination (Join-Path $webOut "appsettings.json") -Force
 Copy-Item -Path (Join-Path $repoRoot "core/DesktopAgent.Tray/appsettings.json") -Destination (Join-Path $trayOut "appsettings.json") -Force
+Copy-Item -Path (Join-Path $repoRoot "core/DesktopAgent.Cli/appsettings.json") -Destination (Join-Path $trayOut "agentsettings.json") -Force
 
 $startScript = @'
 param(
     [int]$AdapterPort = 51877,
-    [int]$WebPort = 51878,
     [switch]$NoTray,
-    [switch]$ShowConsoles,
-    [switch]$NoBrowser
+    [switch]$ShowConsoles
 )
 
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $adapterExe = Join-Path $root "adapter\DesktopAgent.Adapter.Windows.exe"
-$webExe = Join-Path $root "web\DesktopAgent.Web.exe"
 $trayExe = Join-Path $root "tray\DesktopAgent.Tray.exe"
+$trayAgentConfig = Join-Path $root "tray\agentsettings.json"
 $pidFile = Join-Path $root ".desktopagent.pids.json"
 
 function Test-PortOpen {
@@ -142,20 +162,12 @@ if (-not (Test-PortOpen -Port $AdapterPort)) {
     Write-Host "Adapter already listening on port $AdapterPort"
 }
 
-if (-not (Test-PortOpen -Port $WebPort)) {
-    $env:ASPNETCORE_URLS = "http://localhost:$WebPort"
-    $env:DESKTOP_AGENT_ADAPTERENDPOINT = "http://localhost:$AdapterPort"
-    $web = Start-AgentProcess -Name "Web" -FilePath $webExe -WorkingDirectory (Split-Path -Parent $webExe) -HideWindow
-    $pids.Web = $web.Id
-} else {
-    Write-Host "Web already listening on port $WebPort"
-}
-
 if (-not $NoTray) {
     $runningTray = Get-Process -Name "DesktopAgent.Tray" -ErrorAction SilentlyContinue
     if (-not $runningTray) {
         $env:DESKTOP_AGENT_TRAY_ADAPTERENDPOINT = "http://localhost:$AdapterPort"
-        $env:DESKTOP_AGENT_TRAY_WEBUIURL = "http://localhost:$WebPort"
+        $env:DESKTOP_AGENT_TRAY_AGENTCONFIGPATH = $trayAgentConfig
+        $env:DESKTOP_AGENT_TRAY_AUTOSTARTWEB = "false"
         $tray = Start-AgentProcess -Name "Tray" -FilePath $trayExe -WorkingDirectory (Split-Path -Parent $trayExe)
         $pids.Tray = $tray.Id
     } else {
@@ -166,11 +178,7 @@ if (-not $NoTray) {
 $json = $pids | ConvertTo-Json
 Set-Content -Path $pidFile -Value $json -Encoding UTF8
 
-if (-not $NoBrowser) {
-    Start-Process "http://localhost:$WebPort" | Out-Null
-}
-
-Write-Host "DesktopAgent started."
+Write-Host "DesktopAgent started (tray-only mode)."
 '@
 
 $stopScript = @'
@@ -195,7 +203,7 @@ if (Test-Path $pidFile) {
     Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
 }
 
-Get-Process -Name "DesktopAgent.Adapter.Windows","DesktopAgent.Web","DesktopAgent.Tray" -ErrorAction SilentlyContinue |
+Get-Process -Name "DesktopAgent.Adapter.Windows","DesktopAgent.Tray" -ErrorAction SilentlyContinue |
     Stop-Process -Force -ErrorAction SilentlyContinue
 
 Write-Host "DesktopAgent stopped."

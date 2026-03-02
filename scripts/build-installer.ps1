@@ -40,7 +40,8 @@ if (-not $SkipPublish) {
         "-File", $publishScript,
         "-Configuration", $Configuration,
         "-Runtime", $Runtime,
-        "-OutputRoot", $DistRoot
+        "-OutputRoot", $DistRoot,
+        "-Version", $Version
     ) -WorkingDirectory $repoRoot
 }
 

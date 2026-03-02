@@ -42,11 +42,10 @@ Name: "startonfinish"; Description: "Start DesktopAgent after setup"; GroupDescr
 Source: "{#DistDir}\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
 
 [Icons]
-Name: "{autoprograms}\DesktopAgent\Start DesktopAgent"; Filename: "{app}\start-desktopagent.cmd"
-Name: "{autoprograms}\DesktopAgent\Stop DesktopAgent"; Filename: "{app}\stop-desktopagent.cmd"
+Name: "{autoprograms}\DesktopAgent\Start DesktopAgent"; Filename: "{app}\start-desktopagent.cmd"; IconFilename: "{app}\tray\DesktopAgent.Tray.exe"
+Name: "{autoprograms}\DesktopAgent\Stop DesktopAgent"; Filename: "{app}\stop-desktopagent.cmd"; IconFilename: "{app}\tray\DesktopAgent.Tray.exe"
 Name: "{autoprograms}\DesktopAgent\DesktopAgent Tray"; Filename: "{app}\tray\DesktopAgent.Tray.exe"
-Name: "{autoprograms}\DesktopAgent\DesktopAgent Web UI"; Filename: "{cmd}"; Parameters: "/C start http://localhost:5000"
-Name: "{autodesktop}\DesktopAgent"; Filename: "{app}\start-desktopagent.cmd"; Tasks: desktopicon
+Name: "{autodesktop}\DesktopAgent"; Filename: "{app}\start-desktopagent.cmd"; IconFilename: "{app}\tray\DesktopAgent.Tray.exe"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\start-desktopagent.cmd"; Description: "Start DesktopAgent"; Flags: postinstall nowait skipifsilent; Tasks: startonfinish

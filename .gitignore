@@ -13,7 +13,9 @@ dist/
 *.log
 *.tmp
 *.pid
+*.pids
 *.stackdump
+.desktopagent*.pids
 audit.log.jsonl
 **/audit.log.jsonl
 

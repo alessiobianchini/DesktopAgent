@@ -21,23 +21,23 @@ dotnet run --project core/DesktopAgent.Cli/DesktopAgent.Cli.csproj -- status
 ```
 
 ## Start Everything (Windows)
-Launch Adapter + Web UI + Tray icon with one command:
+Launch Adapter + Tray icon with one command (tray-only mode):
 ```
 powershell -ExecutionPolicy Bypass -File scripts/start-windows.ps1
 ```
 
 Useful options:
 ```
-# Build first, then start Adapter + Web
+# Build first, then start Adapter + Tray
 powershell -ExecutionPolicy Bypass -File scripts/start-windows.ps1 -Build
 
 # Disable Tray app
 powershell -ExecutionPolicy Bypass -File scripts/start-windows.ps1 -NoTray
 
-# Custom ports
-powershell -ExecutionPolicy Bypass -File scripts/start-windows.ps1 -AdapterPort 51877 -WebPort 51878
+# Custom adapter port
+powershell -ExecutionPolicy Bypass -File scripts/start-windows.ps1 -AdapterPort 51877
 
-# Show adapter/web consoles (disabled by default)
+# Show adapter/tray consoles (disabled by default)
 powershell -ExecutionPolicy Bypass -File scripts/start-windows.ps1 -ShowConsoles
 ```
 
@@ -53,7 +53,6 @@ powershell -ExecutionPolicy Bypass -File scripts/publish-windows.ps1
 
 Output:
 - `dist/win-x64/adapter`
-- `dist/win-x64/web`
 - `dist/win-x64/tray`
 - `dist/win-x64/start-desktopagent.cmd`
 - `dist/win-x64/stop-desktopagent.cmd`

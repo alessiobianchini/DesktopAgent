@@ -1,46 +1,31 @@
-using System.Net.Http;
-using System.Text;
-using System.Text.Json;
-using System.Text.Json.Serialization;
-
 namespace DesktopAgent.Tray;
 
 internal sealed class WebApiClient : IDisposable
 {
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        PropertyNameCaseInsensitive = true,
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
-    };
+    private readonly TrayLocalAgent _agent;
 
-    private readonly HttpClient _httpClient;
-
-    public WebApiClient(string webUiUrl, TimeSpan timeout)
+    public WebApiClient(string adapterEndpoint, TimeSpan timeout, string? configPath = null)
     {
-        var baseUri = webUiUrl.Trim().TrimEnd('/');
-        _httpClient = new HttpClient
-        {
-            BaseAddress = new Uri($"{baseUri}/"),
-            Timeout = timeout
-        };
+        _agent = new TrayLocalAgent(adapterEndpoint, timeout, configPath);
     }
 
-    public async Task<WebChatResponse> SendChatAsync(string message, CancellationToken cancellationToken)
-    {
-        var payload = new { message };
-        return await PostChatLikeAsync("api/chat", payload, cancellationToken);
-    }
-
-    public async Task<WebChatResponse> ConfirmAsync(string token, bool approve, CancellationToken cancellationToken)
-    {
-        var payload = new { token, approve };
-        return await PostChatLikeAsync("api/confirm", payload, cancellationToken);
-    }
-
-    public async Task<WebStatusResponse?> GetStatusAsync(CancellationToken cancellationToken)
-    {
-        return await GetJsonAsync<WebStatusResponse>("api/status", cancellationToken);
-    }
+    public Task<WebChatResponse> SendChatAsync(string message, CancellationToken cancellationToken) => _agent.SendChatAsync(message, cancellationToken);
+    public Task<WebChatResponse> ConfirmAsync(string token, bool approve, CancellationToken cancellationToken) => _agent.ConfirmAsync(token, approve, cancellationToken);
+    public Task<WebStatusResponse?> GetStatusAsync(CancellationToken cancellationToken) => _agent.GetStatusAsync(cancellationToken);
+    public Task<WebConfigResponse?> GetConfigAsync(CancellationToken cancellationToken) => _agent.GetConfigAsync(cancellationToken);
+    public Task<WebConfigResponse?> SaveConfigAsync(WebConfigUpdate payload, CancellationToken cancellationToken) => _agent.SaveConfigAsync(payload, cancellationToken);
+    public Task<WebTasksResponse?> GetTasksAsync(CancellationToken cancellationToken) => _agent.GetTasksAsync(cancellationToken);
+    public Task<WebApiSimpleResponse?> SaveTaskAsync(WebTaskUpsertRequest payload, CancellationToken cancellationToken) => _agent.SaveTaskAsync(payload, cancellationToken);
+    public Task<WebApiSimpleResponse?> DeleteTaskAsync(string name, CancellationToken cancellationToken) => _agent.DeleteTaskAsync(name, cancellationToken);
+    public Task<WebIntentResponse?> RunTaskAsync(string name, bool dryRun, CancellationToken cancellationToken) => _agent.RunTaskAsync(name, dryRun, cancellationToken);
+    public Task<WebSchedulesResponse?> GetSchedulesAsync(CancellationToken cancellationToken) => _agent.GetSchedulesAsync(cancellationToken);
+    public Task<WebScheduleSaveResponse?> SaveScheduleAsync(WebScheduleUpsertRequest payload, CancellationToken cancellationToken) => _agent.SaveScheduleAsync(payload, cancellationToken);
+    public Task<WebApiSimpleResponse?> DeleteScheduleAsync(string id, CancellationToken cancellationToken) => _agent.DeleteScheduleAsync(id, cancellationToken);
+    public Task<WebApiSimpleResponse?> RunScheduleNowAsync(string id, CancellationToken cancellationToken) => _agent.RunScheduleNowAsync(id, cancellationToken);
+    public Task<WebAuditResponse?> GetAuditAsync(int take, CancellationToken cancellationToken) => _agent.GetAuditAsync(take, cancellationToken);
+    public Task<WebApiSimpleResponse?> RestartServerAsync(CancellationToken cancellationToken) => _agent.RestartServerAsync(cancellationToken);
+    public Task<WebApiSimpleResponse?> RestartAdapterAsync(CancellationToken cancellationToken) => _agent.RestartAdapterAsync(cancellationToken);
+    public Task<WebIntentResponse?> ExecuteIntentAsync(string intent, bool dryRun, CancellationToken cancellationToken) => _agent.ExecuteIntentAsync(intent, dryRun, cancellationToken);
 
     public async Task<string> GetStatusLineAsync(CancellationToken cancellationToken)
     {
@@ -59,206 +44,7 @@ internal sealed class WebApiClient : IDisposable
         return $"{armedLabel} | {presenceLabel} | {llmLabel} | {versionLabel}";
     }
 
-    public async Task<WebConfigResponse?> GetConfigAsync(CancellationToken cancellationToken)
-    {
-        return await GetJsonAsync<WebConfigResponse>("api/config", cancellationToken);
-    }
-
-    public async Task<WebConfigResponse?> SaveConfigAsync(WebConfigUpdate payload, CancellationToken cancellationToken)
-    {
-        return await PostJsonAsync<WebConfigUpdate, WebConfigResponse>("api/config", payload, cancellationToken);
-    }
-
-    public async Task<WebTasksResponse?> GetTasksAsync(CancellationToken cancellationToken)
-    {
-        return await GetJsonAsync<WebTasksResponse>("api/tasks", cancellationToken);
-    }
-
-    public async Task<WebApiSimpleResponse?> SaveTaskAsync(WebTaskUpsertRequest payload, CancellationToken cancellationToken)
-    {
-        return await PostJsonAsync<WebTaskUpsertRequest, WebApiSimpleResponse>("api/tasks", payload, cancellationToken);
-    }
-
-    public async Task<WebApiSimpleResponse?> DeleteTaskAsync(string name, CancellationToken cancellationToken)
-    {
-        using var response = await _httpClient.DeleteAsync($"api/tasks/{Uri.EscapeDataString(name)}", cancellationToken);
-        return await ParseApiResponseAsync<WebApiSimpleResponse>(response, cancellationToken);
-    }
-
-    public async Task<WebIntentResponse?> RunTaskAsync(string name, bool dryRun, CancellationToken cancellationToken)
-    {
-        return await PostJsonAsync<object, WebIntentResponse>(
-            $"api/tasks/{Uri.EscapeDataString(name)}/run",
-            new { dryRun },
-            cancellationToken);
-    }
-
-    public async Task<WebSchedulesResponse?> GetSchedulesAsync(CancellationToken cancellationToken)
-    {
-        return await GetJsonAsync<WebSchedulesResponse>("api/schedules", cancellationToken);
-    }
-
-    public async Task<WebScheduleSaveResponse?> SaveScheduleAsync(WebScheduleUpsertRequest payload, CancellationToken cancellationToken)
-    {
-        return await PostJsonAsync<WebScheduleUpsertRequest, WebScheduleSaveResponse>("api/schedules", payload, cancellationToken);
-    }
-
-    public async Task<WebApiSimpleResponse?> DeleteScheduleAsync(string id, CancellationToken cancellationToken)
-    {
-        using var response = await _httpClient.DeleteAsync($"api/schedules/{Uri.EscapeDataString(id)}", cancellationToken);
-        return await ParseApiResponseAsync<WebApiSimpleResponse>(response, cancellationToken);
-    }
-
-    public async Task<WebApiSimpleResponse?> RunScheduleNowAsync(string id, CancellationToken cancellationToken)
-    {
-        return await PostJsonAsync<object, WebApiSimpleResponse>(
-            $"api/schedules/{Uri.EscapeDataString(id)}/run",
-            new { },
-            cancellationToken);
-    }
-
-    public async Task<WebAuditResponse?> GetAuditAsync(int take, CancellationToken cancellationToken)
-    {
-        return await GetJsonAsync<WebAuditResponse>($"api/audit?take={take}", cancellationToken);
-    }
-
-    public async Task<WebApiSimpleResponse?> RestartServerAsync(CancellationToken cancellationToken)
-    {
-        return await PostJsonAsync<object, WebApiSimpleResponse>("api/restart", new { }, cancellationToken);
-    }
-
-    public async Task<WebApiSimpleResponse?> RestartAdapterAsync(CancellationToken cancellationToken)
-    {
-        return await PostJsonAsync<object, WebApiSimpleResponse>("api/adapter/restart", new { }, cancellationToken);
-    }
-
-    public async Task<WebIntentResponse?> ExecuteIntentAsync(string intent, bool dryRun, CancellationToken cancellationToken)
-    {
-        return await PostJsonAsync<object, WebIntentResponse>("api/intent", new { intent, dryRun }, cancellationToken);
-    }
-
-    public void Dispose()
-    {
-        _httpClient.Dispose();
-    }
-
-    private async Task<WebChatResponse> PostChatLikeAsync(string path, object payload, CancellationToken cancellationToken)
-    {
-        using var response = await PostRawJsonAsync(path, payload, cancellationToken);
-        if (!response.IsSuccessStatusCode)
-        {
-            var error = await BuildErrorAsync(response, cancellationToken);
-            return WebChatResponse.Error(error);
-        }
-
-        var parsed = await DeserializeResponseAsync<WebChatResponse>(response, cancellationToken);
-        return parsed ?? WebChatResponse.Error("Empty response body.");
-    }
-
-    private async Task<T?> GetJsonAsync<T>(string path, CancellationToken cancellationToken)
-    {
-        using var response = await _httpClient.GetAsync(path, cancellationToken);
-        if (!response.IsSuccessStatusCode)
-        {
-            return default;
-        }
-
-        return await DeserializeResponseAsync<T>(response, cancellationToken);
-    }
-
-    private async Task<TResponse?> PostJsonAsync<TRequest, TResponse>(string path, TRequest payload, CancellationToken cancellationToken)
-    {
-        using var response = await PostRawJsonAsync(path, payload, cancellationToken);
-        return await ParseApiResponseAsync<TResponse>(response, cancellationToken);
-    }
-
-    private async Task<TResponse?> ParseApiResponseAsync<TResponse>(HttpResponseMessage response, CancellationToken cancellationToken)
-    {
-        if (!response.IsSuccessStatusCode)
-        {
-            var message = await BuildErrorAsync(response, cancellationToken);
-            if (typeof(TResponse) == typeof(WebApiSimpleResponse))
-            {
-                return (TResponse?)(object)new WebApiSimpleResponse(message, false);
-            }
-
-            if (typeof(TResponse) == typeof(WebChatResponse))
-            {
-                return (TResponse?)(object)WebChatResponse.Error(message);
-            }
-
-            return default;
-        }
-
-        return await DeserializeResponseAsync<TResponse>(response, cancellationToken);
-    }
-
-    private async Task<HttpResponseMessage> PostRawJsonAsync<TRequest>(string path, TRequest payload, CancellationToken cancellationToken)
-    {
-        var content = new StringContent(
-            JsonSerializer.Serialize(payload, JsonOptions),
-            Encoding.UTF8,
-            "application/json");
-
-        return await _httpClient.PostAsync(path, content, cancellationToken);
-    }
-
-    private static async Task<T?> DeserializeResponseAsync<T>(HttpResponseMessage response, CancellationToken cancellationToken)
-    {
-        var body = await response.Content.ReadAsStringAsync(cancellationToken);
-        if (string.IsNullOrWhiteSpace(body))
-        {
-            return default;
-        }
-
-        try
-        {
-            return JsonSerializer.Deserialize<T>(body, JsonOptions);
-        }
-        catch
-        {
-            return default;
-        }
-    }
-
-    private static async Task<string> BuildErrorAsync(HttpResponseMessage response, CancellationToken cancellationToken)
-    {
-        var body = await response.Content.ReadAsStringAsync(cancellationToken);
-        if (string.IsNullOrWhiteSpace(body))
-        {
-            return $"HTTP {(int)response.StatusCode}";
-        }
-
-        try
-        {
-            using var json = JsonDocument.Parse(body);
-            if (json.RootElement.TryGetProperty("message", out var messageElement))
-            {
-                var message = messageElement.GetString();
-                if (!string.IsNullOrWhiteSpace(message))
-                {
-                    return message!;
-                }
-            }
-        }
-        catch
-        {
-            // ignored
-        }
-
-        return $"HTTP {(int)response.StatusCode}: {Compact(body)}";
-    }
-
-    private static string Compact(string text)
-    {
-        const int maxChars = 250;
-        if (text.Length <= maxChars)
-        {
-            return text;
-        }
-
-        return text[..maxChars] + "...";
-    }
+    public void Dispose() => _agent.Dispose();
 }
 
 internal sealed record WebChatResponse(
@@ -271,9 +57,19 @@ internal sealed record WebChatResponse(
     string? ModeLabel)
 {
     public static WebChatResponse Error(string message)
-    {
-        return new WebChatResponse(message, false, null, null, null, null, null);
-    }
+        => new(message, false, null, null, null, null, null);
+
+    public static WebChatResponse Simple(string message)
+        => new(message, false, null, null, null, null, null);
+
+    public static WebChatResponse WithSteps(string message, IReadOnlyList<string>? steps, string? planJson, string? modeLabel)
+        => new(message, false, null, null, steps, planJson, modeLabel);
+
+    public static WebChatResponse Confirm(string message, string token)
+        => new(message, true, token, "Confirm", null, null, null);
+
+    public static WebChatResponse ConfirmWithSteps(string message, string token, IReadOnlyList<string>? steps, string? planJson, string? modeLabel)
+        => new(message, true, token, "Confirm", steps, planJson, modeLabel);
 }
 
 internal sealed record WebApiSimpleResponse(string? Message = null, bool? Success = null);

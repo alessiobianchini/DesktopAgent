@@ -11,7 +11,6 @@ namespace DesktopAgent.Tray;
 internal partial class QuickChatWindow : Window
 {
     private readonly WebApiClient _apiClient;
-    private readonly string _webUiUrl;
     private readonly Queue<string> _historyLines = new();
     private readonly CancellationTokenSource _pollingCts = new();
     private readonly List<WebTaskItem> _taskItems = new();
@@ -89,10 +88,9 @@ internal partial class QuickChatWindow : Window
     private bool _busy;
     private string _lastStatusLine = string.Empty;
 
-    public QuickChatWindow(WebApiClient apiClient, string webUiUrl)
+    public QuickChatWindow(WebApiClient apiClient)
     {
         _apiClient = apiClient;
-        _webUiUrl = webUiUrl;
         InitializeComponent();
         WireControls();
     }
@@ -1063,9 +1061,13 @@ internal partial class QuickChatWindow : Window
     {
         try
         {
+            var dataRoot = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "DesktopAgent");
+            Directory.CreateDirectory(dataRoot);
             Process.Start(new ProcessStartInfo
             {
-                FileName = _webUiUrl,
+                FileName = dataRoot,
                 UseShellExecute = true
             });
         }
