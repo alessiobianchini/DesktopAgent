@@ -42,13 +42,13 @@ Name: "startonfinish"; Description: "Start DesktopAgent after setup"; GroupDescr
 Source: "{#DistDir}\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
 
 [Icons]
-Name: "{autoprograms}\DesktopAgent\Start DesktopAgent"; Filename: "{app}\start-desktopagent.cmd"; IconFilename: "{app}\tray\DesktopAgent.Tray.exe"
+Name: "{autoprograms}\DesktopAgent\Start DesktopAgent"; Filename: "{app}\start-desktopagent-hidden.vbs"; IconFilename: "{app}\tray\DesktopAgent.Tray.exe"
 Name: "{autoprograms}\DesktopAgent\Stop DesktopAgent"; Filename: "{app}\stop-desktopagent.cmd"; IconFilename: "{app}\tray\DesktopAgent.Tray.exe"
 Name: "{autoprograms}\DesktopAgent\DesktopAgent Tray"; Filename: "{app}\tray\DesktopAgent.Tray.exe"
-Name: "{autodesktop}\DesktopAgent"; Filename: "{app}\start-desktopagent.cmd"; IconFilename: "{app}\tray\DesktopAgent.Tray.exe"; Tasks: desktopicon
+Name: "{autodesktop}\DesktopAgent"; Filename: "{app}\start-desktopagent-hidden.vbs"; IconFilename: "{app}\tray\DesktopAgent.Tray.exe"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\start-desktopagent.cmd"; Description: "Start DesktopAgent"; Flags: postinstall nowait skipifsilent; Tasks: startonfinish
+Filename: "{app}\start-desktopagent-hidden.vbs"; Description: "Start DesktopAgent"; Flags: postinstall nowait skipifsilent; Tasks: startonfinish
 
 [UninstallRun]
 Filename: "{app}\stop-desktopagent.cmd"; Flags: runhidden

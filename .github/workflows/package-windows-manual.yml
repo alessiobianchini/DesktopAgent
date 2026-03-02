@@ -1,20 +1,15 @@
-name: CI + Windows Package
+name: Package Windows (Manual)
 
 on:
-  push:
-    branches:
-      - main
-      - master
-  pull_request:
   workflow_dispatch:
     inputs:
       build_installer:
         description: "Build Inno Setup installer"
         required: false
-        default: false
+        default: true
         type: boolean
       version:
-        description: "Installer version (used when build_installer=true)"
+        description: "Package/installer version"
         required: false
         default: "0.1.0"
         type: string
@@ -23,7 +18,7 @@ permissions:
   contents: read
 
 jobs:
-  build-test-publish:
+  package-windows:
     runs-on: windows-latest
 
     steps:
@@ -47,7 +42,7 @@ jobs:
       - name: Publish Windows package
         shell: pwsh
         run: |
-          ./scripts/publish-windows.ps1 -Configuration Release -SkipTests -OutputRoot dist/win-x64
+          ./scripts/publish-windows.ps1 -Configuration Release -SkipTests -OutputRoot dist/win-x64 -Version "${{ inputs.version }}"
 
       - name: Upload portable artifact
         uses: actions/upload-artifact@v4
@@ -57,19 +52,18 @@ jobs:
           if-no-files-found: error
 
       - name: Install Inno Setup
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_installer == true }}
+        if: ${{ inputs.build_installer == true }}
         shell: pwsh
-        run: |
-          choco install innosetup --no-progress -y
+        run: choco install innosetup --no-progress -y
 
       - name: Build installer
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_installer == true }}
+        if: ${{ inputs.build_installer == true }}
         shell: pwsh
         run: |
           ./scripts/build-installer.ps1 -SkipPublish -Version "${{ inputs.version }}"
 
       - name: Upload installer artifact
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_installer == true }}
+        if: ${{ inputs.build_installer == true }}
         uses: actions/upload-artifact@v4
         with:
           name: desktop-agent-installer

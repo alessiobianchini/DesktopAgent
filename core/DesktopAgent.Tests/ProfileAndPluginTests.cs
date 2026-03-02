@@ -3,6 +3,7 @@ using DesktopAgent.Core.Config;
 using DesktopAgent.Core.Models;
 using DesktopAgent.Core.Services;
 using DesktopAgent.Proto;
+using System.Runtime.InteropServices;
 using Xunit;
 
 namespace DesktopAgent.Tests;
@@ -98,20 +99,22 @@ public sealed class ProfileAndPluginTests
     public void Interpreter_ParsesBrowserToolkitIntents()
     {
         var interpreter = new RuleBasedIntentInterpreter(new StubAppResolver(), new AgentConfig());
+        var isMac = RuntimeInformation.IsOSPlatform(OSPlatform.OSX);
 
         var refreshPlan = interpreter.Interpret("refresh");
         Assert.Single(refreshPlan.Steps);
         Assert.Equal(ActionType.KeyCombo, refreshPlan.Steps[0].Type);
-        Assert.Equal(new[] { "ctrl", "r" }, refreshPlan.Steps[0].Keys);
+        Assert.Equal(isMac ? new[] { "cmd", "r" } : new[] { "ctrl", "r" }, refreshPlan.Steps[0].Keys);
 
         var backPlan = interpreter.Interpret("go back");
         Assert.Single(backPlan.Steps);
         Assert.Equal(ActionType.KeyCombo, backPlan.Steps[0].Type);
-        Assert.Equal(new[] { "alt", "left" }, backPlan.Steps[0].Keys);
+        Assert.Equal(isMac ? new[] { "cmd", "[" } : new[] { "alt", "left" }, backPlan.Steps[0].Keys);
 
         var findInPagePlan = interpreter.Interpret("find in page desktop agent");
         Assert.Equal(2, findInPagePlan.Steps.Count);
         Assert.Equal(ActionType.KeyCombo, findInPagePlan.Steps[0].Type);
+        Assert.Equal(isMac ? new[] { "cmd", "f" } : new[] { "ctrl", "f" }, findInPagePlan.Steps[0].Keys);
         Assert.Equal(ActionType.TypeText, findInPagePlan.Steps[1].Type);
         Assert.Equal("desktop agent", findInPagePlan.Steps[1].Text);
     }

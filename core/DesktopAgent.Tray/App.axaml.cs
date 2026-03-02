@@ -337,7 +337,9 @@ public partial class App : Application
         catch (Exception ex)
         {
             _updatesEnabled = false;
-            _updateStatus = $"error: {Compact(ex.Message, 36)}";
+            _updateStatus = ex.Message.Contains("VelopackLocator", StringComparison.OrdinalIgnoreCase)
+                ? "disabled (non-velopack install)"
+                : $"error: {Compact(ex.Message, 36)}";
         }
     }
 

@@ -211,10 +211,16 @@ Write-Host "DesktopAgent stopped."
 
 $startCmd = "@echo off`r`npowershell -NoProfile -ExecutionPolicy Bypass -File `"%~dp0start-desktopagent.ps1`" %*`r`n"
 $stopCmd = "@echo off`r`npowershell -NoProfile -ExecutionPolicy Bypass -File `"%~dp0stop-desktopagent.ps1`" %*`r`n"
+$startHiddenVbs = @'
+Set shell = CreateObject("WScript.Shell")
+cmd = "cmd /c """ & Replace(WScript.ScriptFullName, "start-desktopagent-hidden.vbs", "start-desktopagent.cmd") & """"
+shell.Run cmd, 0, False
+'@
 
 Write-TextFile -Path (Join-Path $output "start-desktopagent.ps1") -Text $startScript
 Write-TextFile -Path (Join-Path $output "stop-desktopagent.ps1") -Text $stopScript
 Write-TextFile -Path (Join-Path $output "start-desktopagent.cmd") -Text $startCmd
 Write-TextFile -Path (Join-Path $output "stop-desktopagent.cmd") -Text $stopCmd
+Write-TextFile -Path (Join-Path $output "start-desktopagent-hidden.vbs") -Text $startHiddenVbs
 
 Write-Host "Publish completed: $output"

@@ -55,7 +55,7 @@ internal sealed class TrayLocalAgent : IDisposable
             "DesktopAgent");
         Directory.CreateDirectory(_storageRoot);
 
-        _configPath = ResolveConfigPath(configPath);
+        _configPath = ResolveConfigPath(configPath, _storageRoot);
         _config = LoadConfig(_configPath, adapterEndpoint, _storageRoot);
         _version = ResolveAppVersion();
         _httpTimeout = TimeSpan.FromSeconds(Math.Clamp((int)Math.Ceiling(timeout.TotalSeconds), 2, 15));
@@ -1407,8 +1407,11 @@ internal sealed class TrayLocalAgent : IDisposable
         await File.WriteAllTextAsync(path, json, cancellationToken);
     }
 
-    private static string ResolveConfigPath(string? configPath)
+    private static string ResolveConfigPath(string? configPath, string storageRoot)
     {
+        Directory.CreateDirectory(storageRoot);
+        var fallbackPath = Path.Combine(storageRoot, "agentsettings.json");
+
         if (!string.IsNullOrWhiteSpace(configPath))
         {
             var candidate = configPath.Trim();
@@ -1417,12 +1420,75 @@ internal sealed class TrayLocalAgent : IDisposable
                 candidate = Path.Combine(AppContext.BaseDirectory, candidate);
             }
 
-            return Path.GetFullPath(candidate);
+            var fullPath = Path.GetFullPath(candidate);
+            if (CanWriteConfigPath(fullPath))
+            {
+                return fullPath;
+            }
+
+            TryCopyConfigFile(fullPath, fallbackPath);
+            return fallbackPath;
         }
 
-        var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DesktopAgent");
-        Directory.CreateDirectory(root);
-        return Path.Combine(root, "agentsettings.json");
+        return fallbackPath;
+    }
+
+    private static bool CanWriteConfigPath(string path)
+    {
+        try
+        {
+            var directory = Path.GetDirectoryName(path);
+            if (string.IsNullOrWhiteSpace(directory))
+            {
+                return false;
+            }
+
+            Directory.CreateDirectory(directory);
+
+            if (File.Exists(path))
+            {
+                var attributes = File.GetAttributes(path);
+                if ((attributes & FileAttributes.ReadOnly) == FileAttributes.ReadOnly)
+                {
+                    return false;
+                }
+            }
+
+            var probePath = Path.Combine(directory, $".write-probe-{Guid.NewGuid():N}.tmp");
+            using (new FileStream(probePath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1, FileOptions.DeleteOnClose))
+            {
+                // Probe successful.
+            }
+
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static void TryCopyConfigFile(string sourcePath, string destinationPath)
+    {
+        try
+        {
+            if (!File.Exists(sourcePath))
+            {
+                return;
+            }
+
+            var directory = Path.GetDirectoryName(destinationPath);
+            if (!string.IsNullOrWhiteSpace(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            File.Copy(sourcePath, destinationPath, overwrite: false);
+        }
+        catch
+        {
+            // Fallback file copy is best effort.
+        }
     }
 
     private static AgentConfig LoadConfig(string configPath, string adapterEndpoint, string storageRoot)
