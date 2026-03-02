@@ -125,3 +125,13 @@ Notes:
 - Tray menu includes:
   - `Check updates now`
   - `Apply downloaded update`
+
+Build a Windows Velopack package locally:
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/package-velopack-windows.ps1 -Version 0.5.4
+```
+Output feed folder: `dist/velopack-win-x64/releases`
+
+GitHub Actions manual packaging workflow:
+- `.github/workflows/package-windows-velopack.yml`
+- Run it with `version` (example `0.5.4`), then publish uploaded artifact files (`RELEASES`, `.nupkg`, `Setup.exe`) to your release/feed URL.

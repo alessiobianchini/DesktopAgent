@@ -638,12 +638,29 @@ public partial class App : Application
         var baseDir = AppContext.BaseDirectory;
         if (OperatingSystem.IsWindows())
         {
-            var path = Path.GetFullPath(Path.Combine(baseDir, "..", "adapter", "DesktopAgent.Adapter.Windows.exe"));
+            var path = ResolveExistingPath(
+                Path.GetFullPath(Path.Combine(baseDir, "adapter", "DesktopAgent.Adapter.Windows.exe")),
+                Path.GetFullPath(Path.Combine(baseDir, "..", "adapter", "DesktopAgent.Adapter.Windows.exe")));
             return $"\"{path}\"";
         }
 
-        var dllPath = Path.GetFullPath(Path.Combine(baseDir, "..", "adapter", "DesktopAgent.Adapter.Windows.dll"));
+        var dllPath = ResolveExistingPath(
+            Path.GetFullPath(Path.Combine(baseDir, "adapter", "DesktopAgent.Adapter.Windows.dll")),
+            Path.GetFullPath(Path.Combine(baseDir, "..", "adapter", "DesktopAgent.Adapter.Windows.dll")));
         return $"dotnet \"{dllPath}\"";
+    }
+
+    private static string ResolveExistingPath(params string[] candidates)
+    {
+        foreach (var candidate in candidates)
+        {
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        return candidates.Length > 0 ? candidates[0] : string.Empty;
     }
 
     private static bool TryParseCommand(string commandLine, out string fileName, out string args)

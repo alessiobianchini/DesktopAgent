@@ -1,0 +1,62 @@
+name: Package Windows Velopack (Manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Package version (semver, e.g. 0.5.4)"
+        required: true
+        default: "0.1.0"
+        type: string
+      pack_id:
+        description: "Velopack package id"
+        required: false
+        default: "DesktopAgent"
+        type: string
+      pack_title:
+        description: "Visible app name"
+        required: false
+        default: "DesktopAgent"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  package-windows-velopack:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 9
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        run: dotnet restore DesktopAgentSolution.sln
+
+      - name: Build
+        run: dotnet build DesktopAgentSolution.sln -c Release --no-restore
+
+      - name: Test
+        run: dotnet test core/DesktopAgent.Tests/DesktopAgent.Tests.csproj -c Release --no-build
+
+      - name: Build Velopack package
+        shell: pwsh
+        run: |
+          ./scripts/package-velopack-windows.ps1 `
+            -Configuration Release `
+            -Version "${{ inputs.version }}" `
+            -PackId "${{ inputs.pack_id }}" `
+            -PackTitle "${{ inputs.pack_title }}" `
+            -SkipTests
+
+      - name: Upload Velopack artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-agent-windows-velopack
+          path: dist/velopack-win-x64/releases/**
+          if-no-files-found: error
