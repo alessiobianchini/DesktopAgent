@@ -16,7 +16,7 @@ python adapters/linux/DesktopAgent.Adapter.Linux/server.py
 
 ## Run CLI
 ```
-dotnet run --project desktop-agent/core/DesktopAgent.Cli/DesktopAgent.Cli.csproj -- status
+dotnet run --project core/DesktopAgent.Cli/DesktopAgent.Cli.csproj -- status
 ```
 
 ## Wayland Notes

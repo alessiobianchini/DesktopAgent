@@ -211,6 +211,10 @@ public sealed class LocalLlmIntentRewriter : ILlmIntentRewriter
                "Command: move mouse for 2 minutes\n" +
                "User: apri vs code e crea nuovo file\n" +
                "Command: open vs code and create new file\n" +
+               "User: apri teams e scrivi ciao\n" +
+               "Command: open teams and then type ciao\n" +
+               "User: puoi aprire chrome e cercare meteo gubbio\n" +
+               "Command: open chrome and then search meteo gubbio on chrome\n" +
                "User: doppio clic su conferma\n" +
                "Command: double click conferma\n" +
                $"User: {input}\n" +
@@ -220,11 +224,13 @@ public sealed class LocalLlmIntentRewriter : ILlmIntentRewriter
     private static string SystemPrompt()
     {
         return "You are a typo-tolerant command normalizer for desktop automation. " +
-               "Translate user requests into a SINGLE executable command. " +
+               "Translate user requests into executable commands. " +
                "Correct obvious typos (examples: pen->open, munutes->minutes, notepadplusplus->notepad plus plus). " +
                "Use only these verbs/actions: open, find, click, double click, right click, drag <source> to <target>, type, press, save, save as <name> [in <folder>], new tab, close tab, close window, minimize window, maximize window, restore window, switch window, focus <app>, scroll up/down [n], page up, page down, home, end, wait until <text> [for <seconds>], copy, paste, undo, redo, select all, open url <url>, search <query> [on <browser>], browser back/forward/refresh/find in page, notify <text>, clipboard history, volume up/down/mute [n], brightness up/down [n], lock screen, create new file, move mouse for <duration>, jiggle mouse for <duration>. " +
+               "If there are multiple actions, output them in sequence using ' and then ' as separator. " +
+               "When app is implied, infer the most likely app token (examples: teams, chrome, edge, vscode). " +
                "Preserve numeric values and duration from user text exactly when present. " +
-               "Output only the command in English or Italian. Do not add notes, brackets, explanations, or markdown. If unsure, reply with NONE.";
+               "Output only commands in English or Italian. Do not add notes, explanations, or markdown. If unsure, reply with NONE.";
     }
 
     private static string? CleanOutput(string? raw)
@@ -235,6 +241,7 @@ public sealed class LocalLlmIntentRewriter : ILlmIntentRewriter
         }
 
         var trimmed = raw.Trim();
+        trimmed = ExtractCommandFromJson(trimmed) ?? trimmed;
         trimmed = trimmed.Trim('"', '\'');
         if (trimmed.StartsWith("command:", StringComparison.OrdinalIgnoreCase))
         {
@@ -249,11 +256,16 @@ public sealed class LocalLlmIntentRewriter : ILlmIntentRewriter
             return null;
         }
 
-        var line = trimmed.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).FirstOrDefault();
-        if (string.IsNullOrWhiteSpace(line))
+        var lines = trimmed.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(line => Regex.Replace(line, "^[\\-\\*\\d\\)\\.\\s]+", string.Empty).Trim())
+            .Where(line => !string.IsNullOrWhiteSpace(line))
+            .ToList();
+        if (lines.Count == 0)
         {
             return null;
         }
+
+        var line = string.Join(" and then ", lines);
 
         // Remove model side-notes like: open notepad+plus [in Notepad++].
         var bracketIndex = line.IndexOf('[');
@@ -262,14 +274,62 @@ public sealed class LocalLlmIntentRewriter : ILlmIntentRewriter
             line = line[..bracketIndex].Trim();
         }
 
+        line = Regex.Replace(line, "\\s*(?:;|->|=>|\\|)\\s*", " and then ", RegexOptions.IgnoreCase);
+        line = Regex.Replace(line, "\\s*,\\s*(?=(open|find|click|double click|right click|drag|type|press|save|new tab|close tab|close window|minimize|maximize|restore|switch window|focus|scroll|page up|page down|home|end|wait until|copy|paste|undo|redo|select all|open url|search|browser back|browser forward|refresh|find in page|notify|clipboard history|volume|brightness|lock screen|create new file|move mouse|jiggle mouse)\\b)", " and then ", RegexOptions.IgnoreCase);
         line = line.TrimEnd('.', ';', ':');
+        line = ExtractLikelyCommandSpan(line);
         line = Regex.Replace(line, "\\bnotepad\\+\\+\\b", "notepad plus plus", RegexOptions.IgnoreCase);
         line = Regex.Replace(line, "\\bnotepadplusplus\\b", "notepad plus plus", RegexOptions.IgnoreCase);
         line = line.Replace("notepad+plus", "notepad plus plus", StringComparison.OrdinalIgnoreCase);
         line = Regex.Replace(line, "\\bnotepad\\s+plus\\b(?!\\s+plus)", "notepad plus plus", RegexOptions.IgnoreCase);
+        line = Regex.Replace(line, "\\bms\\s*teams\\b", "teams", RegexOptions.IgnoreCase);
+        line = Regex.Replace(line, "\\bvisual\\s+studio\\s+code\\b", "vs code", RegexOptions.IgnoreCase);
         line = string.Join(' ', line.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
 
         return string.IsNullOrWhiteSpace(line) ? null : line;
+    }
+
+    private static string? ExtractCommandFromJson(string text)
+    {
+        var value = text.Trim();
+        if (!value.StartsWith('{'))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(value);
+            if (doc.RootElement.TryGetProperty("command", out var command))
+            {
+                return command.GetString();
+            }
+            if (doc.RootElement.TryGetProperty("intent", out var intent))
+            {
+                return intent.GetString();
+            }
+        }
+        catch
+        {
+            return null;
+        }
+
+        return null;
+    }
+
+    private static string ExtractLikelyCommandSpan(string line)
+    {
+        var commandStart = Regex.Match(
+            line,
+            "(open|find|click|double click|right click|drag|type|press|save|new tab|close tab|close window|minimize|maximize|restore|switch window|focus|scroll|page up|page down|home|end|wait until|copy|paste|undo|redo|select all|open url|search|browser back|browser forward|refresh|find in page|notify|clipboard history|volume|brightness|lock screen|create new file|move mouse|jiggle mouse)\\b",
+            RegexOptions.IgnoreCase);
+
+        if (!commandStart.Success || commandStart.Index <= 0)
+        {
+            return line;
+        }
+
+        return line[commandStart.Index..].Trim();
     }
 
     private string ToAuditText(string? raw)

@@ -14,7 +14,7 @@ brew install protobuf
 brew install swift-protobuf
 brew install grpc-swift
 
-cd desktop-agent/adapters/macos/DesktopAgent.Adapter.Mac
+cd adapters/macos/DesktopAgent.Adapter.Mac
 protoc -I ../../../proto \
   --swift_out=Sources/DesktopAgentAdapterMac \
   --grpc-swift_out=Sources/DesktopAgentAdapterMac \

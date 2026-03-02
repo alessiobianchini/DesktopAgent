@@ -65,6 +65,20 @@ public sealed class FallbackIntentInterpreterTests
         Assert.Equal(TimeSpan.FromMinutes(2), plan.Steps[0].WaitFor);
     }
 
+    [Fact]
+    public void Interpret_UsesRewrittenPlan_WhenActionableEvenWithUnknownNoise()
+    {
+        var config = new AgentConfig { LlmFallbackEnabled = true };
+        var ruleBased = new RuleBasedIntentInterpreter(new StubAppResolver(), config);
+        var interpreter = new FallbackIntentInterpreter(ruleBased, new StubRewriter("open teams and then blah blah"), new StubAuditLog(), config);
+
+        var plan = interpreter.Interpret("apri teams e poi fai qualcosa");
+
+        Assert.Single(plan.Steps);
+        Assert.Equal(ActionType.OpenApp, plan.Steps[0].Type);
+        Assert.Equal("teams", plan.Steps[0].AppIdOrPath);
+    }
+
     private sealed class StubRewriter : ILlmIntentRewriter
     {
         private readonly string? _value;

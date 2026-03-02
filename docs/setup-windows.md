@@ -7,35 +7,35 @@
 
 ## Build
 ```
-dotnet build desktop-agent/DesktopAgentSolution.sln
+dotnet build DesktopAgentSolution.sln
 ```
 
 ## Run Windows Adapter
 ```
-dotnet run --project desktop-agent/adapters/windows/DesktopAgent.Adapter.Windows/DesktopAgent.Adapter.Windows.csproj
+dotnet run --project adapters/windows/DesktopAgent.Adapter.Windows/DesktopAgent.Adapter.Windows.csproj
 ```
 
 ## Run CLI
 ```
-dotnet run --project desktop-agent/core/DesktopAgent.Cli/DesktopAgent.Cli.csproj -- status
+dotnet run --project core/DesktopAgent.Cli/DesktopAgent.Cli.csproj -- status
 ```
 
 ## Start Everything (Windows)
 Launch Adapter + Web UI + Tray icon with one command:
 ```
-powershell -ExecutionPolicy Bypass -File desktop-agent/scripts/start-windows.ps1
+powershell -ExecutionPolicy Bypass -File scripts/start-windows.ps1
 ```
 
 Useful options:
 ```
 # Build first, then start Adapter + Web
-powershell -ExecutionPolicy Bypass -File desktop-agent/scripts/start-windows.ps1 -Build
+powershell -ExecutionPolicy Bypass -File scripts/start-windows.ps1 -Build
 
 # Disable Tray app
-powershell -ExecutionPolicy Bypass -File desktop-agent/scripts/start-windows.ps1 -NoTray
+powershell -ExecutionPolicy Bypass -File scripts/start-windows.ps1 -NoTray
 
 # Custom ports
-powershell -ExecutionPolicy Bypass -File desktop-agent/scripts/start-windows.ps1 -AdapterPort 50051 -WebPort 5000
+powershell -ExecutionPolicy Bypass -File scripts/start-windows.ps1 -AdapterPort 50051 -WebPort 5000
 ```
 
 ## Notes
@@ -45,7 +45,7 @@ powershell -ExecutionPolicy Bypass -File desktop-agent/scripts/start-windows.ps1
 ## Build Portable Package
 Create self-contained binaries under `dist/win-x64`:
 ```
-powershell -ExecutionPolicy Bypass -File desktop-agent/scripts/publish-windows.ps1
+powershell -ExecutionPolicy Bypass -File scripts/publish-windows.ps1
 ```
 
 Output:
@@ -62,7 +62,7 @@ winget install JRSoftware.InnoSetup
 ```
 2. Build installer:
 ```
-powershell -ExecutionPolicy Bypass -File desktop-agent/scripts/build-installer.ps1 -Version 0.1.0
+powershell -ExecutionPolicy Bypass -File scripts/build-installer.ps1 -Version 0.1.0
 ```
 
 Output:

@@ -29,7 +29,7 @@ public sealed class FallbackIntentInterpreter : IIntentInterpreter
         var rewritten = _rewriter.Rewrite(intent);
         if (!string.IsNullOrWhiteSpace(rewritten))
         {
-            var rewrittenPlan = _ruleBased.Interpret(rewritten);
+            var rewrittenPlan = PruneNonActionableNoise(_ruleBased.Interpret(rewritten));
             if (!ShouldFallback(rewrittenPlan))
             {
                 PreserveMouseJiggleDuration(intent, rewrittenPlan);
@@ -70,19 +70,35 @@ public sealed class FallbackIntentInterpreter : IIntentInterpreter
             return true;
         }
 
-        if (plan.Steps.Count == 1 && plan.Steps[0].Type == ActionType.ReadText)
-        {
-            return true;
-        }
-
-        if (plan.Steps.Any(step => step.Type == ActionType.ReadText
-                                   && !string.IsNullOrWhiteSpace(step.Note)
-                                   && step.Note.StartsWith("Unrecognized", StringComparison.OrdinalIgnoreCase)))
+        var actionable = plan.Steps.Count(step => step.Type != ActionType.ReadText);
+        if (actionable == 0)
         {
             return true;
         }
 
         return false;
+    }
+
+    private static ActionPlan PruneNonActionableNoise(ActionPlan plan)
+    {
+        if (plan.Steps.Count == 0)
+        {
+            return plan;
+        }
+
+        var actionable = plan.Steps.Count(step => step.Type != ActionType.ReadText);
+        if (actionable == 0)
+        {
+            return plan;
+        }
+
+        plan.Steps = plan.Steps
+            .Where(step => step.Type != ActionType.ReadText
+                           || string.IsNullOrWhiteSpace(step.Note)
+                           || !step.Note.StartsWith("Unrecognized", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        return plan;
     }
 
     private void PreserveMouseJiggleDuration(string originalIntent, ActionPlan rewrittenPlan)
