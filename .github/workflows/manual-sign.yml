@@ -1,0 +1,111 @@
+name: Manual Sign Release Assets
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag (example: v0.2.0)"
+        required: true
+        type: string
+      replace_assets:
+        description: "Replace existing release assets with signed ones"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  sign-existing-release-assets:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate signing secrets
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace("${{ secrets.WINDOWS_CODESIGN_PFX_BASE64 }}")) {
+            throw "Missing secret WINDOWS_CODESIGN_PFX_BASE64"
+          }
+          if ([string]::IsNullOrWhiteSpace("${{ secrets.WINDOWS_CODESIGN_PASSWORD }}")) {
+            throw "Missing secret WINDOWS_CODESIGN_PASSWORD"
+          }
+
+      - name: Prepare signing certificate
+        id: cert
+        shell: pwsh
+        run: |
+          $certDir = Join-Path $env:RUNNER_TEMP "codesign"
+          New-Item -ItemType Directory -Path $certDir -Force | Out-Null
+          $certPath = Join-Path $certDir "codesign.pfx"
+          [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String("${{ secrets.WINDOWS_CODESIGN_PFX_BASE64 }}"))
+          "path=$certPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Download release assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          New-Item -ItemType Directory -Path unsigned -Force | Out-Null
+          gh release download "${{ inputs.tag }}" --repo "${{ github.repository }}" --dir unsigned --pattern "DesktopAgent-win-x64-*.zip" --pattern "DesktopAgent-Setup-*.exe"
+
+      - name: Sign assets
+        shell: pwsh
+        env:
+          CODESIGN_PASSWORD: ${{ secrets.WINDOWS_CODESIGN_PASSWORD }}
+        run: |
+          $portableZip = Get-ChildItem -Path "unsigned" -Filter "DesktopAgent-win-x64-*.zip" | Select-Object -First 1
+          if (-not $portableZip) {
+            throw "Portable zip not found in release assets."
+          }
+
+          $installerExe = Get-ChildItem -Path "unsigned" -Filter "DesktopAgent-Setup-*.exe" | Select-Object -First 1
+          if (-not $installerExe) {
+            throw "Installer exe not found in release assets."
+          }
+
+          if (Test-Path work) { Remove-Item work -Recurse -Force }
+          if (Test-Path signed) { Remove-Item signed -Recurse -Force }
+          New-Item -ItemType Directory -Path work/portable -Force | Out-Null
+          New-Item -ItemType Directory -Path work/installer -Force | Out-Null
+          New-Item -ItemType Directory -Path signed -Force | Out-Null
+
+          Expand-Archive -Path $portableZip.FullName -DestinationPath "work/portable" -Force
+          Copy-Item -Path $installerExe.FullName -Destination "work/installer" -Force
+
+          ./scripts/sign-windows.ps1 `
+            -CertPath "${{ steps.cert.outputs.path }}" `
+            -CertPassword "$env:CODESIGN_PASSWORD" `
+            -InputRoot "work/portable" `
+            -IncludeInstaller `
+            -InstallerGlob "work/installer/*.exe"
+
+          $signedZipPath = Join-Path "signed" $portableZip.Name
+          Compress-Archive -Path "work/portable/*" -DestinationPath $signedZipPath -CompressionLevel Optimal
+          Copy-Item -Path "work/installer/*.exe" -Destination "signed" -Force
+
+      - name: Upload signed assets to release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $replace = "${{ inputs.replace_assets }}" -eq "true"
+          $tag = "${{ inputs.tag }}"
+
+          $portableName = (Get-ChildItem -Path "unsigned" -Filter "DesktopAgent-win-x64-*.zip" | Select-Object -First 1).Name
+          $installerName = (Get-ChildItem -Path "unsigned" -Filter "DesktopAgent-Setup-*.exe" | Select-Object -First 1).Name
+
+          if ($replace) {
+            gh release delete-asset $tag $portableName --repo "${{ github.repository }}" -y 2>$null
+            gh release delete-asset $tag $installerName --repo "${{ github.repository }}" -y 2>$null
+            gh release upload $tag "signed/$portableName" "signed/$installerName" --repo "${{ github.repository }}"
+          } else {
+            $portableSigned = [IO.Path]::GetFileNameWithoutExtension($portableName) + "-signed" + [IO.Path]::GetExtension($portableName)
+            $installerSigned = [IO.Path]::GetFileNameWithoutExtension($installerName) + "-signed" + [IO.Path]::GetExtension($installerName)
+            Copy-Item "signed/$portableName" "signed/$portableSigned" -Force
+            Copy-Item "signed/$installerName" "signed/$installerSigned" -Force
+            gh release upload $tag "signed/$portableSigned" "signed/$installerSigned" --repo "${{ github.repository }}"
+          }

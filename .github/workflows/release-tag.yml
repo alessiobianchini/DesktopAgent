@@ -70,6 +70,28 @@ jobs:
         run: |
           ./scripts/publish-windows.ps1 -Configuration Release -SkipTests -OutputRoot dist/win-x64
 
+      - name: Prepare code signing certificate
+        id: codesign_cert
+        if: ${{ secrets.WINDOWS_CODESIGN_PFX_BASE64 != '' && secrets.WINDOWS_CODESIGN_PASSWORD != '' }}
+        shell: pwsh
+        run: |
+          $certDir = Join-Path $env:RUNNER_TEMP "codesign"
+          New-Item -ItemType Directory -Path $certDir -Force | Out-Null
+          $certPath = Join-Path $certDir "codesign.pfx"
+          [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String("${{ secrets.WINDOWS_CODESIGN_PFX_BASE64 }}"))
+          "path=$certPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Sign portable executables
+        if: ${{ steps.codesign_cert.outputs.path != '' }}
+        shell: pwsh
+        env:
+          CODESIGN_PASSWORD: ${{ secrets.WINDOWS_CODESIGN_PASSWORD }}
+        run: |
+          ./scripts/sign-windows.ps1 `
+            -CertPath "${{ steps.codesign_cert.outputs.path }}" `
+            -CertPassword "$env:CODESIGN_PASSWORD" `
+            -InputRoot "dist/win-x64"
+
       - name: Zip portable package
         id: portable
         shell: pwsh
@@ -90,6 +112,18 @@ jobs:
         shell: pwsh
         run: |
           ./scripts/build-installer.ps1 -SkipPublish -Version "${{ steps.meta.outputs.version }}"
+
+      - name: Sign installer
+        if: ${{ (github.event_name == 'push' || inputs.build_installer == true) && steps.codesign_cert.outputs.path != '' }}
+        shell: pwsh
+        env:
+          CODESIGN_PASSWORD: ${{ secrets.WINDOWS_CODESIGN_PASSWORD }}
+        run: |
+          ./scripts/sign-windows.ps1 `
+            -CertPath "${{ steps.codesign_cert.outputs.path }}" `
+            -CertPassword "$env:CODESIGN_PASSWORD" `
+            -InputRoot "dist/win-x64" `
+            -IncludeInstaller
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
