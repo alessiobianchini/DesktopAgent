@@ -152,3 +152,57 @@ jobs:
             dist/velopack-win-x64/releases/RELEASES
             dist/velopack-win-x64/releases/*.nupkg
             dist/velopack-win-x64/releases/*Setup*.exe
+
+      - name: Validate published update feed
+        shell: pwsh
+        run: |
+          function Get-FeedTextWithRetry {
+            param(
+              [string]$Url,
+              [string]$Label,
+              [int]$MaxAttempts = 12,
+              [int]$DelaySeconds = 10
+            )
+
+            for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+              try {
+                $tmp = Join-Path $env:RUNNER_TEMP ("feed-" + [guid]::NewGuid().ToString("N") + ".txt")
+                Invoke-WebRequest -Uri $Url -OutFile $tmp -MaximumRedirection 5 | Out-Null
+                $bytes = [System.IO.File]::ReadAllBytes($tmp)
+                $text = [System.Text.Encoding]::UTF8.GetString($bytes)
+                Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+
+                if ($text -match "\.nupkg") {
+                  Write-Host "[$Label] OK on attempt $attempt"
+                  return $text
+                }
+              } catch {
+                Write-Host "[$Label] attempt $attempt failed: $($_.Exception.Message)"
+              }
+
+              if ($attempt -lt $MaxAttempts) {
+                Start-Sleep -Seconds $DelaySeconds
+              }
+            }
+
+            throw "[$Label] feed validation failed for URL: $Url"
+          }
+
+          $repo = "${{ github.repository }}"
+          $tag = "${{ steps.meta.outputs.tag }}"
+          $tagFeedUrl = "https://github.com/$repo/releases/download/$tag/RELEASES"
+          $latestFeedUrl = "https://github.com/$repo/releases/latest/download/RELEASES"
+
+          Get-FeedTextWithRetry -Url $tagFeedUrl -Label "tag"
+
+          if ("${{ github.event_name }}" -eq "push") {
+            # On tag push, latest should resolve to the same newly published feed.
+            Get-FeedTextWithRetry -Url $latestFeedUrl -Label "latest"
+          } else {
+            # In manual re-runs, the selected tag may not be the latest release.
+            try {
+              Get-FeedTextWithRetry -Url $latestFeedUrl -Label "latest" -MaxAttempts 3 -DelaySeconds 5 | Out-Null
+            } catch {
+              Write-Host "latest feed check skipped in workflow_dispatch: $($_.Exception.Message)"
+            }
+          }
