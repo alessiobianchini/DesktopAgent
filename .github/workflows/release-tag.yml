@@ -77,9 +77,9 @@ jobs:
         shell: pwsh
         run: |
           $feedDir = "dist/velopack-win-x64/releases"
-          $releasesFile = Join-Path $feedDir "RELEASES"
-          if (-not (Test-Path $releasesFile)) {
-            throw "Missing Velopack RELEASES file: $releasesFile"
+          $channelFeed = Join-Path $feedDir "releases.win.json"
+          if (-not (Test-Path $channelFeed)) {
+            throw "Missing Velopack channel feed file: $channelFeed"
           }
 
           $packages = Get-ChildItem -Path $feedDir -Filter "*.nupkg" -File -ErrorAction SilentlyContinue
@@ -88,13 +88,13 @@ jobs:
           }
 
           Write-Host "Velopack feed OK:"
-          Write-Host " - $releasesFile"
+          Write-Host " - $channelFeed"
           $packages | ForEach-Object { Write-Host " - $($_.FullName)" }
 
-      - name: Normalize RELEASES encoding (UTF-8 no BOM)
+      - name: Normalize channel feed encoding (UTF-8 no BOM)
         shell: pwsh
         run: |
-          $releasesFile = "dist/velopack-win-x64/releases/RELEASES"
+          $releasesFile = "dist/velopack-win-x64/releases/releases.win.json"
           $content = Get-Content -Path $releasesFile -Raw
           [System.IO.File]::WriteAllText($releasesFile, $content, [System.Text.UTF8Encoding]::new($false))
 
@@ -158,6 +158,8 @@ jobs:
           files: |
             ${{ steps.portable.outputs.zip }}
             dist/velopack-win-x64/releases/RELEASES
+            dist/velopack-win-x64/releases/releases.win.json
+            dist/velopack-win-x64/releases/assets.win.json
             dist/velopack-win-x64/releases/*.nupkg
             dist/velopack-win-x64/releases/*Setup*.exe
 
@@ -198,8 +200,8 @@ jobs:
 
           $repo = "${{ github.repository }}"
           $tag = "${{ steps.meta.outputs.tag }}"
-          $tagFeedUrl = "https://github.com/$repo/releases/download/$tag/RELEASES"
-          $latestFeedUrl = "https://github.com/$repo/releases/latest/download/RELEASES"
+          $tagFeedUrl = "https://github.com/$repo/releases/download/$tag/releases.win.json"
+          $latestFeedUrl = "https://github.com/$repo/releases/latest/download/releases.win.json"
 
           Get-FeedTextWithRetry -Url $tagFeedUrl -Label "tag"
 

@@ -91,7 +91,9 @@ git push origin v0.2.0
 Release assets:
 - `DesktopAgent-win-x64-<version>.zip`
 - `DesktopAgent-win-Setup.exe` (Velopack installer)
-- `RELEASES`
+- `releases.win.json`
+- `assets.win.json`
+- `RELEASES` (legacy compatibility)
 - `DesktopAgent-<version>-full.nupkg`
 
 Manual re-sign of an existing release:
@@ -142,4 +144,4 @@ Output feed folder: `dist/velopack-win-x64/releases`
 
 GitHub Actions manual packaging workflow:
 - `.github/workflows/package-windows-velopack.yml`
-- Run it with `version` (example `0.5.4`), then publish uploaded artifact files (`RELEASES`, `.nupkg`, `Setup.exe`) to your release/feed URL.
+- Run it with `version` (example `0.5.4`), then publish uploaded artifact files (`releases.win.json`, `assets.win.json`, `.nupkg`, `Setup.exe`) to your release/feed URL.
