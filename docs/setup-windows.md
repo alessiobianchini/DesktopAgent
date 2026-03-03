@@ -135,6 +135,10 @@ Notes:
 - Tray menu includes:
   - `Check updates now`
   - `Apply downloaded update`
+- Web UI `Configuration > Utilities` includes:
+  - tool detection for `ffmpeg` and `tesseract`
+  - install buttons (Windows uses `winget`)
+  - `Install OCR + Enable` / `Enable OCR only`
 
 Build a Windows Velopack package locally:
 ```powershell

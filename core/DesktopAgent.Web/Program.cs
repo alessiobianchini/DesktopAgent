@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Net.Http.Json;
 using System.Reflection;
 using System.Text.Json;
 using DesktopAgent.Core.Abstractions;
@@ -585,6 +586,103 @@ app.MapPost("/api/adapter/restart", (HttpContext context, AgentConfig config) =>
     }
 });
 
+app.MapGet("/api/utilities/status", (HttpContext context, AgentConfig config) =>
+{
+    if (!RequestGuards.IsLoopback(context))
+    {
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    }
+
+    var ffmpeg = UtilityInstaller.Probe("ffmpeg", "-version");
+    var tesseractCommand = string.IsNullOrWhiteSpace(config.Ocr.TesseractPath) ? "tesseract" : config.Ocr.TesseractPath;
+    var tesseract = UtilityInstaller.Probe(tesseractCommand, "--version");
+
+    return Results.Ok(new
+    {
+        os = UtilityInstaller.GetOsName(),
+        packageManager = UtilityInstaller.GetPreferredPackageManager(),
+        ffmpeg,
+        tesseract,
+        ocrEnabled = config.OcrEnabled,
+        configuredTesseractPath = config.Ocr.TesseractPath
+    });
+});
+
+app.MapPost("/api/utilities/install", async (HttpContext context, UtilityInstallRequest request, AgentConfig config, ConfigFileStore store, RestartRequirementTracker restartTracker, CancellationToken cancellationToken) =>
+{
+    if (!RequestGuards.IsLoopback(context))
+    {
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    }
+
+    var normalizedTool = (request.Tool ?? string.Empty).Trim().ToLowerInvariant();
+    if (normalizedTool is not ("ffmpeg" or "ocr" or "tesseract"))
+    {
+        return Results.BadRequest(new { message = "Tool must be ffmpeg or ocr." });
+    }
+
+    var result = await UtilityInstaller.InstallAsync(normalizedTool, request.EnableOcr, config, store, restartTracker, cancellationToken);
+    if (!result.Success)
+    {
+        return Results.BadRequest(new
+        {
+            message = result.Message,
+            stdout = result.StdOut,
+            stderr = result.StdErr,
+            ffmpeg = UtilityInstaller.Probe("ffmpeg", "-version"),
+            tesseract = UtilityInstaller.Probe(string.IsNullOrWhiteSpace(config.Ocr.TesseractPath) ? "tesseract" : config.Ocr.TesseractPath, "--version")
+        });
+    }
+
+    return Results.Ok(new
+    {
+        message = result.Message,
+        stdout = result.StdOut,
+        stderr = result.StdErr,
+        ffmpeg = UtilityInstaller.Probe("ffmpeg", "-version"),
+        tesseract = UtilityInstaller.Probe(string.IsNullOrWhiteSpace(config.Ocr.TesseractPath) ? "tesseract" : config.Ocr.TesseractPath, "--version"),
+        ocrEnabled = config.OcrEnabled,
+        ocrRestartRequired = restartTracker.OcrRestartRequired
+    });
+});
+
+app.MapPost("/api/utilities/enable-ocr", async (HttpContext context, UtilityEnableOcrRequest? request, AgentConfig config, ConfigFileStore store, RestartRequirementTracker restartTracker, CancellationToken cancellationToken) =>
+{
+    if (!RequestGuards.IsLoopback(context))
+    {
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    }
+
+    var changed = false;
+    if (!config.OcrEnabled)
+    {
+        config.OcrEnabled = true;
+        changed = true;
+    }
+
+    var path = request?.TesseractPath?.Trim();
+    if (!string.IsNullOrWhiteSpace(path) && !string.Equals(config.Ocr.TesseractPath, path, StringComparison.Ordinal))
+    {
+        config.Ocr.TesseractPath = path;
+        changed = true;
+    }
+
+    if (changed)
+    {
+        restartTracker.OcrRestartRequired = true;
+        await store.SaveAsync(config);
+    }
+
+    return Results.Ok(new
+    {
+        message = changed ? "OCR enabled. Restart required." : "OCR already enabled.",
+        ocrEnabled = config.OcrEnabled,
+        configuredTesseractPath = config.Ocr.TesseractPath,
+        ocrRestartRequired = restartTracker.OcrRestartRequired,
+        tesseract = UtilityInstaller.Probe(string.IsNullOrWhiteSpace(config.Ocr.TesseractPath) ? "tesseract" : config.Ocr.TesseractPath, "--version")
+    });
+});
+
 app.MapGet("/api/tasks", async (TaskLibraryStore tasks, CancellationToken cancellationToken) =>
 {
     var items = await tasks.ListAsync(cancellationToken);
@@ -844,6 +942,30 @@ app.MapPost("/api/recording/save", async (MacroRecordSaveRequest request, MacroR
     return Results.Ok(new { message = "Recorded macro saved.", task = name });
 });
 
+app.MapPost("/api/translate", async (TranslateRequest request, AgentConfig config, IAuditLog auditLog, CancellationToken cancellationToken) =>
+{
+    var text = request.Text?.Trim();
+    var target = request.TargetLanguage?.Trim();
+    if (string.IsNullOrWhiteSpace(text) || string.IsNullOrWhiteSpace(target))
+    {
+        return Results.BadRequest(new { message = "Text and targetLanguage are required." });
+    }
+
+    var source = string.IsNullOrWhiteSpace(request.SourceLanguage) ? null : request.SourceLanguage.Trim();
+    var result = await LlmTranslationService.TranslateAsync(new TranslationIntent(text, target, source), config, auditLog, cancellationToken);
+    if (!result.Success)
+    {
+        return Results.BadRequest(new { message = result.Message });
+    }
+
+    return Results.Ok(new
+    {
+        translation = result.TranslatedText,
+        provider = result.Provider,
+        model = config.LlmFallback.Model
+    });
+});
+
 app.MapPost("/api/chat", async (ChatRequest request, IDesktopAdapterClient client, ChatActionStore store, IAuditLog auditLog, AgentConfig config, IServiceProvider sp, TargetMemoryStore memory, MacroRecorderStore recorder, ContextLockStore contextLock, IKillSwitch killSwitch) =>
 {
     var message = request.Message?.Trim() ?? string.Empty;
@@ -1087,6 +1209,17 @@ app.MapPost("/api/chat", async (ChatRequest request, IDesktopAdapterClient clien
         return await ExecutePlanAsync("type in last", plan, dryRun: false, sp);
     }
 
+    if (TryParseTranslationIntent(message, out var translationIntent))
+    {
+        var translation = await LlmTranslationService.TranslateAsync(translationIntent, config, auditLog, CancellationToken.None);
+        if (!translation.Success)
+        {
+            return Results.Ok(ChatResponse.Simple(translation.Message));
+        }
+
+        return Results.Ok(ChatResponse.Simple($"Translation ({translation.Provider}):\n{translation.TranslatedText}"));
+    }
+
     if (IsDirectIntent(normalized))
     {
         return await ExecuteIntentAsync(message, dryRun: false, sp);
@@ -1116,7 +1249,7 @@ app.MapPost("/api/chat", async (ChatRequest request, IDesktopAdapterClient clien
         return Results.Ok(ChatResponse.ConfirmWithSteps(prompt, token, PlanToLines(inferredPlan), PlanToJson(inferredPlan), GetModeLabel(inferredPlan)));
     }
 
-    return Results.Ok(ChatResponse.Simple("Available commands: status, kill, reset kill, lock status, lock on <current window|app>, unlock, profile <safe|balanced|power>, arm, disarm, simulate presence, require presence, list apps [query] [allowed], memory, click last, type in last <text>, start/stop recording, save recording <name>, run <intent>, dry-run <intent>. Supported intents: open/run/start, find/click/type/press, double click/right click/drag, wait until <text> [for <seconds>], window actions (minimize/maximize/restore/switch/focus), scroll/page/home/end, browser back/forward/refresh/find in page, file write/read/list/append, open url/search (on specific browser), notify, clipboard history, jiggle mouse for <duration>, volume up/down/mute, brightness up/down, lock screen."));
+    return Results.Ok(ChatResponse.Simple("Available commands: status, kill, reset kill, lock status, lock on <current window|app>, unlock, profile <safe|balanced|power>, arm, disarm, simulate presence, require presence, list apps [query] [allowed], memory, click last, type in last <text>, start/stop recording, save recording <name>, run <intent>, dry-run <intent>, translate <text> to <language> (or 'translate to <language>: <text>'). Supported intents: open/run/start, find/click/type/press, double click/right click/drag, wait until <text> [for <seconds>], window actions (minimize/maximize/restore/switch/focus), scroll/page/home/end, browser back/forward/refresh/find in page, file write/read/list/append, open url/search (on specific browser), notify, clipboard history, jiggle mouse for <duration>, volume up/down/mute, brightness up/down, lock screen."));
 });
 
 app.MapPost("/api/confirm", async (ConfirmRequest request, IDesktopAdapterClient client, ChatActionStore store, IAuditLog auditLog, IServiceProvider sp, IKillSwitch killSwitch) =>
@@ -1857,6 +1990,165 @@ static bool TryParseTypeInLast(string message, out string text)
     return false;
 }
 
+static bool TryParseTranslationIntent(string message, out TranslationIntent intent)
+{
+    intent = default!;
+    if (string.IsNullOrWhiteSpace(message))
+    {
+        return false;
+    }
+
+    var trimmed = message.Trim();
+    string remainder;
+    if (trimmed.StartsWith("translate ", StringComparison.OrdinalIgnoreCase))
+    {
+        remainder = trimmed["translate ".Length..].Trim();
+    }
+    else if (trimmed.StartsWith("traduci ", StringComparison.OrdinalIgnoreCase))
+    {
+        remainder = trimmed["traduci ".Length..].Trim();
+    }
+    else
+    {
+        return false;
+    }
+
+    if (string.IsNullOrWhiteSpace(remainder))
+    {
+        return false;
+    }
+
+    if (TryParseHeadAndBody(remainder, out var targetFromHead, out var sourceFromHead, out var textFromHead))
+    {
+        intent = new TranslationIntent(textFromHead, targetFromHead, sourceFromHead);
+        return true;
+    }
+
+    var lower = remainder.ToLowerInvariant();
+    var sep = lower.LastIndexOf(" to ", StringComparison.Ordinal);
+    var sepLen = 4;
+    if (sep <= 0)
+    {
+        sep = lower.LastIndexOf(" in ", StringComparison.Ordinal);
+        sepLen = 4;
+    }
+
+    if (sep > 0)
+    {
+        var text = remainder[..sep].Trim();
+        var descriptor = remainder[(sep + sepLen)..].Trim();
+        if (TryParseLanguageDescriptor(descriptor, out var target, out var source)
+            && !string.IsNullOrWhiteSpace(text))
+        {
+            intent = new TranslationIntent(text, target, source);
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static bool TryParseHeadAndBody(string remainder, out string targetLanguage, out string? sourceLanguage, out string text)
+{
+    targetLanguage = string.Empty;
+    sourceLanguage = null;
+    text = string.Empty;
+
+    var newlineIdx = remainder.IndexOf('\n');
+    if (newlineIdx > 0)
+    {
+        var head = remainder[..newlineIdx].Trim().TrimEnd(':');
+        var body = remainder[(newlineIdx + 1)..].Trim();
+        if (TryParseLanguageHead(head, out targetLanguage, out sourceLanguage) && !string.IsNullOrWhiteSpace(body))
+        {
+            text = body;
+            return true;
+        }
+    }
+
+    var colonIdx = remainder.IndexOf(':');
+    if (colonIdx > 0)
+    {
+        var head = remainder[..colonIdx].Trim();
+        var body = remainder[(colonIdx + 1)..].Trim();
+        if (TryParseLanguageHead(head, out targetLanguage, out sourceLanguage) && !string.IsNullOrWhiteSpace(body))
+        {
+            text = body;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static bool TryParseLanguageHead(string head, out string targetLanguage, out string? sourceLanguage)
+{
+    targetLanguage = string.Empty;
+    sourceLanguage = null;
+    if (string.IsNullOrWhiteSpace(head))
+    {
+        return false;
+    }
+
+    string descriptor;
+    if (head.StartsWith("to ", StringComparison.OrdinalIgnoreCase))
+    {
+        descriptor = head["to ".Length..].Trim();
+    }
+    else if (head.StartsWith("in ", StringComparison.OrdinalIgnoreCase))
+    {
+        descriptor = head["in ".Length..].Trim();
+    }
+    else
+    {
+        return false;
+    }
+
+    return TryParseLanguageDescriptor(descriptor, out targetLanguage, out sourceLanguage);
+}
+
+static bool TryParseLanguageDescriptor(string descriptor, out string targetLanguage, out string? sourceLanguage)
+{
+    targetLanguage = string.Empty;
+    sourceLanguage = null;
+    if (string.IsNullOrWhiteSpace(descriptor))
+    {
+        return false;
+    }
+
+    var cleaned = descriptor.Trim().TrimEnd(':').Trim();
+    var lower = cleaned.ToLowerInvariant();
+    var sourceSep = lower.IndexOf(" from ", StringComparison.Ordinal);
+    var sourceSepLen = 6;
+    if (sourceSep <= 0)
+    {
+        sourceSep = lower.IndexOf(" da ", StringComparison.Ordinal);
+        sourceSepLen = 4;
+    }
+
+    if (sourceSep > 0)
+    {
+        targetLanguage = cleaned[..sourceSep].Trim().Trim(',', ';', '.');
+        sourceLanguage = cleaned[(sourceSep + sourceSepLen)..].Trim().Trim(',', ';', '.');
+    }
+    else
+    {
+        targetLanguage = cleaned.Trim().Trim(',', ';', '.');
+    }
+
+    if (string.IsNullOrWhiteSpace(targetLanguage))
+    {
+        return false;
+    }
+
+    if (string.IsNullOrWhiteSpace(sourceLanguage))
+    {
+        sourceLanguage = null;
+    }
+
+    return true;
+}
+
 static bool IsDirectIntent(string normalized)
 {
     if (normalized.StartsWith("http://") || normalized.StartsWith("https://"))
@@ -1990,6 +2282,600 @@ static bool IsUnrecognizedPlan(ActionPlan plan)
     }
 
     return false;
+}
+
+internal static class LlmTranslationService
+{
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
+    public static async Task<TranslationResult> TranslateAsync(TranslationIntent intent, AgentConfig config, IAuditLog auditLog, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(intent.Text) || string.IsNullOrWhiteSpace(intent.TargetLanguage))
+        {
+            return TranslationResult.Fail("Missing text or target language.");
+        }
+
+        if (!config.LlmFallbackEnabled)
+        {
+            return TranslationResult.Fail("LLM is disabled. Enable it in Configuration to use translation.");
+        }
+
+        var endpoint = config.LlmFallback.Endpoint?.Trim();
+        if (string.IsNullOrWhiteSpace(endpoint))
+        {
+            return TranslationResult.Fail("LLM endpoint is not configured.");
+        }
+
+        if (!Uri.TryCreate(endpoint, UriKind.Absolute, out var uri)
+            || (!uri.IsLoopback && !config.AllowNonLoopbackLlmEndpoint))
+        {
+            return TranslationResult.Fail("LLM endpoint is invalid or blocked by policy.");
+        }
+
+        var provider = (config.LlmFallback.Provider ?? "ollama").Trim().ToLowerInvariant();
+        var prompt = BuildPrompt(intent);
+        var includeRaw = config.AuditLlmIncludeRawText;
+        var canAudit = config.AuditLlmInteractions;
+        var sw = Stopwatch.StartNew();
+
+        if (canAudit)
+        {
+            await auditLog.WriteAsync(new AuditEvent
+            {
+                Timestamp = DateTimeOffset.UtcNow,
+                EventType = "llm_translate_request",
+                Message = "Translation requested",
+                Data = new
+                {
+                    provider,
+                    model = config.LlmFallback.Model,
+                    endpoint,
+                    target = intent.TargetLanguage,
+                    source = intent.SourceLanguage,
+                    input = includeRaw ? intent.Text : "[redacted]",
+                    inputLength = intent.Text.Length
+                }
+            }, CancellationToken.None);
+        }
+
+        try
+        {
+            using var client = new HttpClient
+            {
+                Timeout = TimeSpan.FromSeconds(Math.Max(2, config.LlmFallback.TimeoutSeconds))
+            };
+
+            string? translated = provider switch
+            {
+                "openai" => await CallOpenAiCompatibleAsync(client, uri, prompt, config, cancellationToken),
+                "llama.cpp" => await CallLlamaCppAsync(client, uri, prompt, config, cancellationToken),
+                _ => await CallOllamaAsync(client, uri, prompt, config, cancellationToken)
+            };
+
+            translated = CleanTranslationOutput(translated);
+            sw.Stop();
+
+            if (string.IsNullOrWhiteSpace(translated))
+            {
+                return TranslationResult.Fail("Translation failed or returned empty output.");
+            }
+
+            if (canAudit)
+            {
+                await auditLog.WriteAsync(new AuditEvent
+                {
+                    Timestamp = DateTimeOffset.UtcNow,
+                    EventType = "llm_translate_response",
+                    Message = "Translation completed",
+                    Data = new
+                    {
+                        provider,
+                        model = config.LlmFallback.Model,
+                        latencyMs = sw.ElapsedMilliseconds,
+                        output = includeRaw ? translated : "[redacted]",
+                        outputLength = translated.Length
+                    }
+                }, CancellationToken.None);
+            }
+
+            return TranslationResult.Ok(translated, provider);
+        }
+        catch (Exception ex)
+        {
+            sw.Stop();
+            if (canAudit)
+            {
+                await auditLog.WriteAsync(new AuditEvent
+                {
+                    Timestamp = DateTimeOffset.UtcNow,
+                    EventType = "llm_translate_error",
+                    Message = "Translation failed",
+                    Data = new
+                    {
+                        provider,
+                        model = config.LlmFallback.Model,
+                        latencyMs = sw.ElapsedMilliseconds,
+                        error = ex.Message
+                    }
+                }, CancellationToken.None);
+            }
+
+            return TranslationResult.Fail($"Translation failed: {ex.Message}");
+        }
+    }
+
+    private static async Task<string?> CallOllamaAsync(HttpClient client, Uri uri, string prompt, AgentConfig config, CancellationToken cancellationToken)
+    {
+        var payload = new
+        {
+            model = config.LlmFallback.Model,
+            prompt,
+            stream = false,
+            options = new { temperature = 0.1, num_predict = config.LlmFallback.MaxTokens }
+        };
+
+        using var response = await client.PostAsJsonAsync(uri, payload, JsonOptions, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            return null;
+        }
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        if (doc.RootElement.TryGetProperty("response", out var resp))
+        {
+            return resp.GetString();
+        }
+
+        return null;
+    }
+
+    private static async Task<string?> CallOpenAiCompatibleAsync(HttpClient client, Uri uri, string prompt, AgentConfig config, CancellationToken cancellationToken)
+    {
+        var payload = new
+        {
+            model = config.LlmFallback.Model,
+            messages = new[]
+            {
+                new { role = "system", content = "You are a precise translator. Return only the translation." },
+                new { role = "user", content = prompt }
+            },
+            temperature = 0.1,
+            max_tokens = config.LlmFallback.MaxTokens
+        };
+
+        using var response = await client.PostAsJsonAsync(uri, payload, JsonOptions, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            return null;
+        }
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        if (doc.RootElement.TryGetProperty("choices", out var choices) && choices.ValueKind == JsonValueKind.Array && choices.GetArrayLength() > 0)
+        {
+            var first = choices[0];
+            if (first.TryGetProperty("message", out var message) && message.TryGetProperty("content", out var content))
+            {
+                return content.GetString();
+            }
+            if (first.TryGetProperty("text", out var text))
+            {
+                return text.GetString();
+            }
+        }
+
+        return null;
+    }
+
+    private static async Task<string?> CallLlamaCppAsync(HttpClient client, Uri uri, string prompt, AgentConfig config, CancellationToken cancellationToken)
+    {
+        var payload = new
+        {
+            prompt,
+            n_predict = config.LlmFallback.MaxTokens,
+            temperature = 0.1
+        };
+
+        using var response = await client.PostAsJsonAsync(uri, payload, JsonOptions, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            return null;
+        }
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        if (doc.RootElement.TryGetProperty("content", out var content))
+        {
+            return content.GetString();
+        }
+        if (doc.RootElement.TryGetProperty("choices", out var choices) && choices.ValueKind == JsonValueKind.Array && choices.GetArrayLength() > 0)
+        {
+            var first = choices[0];
+            if (first.TryGetProperty("text", out var text))
+            {
+                return text.GetString();
+            }
+        }
+
+        return null;
+    }
+
+    private static string BuildPrompt(TranslationIntent intent)
+    {
+        var sourcePart = string.IsNullOrWhiteSpace(intent.SourceLanguage)
+            ? string.Empty
+            : $"Source language: {intent.SourceLanguage}\n";
+
+        return
+            "You are a translation engine.\n" +
+            "Task: translate the text exactly, preserving meaning, tone, formatting and line breaks.\n" +
+            "Do not explain. Do not add notes. Return only translated text.\n" +
+            $"Target language: {intent.TargetLanguage}\n" +
+            sourcePart +
+            "TEXT START\n" +
+            intent.Text +
+            "\nTEXT END";
+    }
+
+    private static string? CleanTranslationOutput(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return null;
+        }
+
+        var value = raw.Trim();
+        if (value.StartsWith("```", StringComparison.Ordinal))
+        {
+            value = value.Trim('`').Trim();
+        }
+
+        if (value.StartsWith("translation:", StringComparison.OrdinalIgnoreCase))
+        {
+            value = value["translation:".Length..].Trim();
+        }
+
+        return string.IsNullOrWhiteSpace(value) ? null : value;
+    }
+}
+
+internal sealed record UtilityInstallRequest(string Tool, bool EnableOcr);
+internal sealed record UtilityEnableOcrRequest(string? TesseractPath);
+internal sealed record TranslateRequest(string Text, string TargetLanguage, string? SourceLanguage);
+internal sealed record TranslationIntent(string Text, string TargetLanguage, string? SourceLanguage);
+internal sealed record TranslationResult(bool Success, string Message, string? TranslatedText, string Provider)
+{
+    public static TranslationResult Ok(string text, string provider) => new(true, "ok", text, provider);
+    public static TranslationResult Fail(string message) => new(false, message, null, "none");
+}
+
+internal static class RequestGuards
+{
+    public static bool IsLoopback(HttpContext context)
+    {
+        var remoteIp = context.Connection.RemoteIpAddress;
+        return remoteIp == null || System.Net.IPAddress.IsLoopback(remoteIp);
+    }
+}
+
+internal static class UtilityInstaller
+{
+    private static readonly string[] WindowsExecutableExtensions = (Environment.GetEnvironmentVariable("PATHEXT") ?? ".EXE;.CMD;.BAT")
+        .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+    public static string GetOsName()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return "windows";
+        }
+
+        if (OperatingSystem.IsMacOS())
+        {
+            return "macos";
+        }
+
+        if (OperatingSystem.IsLinux())
+        {
+            return "linux";
+        }
+
+        return "unknown";
+    }
+
+    public static string GetPreferredPackageManager()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return TryResolveExecutable("winget") != null ? "winget" : "manual";
+        }
+
+        if (OperatingSystem.IsMacOS())
+        {
+            return TryResolveExecutable("brew") != null ? "brew" : "manual";
+        }
+
+        if (OperatingSystem.IsLinux())
+        {
+            if (TryResolveExecutable("apt-get") != null) return "apt";
+            if (TryResolveExecutable("dnf") != null) return "dnf";
+            if (TryResolveExecutable("pacman") != null) return "pacman";
+            return "manual";
+        }
+
+        return "manual";
+    }
+
+    public static ToolProbeResult Probe(string commandOrPath, string versionArgs)
+    {
+        var resolvedPath = TryResolveExecutable(commandOrPath);
+        if (resolvedPath == null)
+        {
+            return new ToolProbeResult(false, null, null, "not found");
+        }
+
+        var run = RunCommandAsync(resolvedPath, versionArgs, TimeSpan.FromSeconds(6), CancellationToken.None)
+            .ConfigureAwait(false)
+            .GetAwaiter()
+            .GetResult();
+        var versionLine = FirstNonEmptyLine(run.StdOut) ?? FirstNonEmptyLine(run.StdErr);
+        return new ToolProbeResult(run.ExitCode == 0, resolvedPath, versionLine, run.ExitCode == 0 ? "ok" : $"exit {run.ExitCode}");
+    }
+
+    public static async Task<UtilityInstallResult> InstallAsync(
+        string tool,
+        bool enableOcr,
+        AgentConfig config,
+        ConfigFileStore store,
+        RestartRequirementTracker restartTracker,
+        CancellationToken cancellationToken)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            if (TryResolveExecutable("winget") == null)
+            {
+                return UtilityInstallResult.Fail("winget not found. Install App Installer from Microsoft Store, then retry.");
+            }
+
+            var commands = BuildWindowsInstallCommands(tool);
+            return await RunInstallCommandsAsync(commands, tool, enableOcr, config, store, restartTracker, cancellationToken);
+        }
+
+        if (OperatingSystem.IsMacOS())
+        {
+            if (TryResolveExecutable("brew") == null)
+            {
+                return UtilityInstallResult.Fail("Homebrew not found. Install Homebrew, then run: brew install ffmpeg tesseract");
+            }
+
+            var packageName = tool == "ffmpeg" ? "ffmpeg" : "tesseract";
+            var installResult = await RunCommandAsync("brew", $"install {packageName}", TimeSpan.FromMinutes(15), cancellationToken);
+            if (installResult.ExitCode != 0)
+            {
+                return UtilityInstallResult.Fail($"brew install {packageName} failed.", installResult.StdOut, installResult.StdErr);
+            }
+
+            if (tool != "ffmpeg" && enableOcr)
+            {
+                var changed = !config.OcrEnabled || !string.Equals(config.Ocr.TesseractPath, "tesseract", StringComparison.Ordinal);
+                config.OcrEnabled = true;
+                config.Ocr.TesseractPath = "tesseract";
+                if (changed)
+                {
+                    restartTracker.OcrRestartRequired = true;
+                    await store.SaveAsync(config);
+                }
+            }
+
+            return UtilityInstallResult.Ok($"Installed {packageName}.", installResult.StdOut, installResult.StdErr);
+        }
+
+        if (OperatingSystem.IsLinux())
+        {
+            var hint = tool == "ffmpeg"
+                ? "Run manually: sudo apt-get update && sudo apt-get install -y ffmpeg"
+                : "Run manually: sudo apt-get update && sudo apt-get install -y tesseract-ocr";
+            return UtilityInstallResult.Fail($"Automatic install is not enabled on Linux web endpoint. {hint}");
+        }
+
+        return UtilityInstallResult.Fail("Unsupported OS for automatic install.");
+    }
+
+    private static IReadOnlyList<(string FileName, string Arguments)> BuildWindowsInstallCommands(string tool)
+    {
+        if (tool == "ffmpeg")
+        {
+            return
+            [
+                ("winget", "install -e --id Gyan.FFmpeg --accept-package-agreements --accept-source-agreements"),
+                ("winget", "install -e --id BtbN.FFmpeg --accept-package-agreements --accept-source-agreements")
+            ];
+        }
+
+        return
+        [
+            ("winget", "install -e --id UB-Mannheim.TesseractOCR --accept-package-agreements --accept-source-agreements"),
+            ("winget", "install -e --id Tesseract-OCR.Tesseract --accept-package-agreements --accept-source-agreements")
+        ];
+    }
+
+    private static async Task<UtilityInstallResult> RunInstallCommandsAsync(
+        IReadOnlyList<(string FileName, string Arguments)> commands,
+        string tool,
+        bool enableOcr,
+        AgentConfig config,
+        ConfigFileStore store,
+        RestartRequirementTracker restartTracker,
+        CancellationToken cancellationToken)
+    {
+        UtilityCommandResult? last = null;
+        foreach (var command in commands)
+        {
+            last = await RunCommandAsync(command.FileName, command.Arguments, TimeSpan.FromMinutes(15), cancellationToken);
+            if (last.ExitCode == 0)
+            {
+                break;
+            }
+        }
+
+        if (last == null || last.ExitCode != 0)
+        {
+            return UtilityInstallResult.Fail($"Failed to install {tool}.", last?.StdOut, last?.StdErr);
+        }
+
+        if (tool != "ffmpeg" && enableOcr)
+        {
+            var probe = Probe("tesseract", "--version");
+            var path = probe.Path ?? "tesseract";
+            var changed = !config.OcrEnabled || !string.Equals(config.Ocr.TesseractPath, path, StringComparison.Ordinal);
+            config.OcrEnabled = true;
+            config.Ocr.TesseractPath = path;
+            if (changed)
+            {
+                restartTracker.OcrRestartRequired = true;
+                await store.SaveAsync(config);
+            }
+        }
+
+        var label = tool == "ffmpeg" ? "FFmpeg" : "Tesseract OCR";
+        return UtilityInstallResult.Ok($"Installed {label}.", last.StdOut, last.StdErr);
+    }
+
+    private static string? TryResolveExecutable(string commandOrPath)
+    {
+        if (string.IsNullOrWhiteSpace(commandOrPath))
+        {
+            return null;
+        }
+
+        var candidate = commandOrPath.Trim().Trim('"');
+        if (candidate.Length == 0)
+        {
+            return null;
+        }
+
+        if (Path.IsPathRooted(candidate) || candidate.Contains(Path.DirectorySeparatorChar) || candidate.Contains(Path.AltDirectorySeparatorChar))
+        {
+            return ResolveCandidatePath(candidate);
+        }
+
+        var pathEntries = (Environment.GetEnvironmentVariable("PATH") ?? string.Empty)
+            .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        foreach (var entry in pathEntries)
+        {
+            var combined = Path.Combine(entry, candidate);
+            var resolved = ResolveCandidatePath(combined);
+            if (resolved != null)
+            {
+                return resolved;
+            }
+        }
+
+        return null;
+    }
+
+    private static string? ResolveCandidatePath(string candidate)
+    {
+        if (File.Exists(candidate))
+        {
+            return Path.GetFullPath(candidate);
+        }
+
+        if (!OperatingSystem.IsWindows() || Path.GetExtension(candidate).Length > 0)
+        {
+            return null;
+        }
+
+        foreach (var ext in WindowsExecutableExtensions)
+        {
+            var withExt = candidate + ext;
+            if (File.Exists(withExt))
+            {
+                return Path.GetFullPath(withExt);
+            }
+        }
+
+        return null;
+    }
+
+    private static async Task<UtilityCommandResult> RunCommandAsync(string fileName, string arguments, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        using var process = new Process
+        {
+            StartInfo = new ProcessStartInfo
+            {
+                FileName = fileName,
+                Arguments = arguments,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            }
+        };
+
+        try
+        {
+            if (!process.Start())
+            {
+                return new UtilityCommandResult(-1, string.Empty, "Process failed to start.");
+            }
+
+            var outputTask = process.StandardOutput.ReadToEndAsync();
+            var errorTask = process.StandardError.ReadToEndAsync();
+
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(timeout);
+            await process.WaitForExitAsync(timeoutCts.Token);
+
+            var output = await outputTask;
+            var error = await errorTask;
+            return new UtilityCommandResult(process.ExitCode, output, error);
+        }
+        catch (OperationCanceledException)
+        {
+            try
+            {
+                if (!process.HasExited)
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+            }
+            catch
+            {
+                // ignore
+            }
+
+            return new UtilityCommandResult(-2, string.Empty, $"Command timed out after {timeout.TotalSeconds:F0}s.");
+        }
+        catch (Exception ex)
+        {
+            return new UtilityCommandResult(-1, string.Empty, ex.Message);
+        }
+    }
+
+    private static string? FirstNonEmptyLine(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return null;
+        }
+
+        return text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .FirstOrDefault(line => !string.IsNullOrWhiteSpace(line));
+    }
+}
+
+internal sealed record ToolProbeResult(bool Installed, string? Path, string? Version, string Status);
+internal sealed record UtilityCommandResult(int ExitCode, string StdOut, string StdErr);
+
+internal sealed record UtilityInstallResult(bool Success, string Message, string? StdOut, string? StdErr)
+{
+    public static UtilityInstallResult Ok(string message, string? stdOut, string? stdErr)
+        => new(true, message, stdOut, stdErr);
+
+    public static UtilityInstallResult Fail(string message, string? stdOut = null, string? stdErr = null)
+        => new(false, message, stdOut, stdErr);
 }
 
 internal sealed record ChatRequest(string Message);

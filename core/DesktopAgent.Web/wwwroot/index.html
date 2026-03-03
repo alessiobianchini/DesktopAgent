@@ -48,7 +48,7 @@
 
       <div id="chatLog" class="chat-log"></div>
       <form id="chatForm">
-        <input id="chatInput" type="text" placeholder="Type a command..." />
+        <textarea id="chatInput" rows="1" placeholder="Type a command... (Enter to send, Shift+Enter for new line)"></textarea>
         <button type="submit">Send</button>
       </form>
       <div id="confirmArea" class="confirm"></div>
@@ -282,6 +282,30 @@
             Tesseract path
             <input id="ocrTesseractPath" type="text" placeholder="tesseract" />
           </label>
+        </div>
+      </div>
+
+      <div class="config-block">
+        <h3>Utilities</h3>
+        <div class="config-grid wide">
+          <div class="utility-panel">
+            <div class="utility-row">
+              <span class="utility-name">FFmpeg</span>
+              <span id="ffmpegToolStatus" class="utility-state">Checking...</span>
+            </div>
+            <div class="utility-row">
+              <span class="utility-name">Tesseract OCR</span>
+              <span id="tesseractToolStatus" class="utility-state">Checking...</span>
+            </div>
+            <div class="tasks-actions">
+              <button id="utilityRefresh" type="button">Check tools</button>
+              <button id="installFfmpeg" type="button">Install FFmpeg</button>
+              <button id="installOcr" type="button">Install OCR</button>
+              <button id="installOcrEnable" type="button">Install OCR + Enable</button>
+              <button id="enableOcrOnly" type="button">Enable OCR only</button>
+              <span id="utilityStatus" class="config-status"></span>
+            </div>
+          </div>
         </div>
       </div>
 

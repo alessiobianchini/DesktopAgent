@@ -45,6 +45,14 @@ const restartAdapterBtn = document.getElementById('restartAdapter');
 const configStatus = document.getElementById('configStatus');
 const ocrRestartBadge = document.getElementById('ocrRestartBadge');
 const ocrRestartAck = document.getElementById('ocrRestartAck');
+const utilityRefreshBtn = document.getElementById('utilityRefresh');
+const installFfmpegBtn = document.getElementById('installFfmpeg');
+const installOcrBtn = document.getElementById('installOcr');
+const installOcrEnableBtn = document.getElementById('installOcrEnable');
+const enableOcrOnlyBtn = document.getElementById('enableOcrOnly');
+const utilityStatus = document.getElementById('utilityStatus');
+const ffmpegToolStatus = document.getElementById('ffmpegToolStatus');
+const tesseractToolStatus = document.getElementById('tesseractToolStatus');
 const taskNameInput = document.getElementById('taskName');
 const taskIntentInput = document.getElementById('taskIntent');
 const taskDescriptionInput = document.getElementById('taskDescription');
@@ -241,7 +249,107 @@ async function saveConfig() {
     : ocrChanged;
   setConfigStatus(restartRequired ? 'Config saved. OCR changes require restart.' : 'Config saved.');
   setOcrRestartBadge(restartRequired);
+  loadUtilitiesStatus();
   fetchStatus();
+}
+
+function setUtilityStatus(message, isError) {
+  if (!utilityStatus) return;
+  utilityStatus.textContent = message;
+  utilityStatus.classList.toggle('error', !!isError);
+}
+
+function formatToolStatus(tool) {
+  if (!tool) return 'Unknown';
+  if (!tool.installed) return `Not installed (${tool.status || 'missing'})`;
+  const version = tool.version ? ` | ${tool.version}` : '';
+  return `Installed${version}`;
+}
+
+async function loadUtilitiesStatus() {
+  if (!ffmpegToolStatus || !tesseractToolStatus) return;
+  try {
+    const res = await fetch('/api/utilities/status');
+    if (!res.ok) {
+      throw new Error('Utility status unavailable.');
+    }
+    const data = await res.json();
+    ffmpegToolStatus.textContent = formatToolStatus(data.ffmpeg);
+    tesseractToolStatus.textContent = formatToolStatus(data.tesseract);
+  } catch {
+    ffmpegToolStatus.textContent = 'Unavailable';
+    tesseractToolStatus.textContent = 'Unavailable';
+    setUtilityStatus('Unable to load utility status.', true);
+  }
+}
+
+async function installUtility(tool, enableOcr) {
+  setUtilityStatus(`Installing ${tool}...`);
+  try {
+    const res = await fetch('/api/utilities/install', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tool,
+        enableOcr: !!enableOcr
+      })
+    });
+
+    let payload = null;
+    try {
+      payload = await res.json();
+    } catch {
+      payload = null;
+    }
+
+    if (!res.ok) {
+      setUtilityStatus(payload?.message || `Install ${tool} failed.`, true);
+      await loadUtilitiesStatus();
+      return;
+    }
+
+    setUtilityStatus(payload?.message || `${tool} installed.`);
+    if (payload?.ocrRestartRequired) {
+      setOcrRestartBadge(true);
+    }
+    await loadUtilitiesStatus();
+    await loadConfig();
+  } catch {
+    setUtilityStatus(`Install ${tool} failed.`, true);
+  }
+}
+
+async function enableOcrOnly() {
+  const tesseractPath = ocrTesseractInput ? ocrTesseractInput.value.trim() : '';
+  setUtilityStatus('Enabling OCR...');
+  try {
+    const res = await fetch('/api/utilities/enable-ocr', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tesseractPath: tesseractPath || null
+      })
+    });
+    let payload = null;
+    try {
+      payload = await res.json();
+    } catch {
+      payload = null;
+    }
+    if (!res.ok) {
+      setUtilityStatus(payload?.message || 'Enable OCR failed.', true);
+      return;
+    }
+
+    setUtilityStatus(payload?.message || 'OCR enabled.');
+    if (payload?.ocrRestartRequired) {
+      setOcrRestartBadge(true);
+    }
+    await loadConfig();
+    await loadUtilitiesStatus();
+  } catch {
+    setUtilityStatus('Enable OCR failed.', true);
+  }
 }
 
 async function loadTasks() {
@@ -876,6 +984,15 @@ async function sendChat(message) {
   fetchStatus();
 }
 
+function resizeChatInput() {
+  if (!chatInput) return;
+  chatInput.style.height = 'auto';
+  const maxHeight = 180;
+  const nextHeight = Math.min(chatInput.scrollHeight, maxHeight);
+  chatInput.style.height = `${Math.max(40, nextHeight)}px`;
+  chatInput.style.overflowY = chatInput.scrollHeight > maxHeight ? 'auto' : 'hidden';
+}
+
 function showConfirm(token, message, planJson) {
   confirmArea.innerHTML = '';
   const text = document.createElement('div');
@@ -946,8 +1063,20 @@ chatForm.addEventListener('submit', (e) => {
   const value = chatInput.value.trim();
   if (!value) return;
   chatInput.value = '';
+  resizeChatInput();
   sendChat(value);
 });
+
+if (chatInput) {
+  chatInput.addEventListener('input', () => resizeChatInput());
+  chatInput.addEventListener('keydown', (e) => {
+    if (e.isComposing) return;
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      chatForm.requestSubmit();
+    }
+  });
+}
 
 tabButtons.forEach(btn => {
   btn.addEventListener('click', () => setActiveTab(btn.dataset.tabTarget || 'chat'));
@@ -1016,6 +1145,26 @@ if (restartAdapterBtn) {
   });
 }
 
+if (utilityRefreshBtn) {
+  utilityRefreshBtn.addEventListener('click', () => loadUtilitiesStatus());
+}
+
+if (installFfmpegBtn) {
+  installFfmpegBtn.addEventListener('click', () => installUtility('ffmpeg', false));
+}
+
+if (installOcrBtn) {
+  installOcrBtn.addEventListener('click', () => installUtility('ocr', false));
+}
+
+if (installOcrEnableBtn) {
+  installOcrEnableBtn.addEventListener('click', () => installUtility('ocr', true));
+}
+
+if (enableOcrOnlyBtn) {
+  enableOcrOnlyBtn.addEventListener('click', () => enableOcrOnly());
+}
+
 if (taskSaveBtn) {
   taskSaveBtn.addEventListener('click', () => saveTask());
 }
@@ -1070,6 +1219,7 @@ if (ocrRestartAck) {
 fetchStatus();
 setInterval(fetchStatus, 5000);
 loadConfig();
+loadUtilitiesStatus();
 loadTasks();
 loadSchedules();
 refreshRecordingStatus();
@@ -1080,6 +1230,7 @@ refreshInspector();
 chatHistory = loadHistory();
 renderHistory();
 setActiveTab(localStorage.getItem(tabKey) || 'chat');
+resizeChatInput();
 
 function parseAuditLines(lines) {
   return lines.map(line => {
