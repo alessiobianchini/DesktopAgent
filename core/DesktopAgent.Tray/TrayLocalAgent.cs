@@ -854,6 +854,24 @@ internal sealed class TrayLocalAgent : IDisposable
         return Task.FromResult<WebAuditResponse?>(new WebAuditResponse(queue.ToArray()));
     }
 
+    public async Task WriteSystemAuditAsync(string eventType, string message, object? data, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _auditLog.WriteAsync(new AuditEvent
+            {
+                Timestamp = DateTimeOffset.UtcNow,
+                EventType = string.IsNullOrWhiteSpace(eventType) ? "system" : eventType.Trim(),
+                Message = string.IsNullOrWhiteSpace(message) ? "System event" : message.Trim(),
+                Data = data
+            }, cancellationToken);
+        }
+        catch
+        {
+            // Best effort: tray logging must never break app flow.
+        }
+    }
+
     public Task<WebApiSimpleResponse?> RestartServerAsync(CancellationToken cancellationToken)
     {
         return Task.FromResult<WebApiSimpleResponse?>(new WebApiSimpleResponse("No separate web server in tray-only mode.", true));

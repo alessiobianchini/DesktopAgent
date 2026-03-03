@@ -86,11 +86,13 @@ How to trigger:
 git tag v0.2.0
 git push origin v0.2.0
 ```
-2. GitHub Action builds portable zip + installer and publishes a GitHub Release.
+2. GitHub Action builds portable zip + Velopack assets and publishes a GitHub Release.
 
 Release assets:
 - `DesktopAgent-win-x64-<version>.zip`
-- `DesktopAgent-Setup-<version>.exe`
+- `DesktopAgent-win-Setup.exe` (Velopack installer)
+- `RELEASES`
+- `DesktopAgent-<version>-full.nupkg`
 
 Manual re-sign of an existing release:
 - Workflow: `.github/workflows/manual-sign.yml`
@@ -99,7 +101,7 @@ Manual re-sign of an existing release:
   - `replace_assets` (true = overwrite existing release files)
 
 ## Code Signing (GitHub Release)
-The release workflow can sign binaries and installer if these repository secrets are set:
+The release workflow can sign binaries if these repository secrets are set:
 - `WINDOWS_CODESIGN_PFX_BASE64`: base64 of your `.pfx` certificate
 - `WINDOWS_CODESIGN_PASSWORD`: password of the `.pfx`
 

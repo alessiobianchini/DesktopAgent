@@ -319,6 +319,11 @@ public partial class App : Application
         {
             _updatesEnabled = false;
             _updateStatus = "disabled";
+            _ = WriteUpdateAuditAsync("update_init", "Updater disabled", new
+            {
+                enabled = _settings.AutoUpdateEnabled,
+                source = _settings.AutoUpdateSource
+            });
             return;
         }
 
@@ -333,6 +338,14 @@ public partial class App : Application
             {
                 _updateStatus = "dev mode";
             }
+
+            _ = WriteUpdateAuditAsync("update_init", "Updater initialized", new
+            {
+                enabled = _updatesEnabled,
+                source = _settings.AutoUpdateSource,
+                isInstalled = _updateManager.IsInstalled,
+                pending = _pendingUpdate?.Version.ToString()
+            });
         }
         catch (Exception ex)
         {
@@ -340,6 +353,11 @@ public partial class App : Application
             _updateStatus = ex.Message.Contains("VelopackLocator", StringComparison.OrdinalIgnoreCase)
                 ? "disabled (non-velopack install)"
                 : $"error: {Compact(ex.Message, 36)}";
+            _ = WriteUpdateAuditAsync("update_init_failed", "Updater initialization failed", new
+            {
+                source = _settings.AutoUpdateSource,
+                error = ex.Message
+            });
         }
     }
 
@@ -363,6 +381,12 @@ public partial class App : Application
 
         try
         {
+            await WriteUpdateAuditAsync("update_check_started", "Checking for updates", new
+            {
+                manual,
+                source = _settings.AutoUpdateSource
+            });
+
             _lastUpdateCheck = DateTimeOffset.UtcNow;
             _updateStatus = "checking...";
 
@@ -370,6 +394,11 @@ public partial class App : Application
             {
                 _pendingUpdate = _updateManager.UpdatePendingRestart;
                 _updateStatus = $"ready {_pendingUpdate.Version}";
+                await WriteUpdateAuditAsync("update_pending", "Update already pending restart", new
+                {
+                    version = _pendingUpdate.Version.ToString(),
+                    manual
+                });
                 return;
             }
 
@@ -378,6 +407,10 @@ public partial class App : Application
             {
                 _pendingUpdate = null;
                 _updateStatus = "up to date";
+                await WriteUpdateAuditAsync("update_up_to_date", "No updates available", new
+                {
+                    manual
+                });
                 return;
             }
 
@@ -385,6 +418,12 @@ public partial class App : Application
             await _updateManager.DownloadUpdatesAsync(update);
             _pendingUpdate = update.TargetFullRelease;
             _updateStatus = $"ready {_pendingUpdate.Version}";
+            await WriteUpdateAuditAsync("update_downloaded", "Update downloaded", new
+            {
+                manual,
+                version = _pendingUpdate.Version.ToString(),
+                file = _pendingUpdate.FileName
+            });
 
             if (_settings.AutoUpdateAutoApply && _pendingUpdate != null)
             {
@@ -394,6 +433,12 @@ public partial class App : Application
         catch (Exception ex)
         {
             _updateStatus = $"failed: {Compact(ex.Message, 36)}";
+            await WriteUpdateAuditAsync("update_check_failed", "Update check failed", new
+            {
+                manual,
+                source = _settings.AutoUpdateSource,
+                error = ex.Message
+            });
         }
         finally
         {
@@ -405,17 +450,45 @@ public partial class App : Application
     {
         if (_updateManager == null || _pendingUpdate == null)
         {
+            _ = WriteUpdateAuditAsync("update_apply_skipped", "No pending update to apply", null);
             return;
         }
 
         try
         {
+            _ = WriteUpdateAuditAsync("update_apply_requested", "Applying downloaded update", new
+            {
+                version = _pendingUpdate.Version.ToString(),
+                file = _pendingUpdate.FileName
+            });
             _shutdown.Cancel();
             _updateManager.ApplyUpdatesAndRestart(_pendingUpdate);
         }
         catch (Exception ex)
         {
             _updateStatus = $"apply failed: {Compact(ex.Message, 30)}";
+            _ = WriteUpdateAuditAsync("update_apply_failed", "Apply update failed", new
+            {
+                version = _pendingUpdate.Version.ToString(),
+                error = ex.Message
+            });
+        }
+    }
+
+    private async Task WriteUpdateAuditAsync(string eventType, string message, object? data)
+    {
+        if (_webApiClient == null)
+        {
+            return;
+        }
+
+        try
+        {
+            await _webApiClient.WriteSystemAuditAsync(eventType, message, data, CancellationToken.None);
+        }
+        catch
+        {
+            // Best effort: never fail tray update flow for logging issues.
         }
     }
 

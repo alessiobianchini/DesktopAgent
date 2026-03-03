@@ -16,11 +16,6 @@ on:
         required: false
         default: ""
         type: string
-      build_installer:
-        description: "Build Inno Setup installer"
-        required: false
-        default: true
-        type: boolean
 
 permissions:
   contents: write
@@ -143,29 +138,6 @@ jobs:
           Compress-Archive -Path dist/win-x64/* -DestinationPath $zipPath -CompressionLevel Optimal
           "zip=$zipPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
-      - name: Install Inno Setup
-        if: ${{ github.event_name == 'push' || inputs.build_installer == true }}
-        shell: pwsh
-        run: choco install innosetup --no-progress -y
-
-      - name: Build installer
-        if: ${{ github.event_name == 'push' || inputs.build_installer == true }}
-        shell: pwsh
-        run: |
-          ./scripts/build-installer.ps1 -SkipPublish -Version "${{ steps.meta.outputs.version }}"
-
-      - name: Sign installer
-        if: ${{ (github.event_name == 'push' || inputs.build_installer == true) && steps.codesign_cert.outputs.path != '' }}
-        shell: pwsh
-        env:
-          CODESIGN_PASSWORD: ${{ secrets.WINDOWS_CODESIGN_PASSWORD }}
-        run: |
-          ./scripts/sign-windows.ps1 `
-            -CertPath "${{ steps.codesign_cert.outputs.path }}" `
-            -CertPassword "$env:CODESIGN_PASSWORD" `
-            -InputRoot "dist/win-x64" `
-            -IncludeInstaller
-
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
@@ -177,7 +149,6 @@ jobs:
           fail_on_unmatched_files: true
           files: |
             ${{ steps.portable.outputs.zip }}
-            dist/installer/*.exe
             dist/velopack-win-x64/releases/RELEASES
             dist/velopack-win-x64/releases/*.nupkg
             dist/velopack-win-x64/releases/*Setup*.exe
