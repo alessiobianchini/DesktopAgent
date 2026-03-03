@@ -70,6 +70,14 @@ jobs:
         run: |
           ./scripts/publish-windows.ps1 -Configuration Release -SkipTests -OutputRoot dist/win-x64 -Version "${{ steps.meta.outputs.version }}"
 
+      - name: Build Velopack package
+        shell: pwsh
+        run: |
+          ./scripts/package-velopack-windows.ps1 `
+            -Configuration Release `
+            -Version "${{ steps.meta.outputs.version }}" `
+            -SkipTests
+
       - name: Prepare code signing certificate
         id: codesign_cert
         shell: pwsh
@@ -144,3 +152,4 @@ jobs:
           files: |
             ${{ steps.portable.outputs.zip }}
             dist/installer/*.exe
+            dist/velopack-win-x64/releases/**
