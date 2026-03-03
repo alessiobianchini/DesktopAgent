@@ -4,6 +4,7 @@ using System.Text.RegularExpressions;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.Threading;
 
 namespace DesktopAgent.Tray;
@@ -15,6 +16,8 @@ internal partial class QuickChatWindow : Window
     private readonly CancellationTokenSource _pollingCts = new();
     private readonly List<WebTaskItem> _taskItems = new();
     private readonly List<WebScheduleItem> _scheduleItems = new();
+    private readonly List<WebGoalItem> _goalItems = new();
+    private readonly List<GoalRow> _goalRows = new();
     private const int MaxHistoryLines = 500;
 
     private TextBox? _historyBox;
@@ -79,6 +82,15 @@ internal partial class QuickChatWindow : Window
     private Button? _scheduleSaveButton;
     private TextBlock? _schedulesStatusText;
 
+    private Button? _goalsRefreshButton;
+    private Button? _goalsToggleAutoButton;
+    private Button? _goalsDoneButton;
+    private Button? _goalsRemoveButton;
+    private ListBox? _goalsList;
+    private TextBox? _goalTextInput;
+    private Button? _goalAddButton;
+    private TextBlock? _goalsStatusText;
+
     private Button? _auditRefreshButton;
     private Button? _auditCopyButton;
     private Button? _auditClearButton;
@@ -86,6 +98,7 @@ internal partial class QuickChatWindow : Window
 
     private string? _pendingToken;
     private bool _busy;
+    private bool _suppressGoalAutoEvents;
     private string _lastStatusLine = string.Empty;
 
     public QuickChatWindow(WebApiClient apiClient)
@@ -158,6 +171,15 @@ internal partial class QuickChatWindow : Window
         _scheduleEnabledInput = this.FindControl<CheckBox>("ScheduleEnabledInput");
         _scheduleSaveButton = this.FindControl<Button>("ScheduleSaveButton");
         _schedulesStatusText = this.FindControl<TextBlock>("SchedulesStatusText");
+
+        _goalsRefreshButton = this.FindControl<Button>("GoalsRefreshButton");
+        _goalsToggleAutoButton = this.FindControl<Button>("GoalsToggleAutoButton");
+        _goalsDoneButton = this.FindControl<Button>("GoalsDoneButton");
+        _goalsRemoveButton = this.FindControl<Button>("GoalsRemoveButton");
+        _goalsList = this.FindControl<ListBox>("GoalsList");
+        _goalTextInput = this.FindControl<TextBox>("GoalTextInput");
+        _goalAddButton = this.FindControl<Button>("GoalAddButton");
+        _goalsStatusText = this.FindControl<TextBlock>("GoalsStatusText");
 
         _auditRefreshButton = this.FindControl<Button>("AuditRefreshButton");
         _auditCopyButton = this.FindControl<Button>("AuditCopyButton");
@@ -279,6 +301,27 @@ internal partial class QuickChatWindow : Window
             _schedulesDeleteButton.Click += async (_, _) => await DeleteSelectedScheduleAsync();
         }
 
+        if (_goalsRefreshButton != null)
+        {
+            _goalsRefreshButton.Click += async (_, _) => await LoadGoalsAsync();
+        }
+        if (_goalsToggleAutoButton != null)
+        {
+            _goalsToggleAutoButton.Click += async (_, _) => await ToggleSelectedGoalAutoAsync();
+        }
+        if (_goalsDoneButton != null)
+        {
+            _goalsDoneButton.Click += async (_, _) => await MarkSelectedGoalDoneAsync();
+        }
+        if (_goalsRemoveButton != null)
+        {
+            _goalsRemoveButton.Click += async (_, _) => await RemoveSelectedGoalAsync();
+        }
+        if (_goalAddButton != null)
+        {
+            _goalAddButton.Click += async (_, _) => await AddGoalAsync();
+        }
+
         if (_auditRefreshButton != null)
         {
             _auditRefreshButton.Click += async (_, _) => await LoadAuditAsync();
@@ -313,6 +356,7 @@ internal partial class QuickChatWindow : Window
         await LoadConfigAsync();
         await LoadTasksAsync();
         await LoadSchedulesAsync();
+        await LoadGoalsAsync();
         await LoadAuditAsync();
         _ = Task.Run(() => PollStatusAsync(_pollingCts.Token));
     }
@@ -821,6 +865,123 @@ internal partial class QuickChatWindow : Window
         }
     }
 
+    private async Task LoadGoalsAsync()
+    {
+        try
+        {
+            var response = await _apiClient.GetGoalsAsync(CancellationToken.None);
+            _goalItems.Clear();
+            _goalRows.Clear();
+            if (response?.Goals != null)
+            {
+                _goalItems.AddRange(response.Goals);
+                _goalRows.AddRange(response.Goals.Select(ToGoalRow));
+            }
+
+            if (_goalsList != null)
+            {
+                _suppressGoalAutoEvents = true;
+                _goalsList.ItemsSource = _goalRows;
+                _suppressGoalAutoEvents = false;
+            }
+
+            var scheduler = response == null
+                ? "scheduler:unknown"
+                : $"scheduler:{(response.SchedulerEnabled ? "on" : "off")} every {response.SchedulerIntervalSeconds}s";
+            SetText(_goalsStatusText, $"Goals: {_goalItems.Count} | {scheduler}");
+        }
+        catch (Exception ex)
+        {
+            SetText(_goalsStatusText, $"Goals load failed: {ex.Message}");
+        }
+    }
+
+    private async Task AddGoalAsync()
+    {
+        var text = _goalTextInput?.Text?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            SetText(_goalsStatusText, "Goal text is required.");
+            return;
+        }
+
+        try
+        {
+            var result = await _apiClient.AddGoalAsync(text, CancellationToken.None);
+            SetText(_goalsStatusText, result?.Message ?? "Goal added.");
+            SetText(_goalTextInput, string.Empty);
+            await LoadGoalsAsync();
+        }
+        catch (Exception ex)
+        {
+            SetText(_goalsStatusText, $"Goal add failed: {ex.Message}");
+        }
+    }
+
+    private async Task ToggleSelectedGoalAutoAsync()
+    {
+        var selected = SelectedGoal();
+        if (selected == null)
+        {
+            SetText(_goalsStatusText, "Select a goal.");
+            return;
+        }
+
+        try
+        {
+            var enabled = !selected.AutoRunEnabled;
+            var result = await _apiClient.SetGoalAutoAsync(selected.Id, enabled, CancellationToken.None);
+            SetText(_goalsStatusText, result?.Message ?? "Goal updated.");
+            await LoadGoalsAsync();
+        }
+        catch (Exception ex)
+        {
+            SetText(_goalsStatusText, $"Goal update failed: {ex.Message}");
+        }
+    }
+
+    private async Task MarkSelectedGoalDoneAsync()
+    {
+        var selected = SelectedGoal();
+        if (selected == null)
+        {
+            SetText(_goalsStatusText, "Select a goal.");
+            return;
+        }
+
+        try
+        {
+            var result = await _apiClient.MarkGoalDoneAsync(selected.Id, CancellationToken.None);
+            SetText(_goalsStatusText, result?.Message ?? "Goal marked as done.");
+            await LoadGoalsAsync();
+        }
+        catch (Exception ex)
+        {
+            SetText(_goalsStatusText, $"Goal update failed: {ex.Message}");
+        }
+    }
+
+    private async Task RemoveSelectedGoalAsync()
+    {
+        var selected = SelectedGoal();
+        if (selected == null)
+        {
+            SetText(_goalsStatusText, "Select a goal.");
+            return;
+        }
+
+        try
+        {
+            var result = await _apiClient.RemoveGoalAsync(selected.Id, CancellationToken.None);
+            SetText(_goalsStatusText, result?.Message ?? "Goal removed.");
+            await LoadGoalsAsync();
+        }
+        catch (Exception ex)
+        {
+            SetText(_goalsStatusText, $"Goal remove failed: {ex.Message}");
+        }
+    }
+
     private async Task LoadAuditAsync()
     {
         try
@@ -855,6 +1016,17 @@ internal partial class QuickChatWindow : Window
         }
 
         return _scheduleItems[index];
+    }
+
+    private WebGoalItem? SelectedGoal()
+    {
+        var row = _goalsList?.SelectedItem as GoalRow;
+        if (row == null)
+        {
+            return null;
+        }
+
+        return _goalItems.FirstOrDefault(goal => string.Equals(goal.Id, row.Id, StringComparison.OrdinalIgnoreCase));
     }
 
     private void ShowConfirm(bool show, string? text)
@@ -895,7 +1067,8 @@ internal partial class QuickChatWindow : Window
             _profileBalancedButton, _profilePowerButton, _openWebButton, _copyButton, _clearButton,
             _cfgLoadButton, _cfgSaveButton, _cfgTestLlmButton, _tasksRefreshButton, _tasksRunButton,
             _tasksDeleteButton, _taskSaveButton, _schedulesRefreshButton, _schedulesRunButton, _schedulesDeleteButton,
-            _scheduleSaveButton, _auditRefreshButton, _auditCopyButton, _auditClearButton
+            _scheduleSaveButton, _goalsRefreshButton, _goalsToggleAutoButton, _goalsDoneButton,
+            _goalsRemoveButton, _goalAddButton, _auditRefreshButton, _auditCopyButton, _auditClearButton
         }.Where(button => button != null).Cast<Button>();
     }
 
@@ -1040,6 +1213,59 @@ internal partial class QuickChatWindow : Window
         return $"{schedule.Id} | {schedule.TaskName} | {start} | {interval} | {enabled}";
     }
 
+    private static string FormatGoal(WebGoalItem goal)
+    {
+        var status = goal.Completed ? "done" : "open";
+        var priority = goal.Priority switch
+        {
+            <= 0 => "low",
+            >= 2 => "high",
+            _ => "normal"
+        };
+        var auto = goal.AutoRunEnabled ? "auto:on" : "auto:off";
+        var attempts = goal.Attempts > 0 ? $" attempts:{goal.Attempts}" : string.Empty;
+        return $"[{goal.Id}] {status} [{priority}] {auto} - {goal.Text}{attempts}";
+    }
+
+    private static GoalRow ToGoalRow(WebGoalItem goal)
+    {
+        return new GoalRow
+        {
+            Id = goal.Id,
+            AutoRunEnabled = goal.AutoRunEnabled,
+            Label = FormatGoal(goal)
+        };
+    }
+
+    private async void OnGoalAutoChecked(object? sender, RoutedEventArgs e)
+    {
+        await UpdateGoalAutoFromRowAsync(sender, true);
+    }
+
+    private async void OnGoalAutoUnchecked(object? sender, RoutedEventArgs e)
+    {
+        await UpdateGoalAutoFromRowAsync(sender, false);
+    }
+
+    private async Task UpdateGoalAutoFromRowAsync(object? sender, bool enabled)
+    {
+        if (_suppressGoalAutoEvents || sender is not CheckBox checkBox || checkBox.DataContext is not GoalRow row)
+        {
+            return;
+        }
+
+        try
+        {
+            var result = await _apiClient.SetGoalAutoAsync(row.Id, enabled, CancellationToken.None);
+            SetText(_goalsStatusText, result?.Message ?? "Goal updated.");
+            await LoadGoalsAsync();
+        }
+        catch (Exception ex)
+        {
+            SetText(_goalsStatusText, $"Goal update failed: {ex.Message}");
+        }
+    }
+
     private static string SanitizeInputForCommand(string input)
     {
         var value = input.Trim();
@@ -1075,5 +1301,12 @@ internal partial class QuickChatWindow : Window
         {
             // Ignore shell launch errors.
         }
+    }
+
+    private sealed class GoalRow
+    {
+        public string Id { get; init; } = string.Empty;
+        public string Label { get; init; } = string.Empty;
+        public bool AutoRunEnabled { get; init; }
     }
 }

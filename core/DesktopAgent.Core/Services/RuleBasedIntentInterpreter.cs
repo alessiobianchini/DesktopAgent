@@ -9,11 +9,11 @@ namespace DesktopAgent.Core.Services;
 
 public sealed class RuleBasedIntentInterpreter : IIntentInterpreter
 {
-    private static readonly string[] OpenVerbs = { "open", "run", "start", "launch", "apri", "avvia", "esegui", "lancia" };
-    private static readonly string[] TypeVerbs = { "type", "scrivi", "digita" };
-    private static readonly string[] ClickVerbs = { "click", "clicca", "clic" };
-    private static readonly string[] FindVerbs = { "find", "cerca", "trova" };
-    private static readonly string[] PressVerbs = { "press", "premi" };
+    private static readonly string[] OpenVerbs = { "open", "open up", "run", "start", "launch", "apri", "aprimi", "aprirmi", "aprire", "avvia", "avviare", "esegui", "eseguire", "lancia", "lanciare" };
+    private static readonly string[] TypeVerbs = { "type", "write", "scrivi", "scrivere", "digita", "digitare" };
+    private static readonly string[] ClickVerbs = { "click", "click on", "clicca", "clic", "cliccare" };
+    private static readonly string[] FindVerbs = { "find", "search", "look for", "cerca", "cercare", "trova", "trovare" };
+    private static readonly string[] PressVerbs = { "press", "premi", "premere" };
 
     private static readonly Regex OpenRegex = BuildVerbRegex(OpenVerbs);
     private static readonly Regex TypeRegex = BuildVerbRegex(TypeVerbs);
@@ -63,14 +63,26 @@ public sealed class RuleBasedIntentInterpreter : IIntentInterpreter
     private static readonly Regex NavigateQueryRegex = BuildNavigateQueryRegex();
     private static readonly Regex OpenUrlOnBrowserRegex = BuildOpenUrlOnBrowserRegex();
     private static readonly Regex SearchOnBrowserRegex = BuildSearchOnBrowserRegex();
+    private static readonly Regex SearchOnCurrentAppRegex = BuildSearchOnCurrentAppRegex();
     private static readonly Regex SearchWebRegex = BuildSearchWebRegex();
     private static readonly Regex FileWriteRegex = BuildFileWriteRegex();
     private static readonly Regex FileAppendRegex = BuildFileAppendRegex();
     private static readonly Regex FileReadRegex = BuildFileReadRegex();
     private static readonly Regex FileListRegex = BuildFileListRegex();
+    private static readonly Regex SendTextToRecipientRegex = BuildSendTextToRecipientRegex();
+    private static readonly Regex SendPronounRegex = BuildSendPronounRegex();
+    private static readonly Regex SendGenericRegex = BuildSendGenericRegex();
     private static readonly Regex NotifyRegex = BuildNotifyRegex();
     private static readonly Regex ClipboardHistoryRegex = BuildSimpleRegex("clipboard history", "show clipboard history", "cronologia clipboard");
+    private static readonly Regex SnapshotRegex = BuildSnapshotRegex();
+    private static readonly Regex StartRecordingRegex = BuildStartRecordingRegex();
+    private static readonly Regex StopRecordingRegex = BuildStopRecordingRegex();
     private static readonly Regex MouseDurationRegex = BuildMouseDurationRegex();
+    private static readonly Regex RolePrefixRegex = new("^(?:you|agent|system)\\s*:\\s*", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex PolitePrefixRegex = new("^(?:(?:can|could|would)\\s+you|please|pls|potresti|puoi|mi\\s+puoi|mi\\s+potresti|per\\s+favore|gentilmente)\\s+", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex ConversationalPronounPrefixRegex = new("^(?:mi|me)\\s+(?=(?:open|run|start|launch|type|write|click|find|search|press|apri|aprire|aprimi|aprirmi|avvia|avviare|esegui|eseguire|lancia|lanciare|scrivi|scrivere|digita|digitare|cerca|cercare|trova|trovare|premi|premere)\\b)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex OpenTargetPrefixNoiseRegex = new("^(?:(?:for\\s+me|per\\s+me|please|pls|kindly)\\s+)+", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex OpenTargetSuffixNoiseRegex = new("\\s+(?:please|pls|per\\s+favore|thanks?|grazie)\\s*$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly HashSet<string> KeyTokens = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -102,20 +114,49 @@ public sealed class RuleBasedIntentInterpreter : IIntentInterpreter
     public ActionPlan Interpret(string intent)
     {
         var plan = new ActionPlan { Intent = intent };
-        var trimmed = (intent ?? string.Empty).Trim();
+        var trimmed = NormalizeConversationalInput((intent ?? string.Empty).Trim());
         if (string.IsNullOrWhiteSpace(trimmed))
         {
             plan.Steps.Add(new PlanStep { Type = ActionType.ReadText, Note = "Default to read text" });
             return plan;
         }
 
+        if (TryParseStartScreenRecording(trimmed, out var startWithAudio))
+        {
+            plan.Steps.Add(new PlanStep
+            {
+                Type = ActionType.StartScreenRecording,
+                Text = startWithAudio ? "audio:on" : "audio:off"
+            });
+            return plan;
+        }
+
+        if (StopRecordingRegex.IsMatch(trimmed))
+        {
+            plan.Steps.Add(new PlanStep { Type = ActionType.StopScreenRecording });
+            return plan;
+        }
+
+        if (TryParseScreenRecording(trimmed, out var recordDuration, out var includeAudio))
+        {
+            plan.Steps.Add(new PlanStep
+            {
+                Type = ActionType.RecordScreen,
+                WaitFor = recordDuration,
+                Text = includeAudio ? "audio:on" : "audio:off"
+            });
+            return plan;
+        }
+
+        if (SnapshotRegex.IsMatch(trimmed))
+        {
+            plan.Steps.Add(new PlanStep { Type = ActionType.CaptureScreen });
+            return plan;
+        }
+
         if (TryMatch(OpenAndNewFileRegex, trimmed, out var app))
         {
-            var appTarget = app;
-            if (_appResolver.TryResolveApp(app, out var resolved))
-            {
-                appTarget = resolved;
-            }
+            var appTarget = ResolveOpenAppTarget(app);
             plan.Steps.Add(new PlanStep { Type = ActionType.OpenApp, AppIdOrPath = appTarget });
             plan.Steps.Add(new PlanStep { Type = ActionType.KeyCombo, Keys = GetNewFileKeys(), ExpectedAppId = appTarget });
             return plan;
@@ -132,10 +173,30 @@ public sealed class RuleBasedIntentInterpreter : IIntentInterpreter
                 var (steps, recognized) = InterpretSingle(segment);
                 if (steps.Count > 0)
                 {
+                    if (!string.IsNullOrWhiteSpace(currentApp))
+                    {
+                        AdaptSearchStepsForCurrentApp(steps, segment, currentApp);
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(currentApp))
+                    {
+                        ReplaceGenericBrowserTargets(steps, currentApp);
+                    }
+
                     var openStep = steps.FirstOrDefault(step => step.Type == ActionType.OpenApp && !string.IsNullOrWhiteSpace(step.AppIdOrPath));
                     if (openStep != null)
                     {
                         currentApp = openStep.AppIdOrPath;
+                        if (!string.IsNullOrWhiteSpace(lastOpenedApp)
+                            && string.Equals(lastOpenedApp, currentApp, StringComparison.OrdinalIgnoreCase)
+                            && steps.Count > 1
+                            && ReferenceEquals(steps[0], openStep))
+                        {
+                            // Avoid redundant "open same app" in chained phrases like:
+                            // "open edge and search ... on browser".
+                            steps.RemoveAt(0);
+                        }
+
                         lastOpenedApp = currentApp;
                         ApplyExpectedAppBinding(steps, currentApp);
                     }
@@ -313,6 +374,12 @@ public sealed class RuleBasedIntentInterpreter : IIntentInterpreter
         return new Regex(pattern, RegexOptions.IgnoreCase | RegexOptions.Compiled);
     }
 
+    private static Regex BuildSearchOnCurrentAppRegex()
+    {
+        var pattern = "^(?:search|cerca|trova)(?:\\s+(?:for|di))?\\s+(?<query>.+?)\\s+(?:there|on\\s+it|in\\s+it|in\\s+there|su\\s+quello|su\\s+quella|su\\s+questa\\s+app|qui|li|lì)$";
+        return new Regex(pattern, RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    }
+
     private static Regex BuildSearchWebRegex()
     {
         var pattern = "^(?:search|cerca|trova)(?:\\s+(?:for|di))?\\s+(?<query>.+)$";
@@ -343,9 +410,45 @@ public sealed class RuleBasedIntentInterpreter : IIntentInterpreter
         return new Regex(pattern, RegexOptions.IgnoreCase | RegexOptions.Compiled);
     }
 
+    private static Regex BuildSendTextToRecipientRegex()
+    {
+        var pattern = "^(?:send|invia|manda)\\s+(?<text>.+?)\\s+(?:to|a)\\s+(?<recipient>.+)$";
+        return new Regex(pattern, RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    }
+
+    private static Regex BuildSendPronounRegex()
+    {
+        var pattern = "^(?:send\\s+(?:him|her|them)|inviagli|inviale|mandagli|mandale)\\s+(?<text>.+)$";
+        return new Regex(pattern, RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    }
+
+    private static Regex BuildSendGenericRegex()
+    {
+        var pattern = "^(?:send|invia|manda)(?:\\s+(?:message|messaggio|msg))?\\s+(?<text>.+)$";
+        return new Regex(pattern, RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    }
+
     private static Regex BuildNotifyRegex()
     {
         var pattern = "^(?:notify|notification|notifica)\\s+(?<text>.+)$";
+        return new Regex(pattern, RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    }
+
+    private static Regex BuildSnapshotRegex()
+    {
+        var pattern = "^(?:snapshot|screenshot|take\\s+(?:a\\s+)?snapshot|take\\s+(?:a\\s+)?screenshot|capture\\s+(?:the\\s+)?screen|capture\\s+screen|cattura\\s+schermo|fai\\s+(?:uno\\s+)?snapshot|fai\\s+uno\\s+screenshot)$";
+        return new Regex(pattern, RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    }
+
+    private static Regex BuildStartRecordingRegex()
+    {
+        var pattern = "^(?:start\\s+record(?:ing)?|begin\\s+record(?:ing)?|avvia\\s+registrazione|inizia\\s+registrazione)(?:\\s+(?:screen|desktop|schermo))?(?<audio>\\s+(?:with\\s+audio|and\\s+audio|con\\s+audio|without\\s+audio|no\\s+audio|senza\\s+audio))?$";
+        return new Regex(pattern, RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    }
+
+    private static Regex BuildStopRecordingRegex()
+    {
+        var pattern = "^(?:stop\\s+record(?:ing)?|end\\s+record(?:ing)?|ferma\\s+registrazione|stoppa\\s+registrazione)(?:\\s+(?:screen|desktop|schermo))?$";
         return new Regex(pattern, RegexOptions.IgnoreCase | RegexOptions.Compiled);
     }
 
@@ -363,7 +466,7 @@ public sealed class RuleBasedIntentInterpreter : IIntentInterpreter
 
     private static List<string> SplitSegments(string input)
     {
-        var tokens = TokenizeWithQuotes(input);
+        var tokens = TokenizeWithQuotes(NormalizeSegmentDelimiters(input));
         var segments = new List<string>();
         var current = new List<string>();
 
@@ -401,6 +504,52 @@ public sealed class RuleBasedIntentInterpreter : IIntentInterpreter
         }
 
         return segments.Where(segment => !string.IsNullOrWhiteSpace(segment)).ToList();
+    }
+
+    private static string NormalizeSegmentDelimiters(string input)
+    {
+        if (string.IsNullOrWhiteSpace(input))
+        {
+            return input;
+        }
+
+        var chars = new List<char>(input.Length + 8);
+        var inQuotes = false;
+        char quoteChar = '\0';
+
+        foreach (var ch in input)
+        {
+            if ((ch == '"' || ch == '\'') && (!inQuotes || ch == quoteChar))
+            {
+                if (inQuotes)
+                {
+                    inQuotes = false;
+                    quoteChar = '\0';
+                }
+                else
+                {
+                    inQuotes = true;
+                    quoteChar = ch;
+                }
+
+                chars.Add(ch);
+                continue;
+            }
+
+            if (!inQuotes && (ch == ',' || ch == ';' || ch == '|'))
+            {
+                chars.Add(' ');
+                chars.Add('a');
+                chars.Add('n');
+                chars.Add('d');
+                chars.Add(' ');
+                continue;
+            }
+
+            chars.Add(ch);
+        }
+
+        return new string(chars.ToArray());
     }
 
     private static bool IsConnector(string token, string next)
@@ -473,6 +622,54 @@ public sealed class RuleBasedIntentInterpreter : IIntentInterpreter
 
     private (List<PlanStep> Steps, bool Recognized) InterpretSingle(string input)
     {
+        input = NormalizeConversationalInput(input);
+        if (TryParseStartScreenRecording(input, out var startWithAudio))
+        {
+            return (new List<PlanStep>
+            {
+                new()
+                {
+                    Type = ActionType.StartScreenRecording,
+                    Text = startWithAudio ? "audio:on" : "audio:off"
+                }
+            }, true);
+        }
+
+        if (StopRecordingRegex.IsMatch(input))
+        {
+            return (new List<PlanStep>
+            {
+                new()
+                {
+                    Type = ActionType.StopScreenRecording
+                }
+            }, true);
+        }
+
+        if (TryParseScreenRecording(input, out var recordDuration, out var includeAudio))
+        {
+            return (new List<PlanStep>
+            {
+                new()
+                {
+                    Type = ActionType.RecordScreen,
+                    WaitFor = recordDuration,
+                    Text = includeAudio ? "audio:on" : "audio:off"
+                }
+            }, true);
+        }
+
+        if (SnapshotRegex.IsMatch(input))
+        {
+            return (new List<PlanStep>
+            {
+                new()
+                {
+                    Type = ActionType.CaptureScreen
+                }
+            }, true);
+        }
+
         if (TryParseMouseJiggle(input, out var duration))
         {
             return (new List<PlanStep>
@@ -701,6 +898,69 @@ public sealed class RuleBasedIntentInterpreter : IIntentInterpreter
             return (new List<PlanStep> { new() { Type = ActionType.FileList, Target = path } }, true);
         }
 
+        if (SendTextToRecipientRegex.IsMatch(input))
+        {
+            var match = SendTextToRecipientRegex.Match(input);
+            var messageText = CleanQuoted(match.Groups["text"].Value);
+            var recipient = CleanQuoted(match.Groups["recipient"].Value);
+            if (!string.IsNullOrWhiteSpace(messageText) && !string.IsNullOrWhiteSpace(recipient))
+            {
+                return (new List<PlanStep>
+                {
+                    new()
+                    {
+                        Type = ActionType.Find,
+                        Selector = new Selector { NameContains = recipient }
+                    },
+                    new() { Type = ActionType.TypeText, Text = messageText },
+                    new()
+                    {
+                        Type = ActionType.Click,
+                        Selector = new Selector { NameContains = "send" },
+                        Target = "send"
+                    }
+                }, true);
+            }
+        }
+
+        if (SendPronounRegex.IsMatch(input))
+        {
+            var match = SendPronounRegex.Match(input);
+            var messageText = CleanQuoted(match.Groups["text"].Value);
+            if (!string.IsNullOrWhiteSpace(messageText))
+            {
+                return (new List<PlanStep>
+                {
+                    new() { Type = ActionType.TypeText, Text = messageText },
+                    new()
+                    {
+                        Type = ActionType.Click,
+                        Selector = new Selector { NameContains = "send" },
+                        Target = "send"
+                    }
+                }, true);
+            }
+        }
+
+        if (SendGenericRegex.IsMatch(input))
+        {
+            var match = SendGenericRegex.Match(input);
+            var messageText = CleanQuoted(match.Groups["text"].Value);
+            if (!string.IsNullOrWhiteSpace(messageText))
+            {
+                return (new List<PlanStep>
+                {
+                    new() { Type = ActionType.TypeText, Text = messageText },
+                    new()
+                    {
+                        Type = ActionType.Click,
+                        Selector = new Selector { NameContains = "send" },
+                        Target = "send"
+                    }
+                }, true);
+            }
+        }
+
         if (SearchOnBrowserRegex.IsMatch(input))
         {
             var match = SearchOnBrowserRegex.Match(input);
@@ -718,6 +978,19 @@ public sealed class RuleBasedIntentInterpreter : IIntentInterpreter
                 {
                     new() { Type = ActionType.OpenApp, AppIdOrPath = appTarget },
                     new() { Type = ActionType.OpenUrl, Target = BuildSearchUrl(query), AppIdOrPath = appTarget }
+                }, true);
+            }
+        }
+
+        if (SearchOnCurrentAppRegex.IsMatch(input))
+        {
+            var match = SearchOnCurrentAppRegex.Match(input);
+            var query = CleanQuoted(match.Groups["query"].Value);
+            if (!string.IsNullOrWhiteSpace(query))
+            {
+                return (new List<PlanStep>
+                {
+                    new() { Type = ActionType.OpenUrl, Target = BuildSearchUrl(query) }
                 }, true);
             }
         }
@@ -873,11 +1146,7 @@ public sealed class RuleBasedIntentInterpreter : IIntentInterpreter
             var appToFocus = CleanQuoted(match.Groups["app"].Value);
             if (!string.IsNullOrWhiteSpace(appToFocus))
             {
-                var appTarget = appToFocus;
-                if (_appResolver.TryResolveApp(appToFocus, out var resolved))
-                {
-                    appTarget = resolved;
-                }
+                var appTarget = ResolveOpenAppTarget(appToFocus);
 
                 return (new List<PlanStep> { new() { Type = ActionType.OpenApp, AppIdOrPath = appTarget } }, true);
             }
@@ -927,11 +1196,7 @@ public sealed class RuleBasedIntentInterpreter : IIntentInterpreter
             var (actionSteps, actionRecognized) = InterpretSingle(actionPart);
             if (actionRecognized && actionSteps.Count > 0)
             {
-                var appTarget = appPart;
-                if (_appResolver.TryResolveApp(appPart, out var resolved))
-                {
-                    appTarget = resolved;
-                }
+                var appTarget = ResolveOpenAppTarget(appPart);
 
                 var filtered = actionSteps.Where(step => step.Type != ActionType.OpenApp).ToList();
                 filtered.Insert(0, new PlanStep { Type = ActionType.OpenApp, AppIdOrPath = appTarget });
@@ -942,11 +1207,7 @@ public sealed class RuleBasedIntentInterpreter : IIntentInterpreter
 
         if (TryMatch(OpenRegex, input, out var appToOpen))
         {
-            var appTarget = appToOpen;
-            if (_appResolver.TryResolveApp(appToOpen, out var resolved))
-            {
-                appTarget = resolved;
-            }
+            var appTarget = ResolveOpenAppTarget(appToOpen);
             return (new List<PlanStep> { new() { Type = ActionType.OpenApp, AppIdOrPath = appTarget } }, true);
         }
 
@@ -1100,6 +1361,51 @@ public sealed class RuleBasedIntentInterpreter : IIntentInterpreter
         return trimmed;
     }
 
+    private static string NormalizeConversationalInput(string input)
+    {
+        var normalized = (input ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return string.Empty;
+        }
+
+        normalized = Regex.Replace(normalized, "\\s+", " ");
+        for (var i = 0; i < 4; i++)
+        {
+            var before = normalized;
+            normalized = RolePrefixRegex.Replace(normalized, string.Empty).Trim();
+            normalized = PolitePrefixRegex.Replace(normalized, string.Empty).Trim();
+            normalized = ConversationalPronounPrefixRegex.Replace(normalized, string.Empty).Trim();
+            if (string.Equals(before, normalized, StringComparison.Ordinal))
+            {
+                break;
+            }
+        }
+
+        normalized = normalized.TrimEnd('?', '!', '.', ';', ',');
+        return normalized.Trim();
+    }
+
+    private string ResolveOpenAppTarget(string raw)
+    {
+        var candidate = CleanQuoted(raw);
+        candidate = OpenTargetPrefixNoiseRegex.Replace(candidate, string.Empty).Trim();
+        candidate = OpenTargetSuffixNoiseRegex.Replace(candidate, string.Empty).Trim();
+        candidate = candidate.Trim().Trim(',', ';', ':', '.', '!', '?');
+
+        if (string.IsNullOrWhiteSpace(candidate))
+        {
+            candidate = CleanQuoted(raw);
+        }
+
+        if (_appResolver.TryResolveApp(candidate, out var resolved))
+        {
+            return resolved;
+        }
+
+        return candidate;
+    }
+
     private static string BuildSaveAsTarget(string file, string folder)
     {
         if (string.IsNullOrWhiteSpace(file))
@@ -1227,7 +1533,83 @@ public sealed class RuleBasedIntentInterpreter : IIntentInterpreter
             return false;
         }
 
-        var match = MouseDurationRegex.Match(normalized);
+        duration = ParseDuration(normalized, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(1), TimeSpan.FromHours(8));
+
+        return true;
+    }
+
+    private static bool TryParseScreenRecording(string input, out TimeSpan duration, out bool includeAudio)
+    {
+        duration = TimeSpan.FromSeconds(30);
+        includeAudio = true;
+
+        var normalized = (input ?? string.Empty).Trim().ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return false;
+        }
+
+        var hasRecordVerb = normalized.Contains("record")
+                            || normalized.Contains("recording")
+                            || normalized.Contains("registra")
+                            || normalized.Contains("registrare")
+                            || normalized.Contains("registrazione");
+        var hasScreenTarget = normalized.Contains("screen")
+                              || normalized.Contains("desktop")
+                              || normalized.Contains("schermo");
+
+        if (!hasRecordVerb || !hasScreenTarget)
+        {
+            return false;
+        }
+
+        if (normalized.Contains("without audio")
+            || normalized.Contains("no audio")
+            || normalized.Contains("senza audio"))
+        {
+            includeAudio = false;
+        }
+        else if (normalized.Contains("with audio")
+                 || normalized.Contains("and audio")
+                 || normalized.Contains("con audio")
+                 || normalized.Contains("e audio"))
+        {
+            includeAudio = true;
+        }
+
+        duration = ParseDuration(normalized, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(1), TimeSpan.FromHours(2));
+        return true;
+    }
+
+    private static bool TryParseStartScreenRecording(string input, out bool includeAudio)
+    {
+        includeAudio = true;
+        var normalized = (input ?? string.Empty).Trim().ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return false;
+        }
+
+        var match = StartRecordingRegex.Match(normalized);
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        if (normalized.Contains("without audio")
+            || normalized.Contains("no audio")
+            || normalized.Contains("senza audio"))
+        {
+            includeAudio = false;
+        }
+
+        return true;
+    }
+
+    private static TimeSpan ParseDuration(string normalizedInput, TimeSpan defaultDuration, TimeSpan minDuration, TimeSpan maxDuration)
+    {
+        var duration = defaultDuration;
+        var match = MouseDurationRegex.Match(normalizedInput);
         if (match.Success
             && double.TryParse(match.Groups["value"].Value.Replace(',', '.'),
                 System.Globalization.NumberStyles.Float,
@@ -1244,7 +1626,7 @@ public sealed class RuleBasedIntentInterpreter : IIntentInterpreter
         }
         else
         {
-            var bare = Regex.Match(normalized, "(?:for|per)\\s+(?<value>\\d+(?:[\\.,]\\d+)?)", RegexOptions.IgnoreCase);
+            var bare = Regex.Match(normalizedInput, "(?:for|per)\\s+(?<value>\\d+(?:[\\.,]\\d+)?)", RegexOptions.IgnoreCase);
             if (bare.Success
                 && double.TryParse(bare.Groups["value"].Value.Replace(',', '.'),
                     System.Globalization.NumberStyles.Float,
@@ -1255,17 +1637,17 @@ public sealed class RuleBasedIntentInterpreter : IIntentInterpreter
             }
         }
 
-        if (duration <= TimeSpan.Zero)
+        if (duration < minDuration)
         {
-            duration = TimeSpan.FromSeconds(1);
+            duration = minDuration;
         }
 
-        if (duration > TimeSpan.FromHours(8))
+        if (duration > maxDuration)
         {
-            duration = TimeSpan.FromHours(8);
+            duration = maxDuration;
         }
 
-        return true;
+        return duration;
     }
 
     private List<string> GetNewFileKeys()
@@ -1477,6 +1859,85 @@ public sealed class RuleBasedIntentInterpreter : IIntentInterpreter
                 step.ExpectedAppId = appId;
             }
         }
+    }
+
+    private static void ReplaceGenericBrowserTargets(List<PlanStep> steps, string currentApp)
+    {
+        foreach (var step in steps)
+        {
+            if (step.Type == ActionType.OpenApp && IsGenericBrowserAlias(step.AppIdOrPath))
+            {
+                step.AppIdOrPath = currentApp;
+            }
+
+            if (step.Type == ActionType.OpenUrl && IsGenericBrowserAlias(step.AppIdOrPath))
+            {
+                step.AppIdOrPath = currentApp;
+            }
+        }
+    }
+
+    private static void AdaptSearchStepsForCurrentApp(List<PlanStep> steps, string originalSegment, string currentApp)
+    {
+        if (steps.Count != 1 || steps[0].Type != ActionType.OpenUrl || IsLikelyBrowserApp(currentApp))
+        {
+            return;
+        }
+
+        if (!TryExtractSearchQuery(originalSegment, out var query))
+        {
+            return;
+        }
+
+        steps[0] = new PlanStep
+        {
+            Type = ActionType.Find,
+            Selector = new Selector { NameContains = query }
+        };
+    }
+
+    private static bool TryExtractSearchQuery(string segment, out string query)
+    {
+        query = string.Empty;
+        if (SearchOnCurrentAppRegex.IsMatch(segment))
+        {
+            var match = SearchOnCurrentAppRegex.Match(segment);
+            query = CleanQuoted(match.Groups["query"].Value);
+            return !string.IsNullOrWhiteSpace(query);
+        }
+
+        if (SearchWebRegex.IsMatch(segment))
+        {
+            var match = SearchWebRegex.Match(segment);
+            query = CleanQuoted(match.Groups["query"].Value);
+            return !string.IsNullOrWhiteSpace(query);
+        }
+
+        return false;
+    }
+
+    private static bool IsLikelyBrowserApp(string appIdOrPath)
+    {
+        var value = appIdOrPath.ToLowerInvariant();
+        return value.Contains("chrome", StringComparison.Ordinal)
+            || value.Contains("edge", StringComparison.Ordinal)
+            || value.Contains("msedge", StringComparison.Ordinal)
+            || value.Contains("firefox", StringComparison.Ordinal)
+            || value.Contains("brave", StringComparison.Ordinal)
+            || value.Contains("opera", StringComparison.Ordinal)
+            || value.Contains("safari", StringComparison.Ordinal)
+            || value.Contains("browser", StringComparison.Ordinal);
+    }
+
+    private static bool IsGenericBrowserAlias(string? appIdOrPath)
+    {
+        if (string.IsNullOrWhiteSpace(appIdOrPath))
+        {
+            return false;
+        }
+
+        var normalized = appIdOrPath.Trim().ToLowerInvariant();
+        return normalized is "browser" or "web browser" or "il browser" or "browser web";
     }
 
     private static bool NeedsContextBinding(ActionType type)

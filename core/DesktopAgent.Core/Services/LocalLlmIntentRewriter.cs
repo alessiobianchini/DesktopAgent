@@ -218,6 +218,14 @@ public sealed class LocalLlmIntentRewriter : ILlmIntentRewriter
                "Command: open chrome and then search meteo gubbio on chrome\n" +
                "User: doppio clic su conferma\n" +
                "Command: double click conferma\n" +
+               "User: registra schermo e audio per 2 minuti\n" +
+               "Command: record screen and audio for 2 minutes\n" +
+               "User: start recording screen without audio\n" +
+               "Command: start recording screen without audio\n" +
+               "User: stop recording\n" +
+               "Command: stop recording\n" +
+               "User: take a snapshot\n" +
+               "Command: take screenshot\n" +
                $"User: {input}\n" +
                "Command:";
     }
@@ -227,7 +235,7 @@ public sealed class LocalLlmIntentRewriter : ILlmIntentRewriter
         return "You are a typo-tolerant command normalizer for desktop automation. " +
                "Translate user requests into executable commands. " +
                "Correct obvious typos (examples: pen->open, munutes->minutes, notepadplusplus->notepad plus plus). " +
-               "Use only these verbs/actions: open, find, click, double click, right click, drag <source> to <target>, type, press, save, save as <name> [in <folder>], new tab, close tab, close window, minimize window, maximize window, restore window, switch window, focus <app>, scroll up/down [n], page up, page down, home, end, wait until <text> [for <seconds>], copy, paste, undo, redo, select all, open url <url>, search <query> [on <browser>], browser back/forward/refresh/find in page, notify <text>, clipboard history, volume up/down/mute [n], brightness up/down [n], lock screen, create new file, move mouse for <duration>, jiggle mouse for <duration>. " +
+               "Use only these verbs/actions: open, find, click, double click, right click, drag <source> to <target>, type, press, save, save as <name> [in <folder>], new tab, close tab, close window, minimize window, maximize window, restore window, switch window, focus <app>, scroll up/down [n], page up, page down, home, end, wait until <text> [for <seconds>], copy, paste, undo, redo, select all, open url <url>, search <query> [on <browser>], browser back/forward/refresh/find in page, notify <text>, clipboard history, volume up/down/mute [n], brightness up/down [n], lock screen, create new file, move mouse for <duration>, jiggle mouse for <duration>, record screen [and audio] for <duration>, start recording [screen] [with/without audio], stop recording, take screenshot. " +
                "If there are multiple actions, output them in sequence using ' and then ' as separator. " +
                "When app is implied, infer the most likely app token (examples: teams, chrome, edge, vscode). " +
                "Preserve numeric values and duration from user text exactly when present. " +
@@ -276,7 +284,7 @@ public sealed class LocalLlmIntentRewriter : ILlmIntentRewriter
         }
 
         line = Regex.Replace(line, "\\s*(?:;|->|=>|\\|)\\s*", " and then ", RegexOptions.IgnoreCase);
-        line = Regex.Replace(line, "\\s*,\\s*(?=(open|find|click|double click|right click|drag|type|press|save|new tab|close tab|close window|minimize|maximize|restore|switch window|focus|scroll|page up|page down|home|end|wait until|copy|paste|undo|redo|select all|open url|search|browser back|browser forward|refresh|find in page|notify|clipboard history|volume|brightness|lock screen|create new file|move mouse|jiggle mouse)\\b)", " and then ", RegexOptions.IgnoreCase);
+        line = Regex.Replace(line, "\\s*,\\s*(?=(open|find|click|double click|right click|drag|type|press|save|new tab|close tab|close window|minimize|maximize|restore|switch window|focus|scroll|page up|page down|home|end|wait until|copy|paste|undo|redo|select all|open url|search|browser back|browser forward|refresh|find in page|notify|clipboard history|volume|brightness|lock screen|create new file|move mouse|jiggle mouse|record screen|start recording|stop recording|take screenshot|snapshot)\\b)", " and then ", RegexOptions.IgnoreCase);
         line = line.TrimEnd('.', ';', ':');
         line = ExtractLikelyCommandSpan(line);
         line = Regex.Replace(line, "\\bnotepad\\+\\+\\b", "notepad plus plus", RegexOptions.IgnoreCase);
@@ -322,7 +330,7 @@ public sealed class LocalLlmIntentRewriter : ILlmIntentRewriter
     {
         var commandStart = Regex.Match(
             line,
-            "(open|find|click|double click|right click|drag|type|press|save|new tab|close tab|close window|minimize|maximize|restore|switch window|focus|scroll|page up|page down|home|end|wait until|copy|paste|undo|redo|select all|open url|search|browser back|browser forward|refresh|find in page|notify|clipboard history|volume|brightness|lock screen|create new file|move mouse|jiggle mouse)\\b",
+            "(open|find|click|double click|right click|drag|type|press|save|new tab|close tab|close window|minimize|maximize|restore|switch window|focus|scroll|page up|page down|home|end|wait until|copy|paste|undo|redo|select all|open url|search|browser back|browser forward|refresh|find in page|notify|clipboard history|volume|brightness|lock screen|create new file|move mouse|jiggle mouse|record screen|start recording|stop recording|take screenshot|snapshot)\\b",
             RegexOptions.IgnoreCase);
 
         if (!commandStart.Success || commandStart.Index <= 0)

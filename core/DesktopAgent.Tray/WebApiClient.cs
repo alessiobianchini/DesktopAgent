@@ -22,6 +22,11 @@ internal sealed class WebApiClient : IDisposable
     public Task<WebScheduleSaveResponse?> SaveScheduleAsync(WebScheduleUpsertRequest payload, CancellationToken cancellationToken) => _agent.SaveScheduleAsync(payload, cancellationToken);
     public Task<WebApiSimpleResponse?> DeleteScheduleAsync(string id, CancellationToken cancellationToken) => _agent.DeleteScheduleAsync(id, cancellationToken);
     public Task<WebApiSimpleResponse?> RunScheduleNowAsync(string id, CancellationToken cancellationToken) => _agent.RunScheduleNowAsync(id, cancellationToken);
+    public Task<WebGoalsResponse?> GetGoalsAsync(CancellationToken cancellationToken) => _agent.GetGoalsAsync(cancellationToken);
+    public Task<WebApiSimpleResponse?> AddGoalAsync(string text, CancellationToken cancellationToken) => _agent.AddGoalFromUiAsync(text, cancellationToken);
+    public Task<WebApiSimpleResponse?> SetGoalAutoAsync(string id, bool enabled, CancellationToken cancellationToken) => _agent.SetGoalAutoFromUiAsync(id, enabled, cancellationToken);
+    public Task<WebApiSimpleResponse?> MarkGoalDoneAsync(string id, CancellationToken cancellationToken) => _agent.MarkGoalDoneFromUiAsync(id, cancellationToken);
+    public Task<WebApiSimpleResponse?> RemoveGoalAsync(string id, CancellationToken cancellationToken) => _agent.RemoveGoalFromUiAsync(id, cancellationToken);
     public Task<WebAuditResponse?> GetAuditAsync(int take, CancellationToken cancellationToken) => _agent.GetAuditAsync(take, cancellationToken);
     public Task<WebApiSimpleResponse?> RestartServerAsync(CancellationToken cancellationToken) => _agent.RestartServerAsync(cancellationToken);
     public Task<WebApiSimpleResponse?> RestartAdapterAsync(CancellationToken cancellationToken) => _agent.RestartAdapterAsync(cancellationToken);
@@ -175,5 +180,21 @@ internal sealed record WebScheduleUpsertRequest(
     bool? Enabled);
 
 internal sealed record WebScheduleSaveResponse(string? Message, WebScheduleItem? Schedule);
+
+internal sealed record WebGoalsResponse(
+    bool SchedulerEnabled,
+    int SchedulerIntervalSeconds,
+    IReadOnlyList<WebGoalItem>? Goals);
+
+internal sealed record WebGoalItem(
+    string Id,
+    string Text,
+    bool Completed,
+    int Priority,
+    bool AutoRunEnabled,
+    int Attempts,
+    DateTimeOffset UpdatedAtUtc,
+    DateTimeOffset? LastRunAtUtc,
+    string? LastResult);
 
 internal sealed record WebAuditResponse(IReadOnlyList<string>? Lines);

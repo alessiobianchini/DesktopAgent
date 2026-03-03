@@ -4,6 +4,7 @@
 - .NET 9 SDK
 - Windows 10/11 with UI Automation enabled (default)
 - Optional: Tesseract OCR if `OcrEnabled=true`
+- Optional: FFmpeg for screen recording (`record screen`, `start recording`, `stop recording`)
 
 ## Build
 ```
@@ -66,6 +67,11 @@ winget install JRSoftware.InnoSetup
 ```
 powershell -ExecutionPolicy Bypass -File scripts/build-installer.ps1 -Version 0.1.0
 ```
+
+Installer behavior:
+- Checks whether `ffmpeg` is available on PATH after install.
+- Shows an informational message if missing.
+- Includes optional task **Install FFmpeg** (uses `winget install -e --id Gyan.FFmpeg`).
 
 Output:
 - `dist/installer/DesktopAgent-Setup-0.1.0.exe`

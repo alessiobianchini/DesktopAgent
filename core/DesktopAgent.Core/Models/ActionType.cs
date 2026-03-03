@@ -31,5 +31,8 @@ public enum ActionType
     VolumeMute,
     BrightnessUp,
     BrightnessDown,
-    LockScreen
+    LockScreen,
+    RecordScreen,
+    StartScreenRecording,
+    StopScreenRecording
 }

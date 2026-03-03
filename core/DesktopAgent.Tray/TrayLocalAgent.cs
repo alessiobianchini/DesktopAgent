@@ -15,6 +15,10 @@ namespace DesktopAgent.Tray;
 
 internal sealed class TrayLocalAgent : IDisposable
 {
+    private const int GoalPriorityLow = 0;
+    private const int GoalPriorityNormal = 1;
+    private const int GoalPriorityHigh = 2;
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true,
@@ -25,6 +29,8 @@ internal sealed class TrayLocalAgent : IDisposable
     private readonly AgentConfig _config;
     private readonly string _configPath;
     private readonly string _storageRoot;
+    private readonly string _goalLibraryPath;
+    private readonly string _memoryLibraryPath;
     private readonly string _version;
     private readonly TimeSpan _httpTimeout;
     private readonly ILoggerFactory _loggerFactory;
@@ -41,10 +47,13 @@ internal sealed class TrayLocalAgent : IDisposable
     private readonly Dictionary<string, PendingAction> _pendingActions = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<WebTaskItem> _tasks = new();
     private readonly List<ScheduleState> _schedules = new();
+    private readonly List<GoalState> _goals = new();
+    private readonly List<IntentMemoryEntry> _intentMemory = new();
     private readonly CancellationTokenSource _schedulerCts = new();
     private readonly Task _schedulerTask;
 
     private ContextLockState _contextLock = ContextLockState.None;
+    private DateTimeOffset _lastGoalSchedulerSweepUtc = DateTimeOffset.MinValue;
 
     public TrayLocalAgent(string adapterEndpoint, TimeSpan timeout, string? configPath)
     {
@@ -54,6 +63,8 @@ internal sealed class TrayLocalAgent : IDisposable
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "DesktopAgent");
         Directory.CreateDirectory(_storageRoot);
+        _goalLibraryPath = Path.Combine(_storageRoot, "goals.library.json");
+        _memoryLibraryPath = Path.Combine(_storageRoot, "memory.library.json");
 
         _configPath = ResolveConfigPath(configPath, _storageRoot);
         _config = LoadConfig(_configPath, adapterEndpoint, _storageRoot);
@@ -79,6 +90,8 @@ internal sealed class TrayLocalAgent : IDisposable
 
         LoadTasksFromDisk();
         LoadSchedulesFromDisk();
+        LoadGoalsFromDisk();
+        LoadMemoryFromDisk();
         _schedulerTask = Task.Run(() => ScheduleLoopAsync(_schedulerCts.Token));
     }
 
@@ -127,6 +140,101 @@ internal sealed class TrayLocalAgent : IDisposable
         if (normalized is "lock status" or "context lock status")
         {
             return WebChatResponse.Simple(FormatContextLock());
+        }
+
+        if (normalized is "goals" or "goal list" or "list goals")
+        {
+            return WebChatResponse.Simple(FormatGoals());
+        }
+
+        if (normalized.StartsWith("goal add ", StringComparison.Ordinal))
+        {
+            var goalText = text["goal add ".Length..].Trim();
+            return await AddGoalAsync(goalText, cancellationToken);
+        }
+
+        if (normalized.StartsWith("set goal ", StringComparison.Ordinal))
+        {
+            var goalText = text["set goal ".Length..].Trim();
+            return await AddGoalAsync(goalText, cancellationToken);
+        }
+
+        if (normalized.StartsWith("goal done ", StringComparison.Ordinal))
+        {
+            var key = text["goal done ".Length..].Trim();
+            return await MarkGoalDoneAsync(key, cancellationToken);
+        }
+
+        if (normalized.StartsWith("goal remove ", StringComparison.Ordinal))
+        {
+            var key = text["goal remove ".Length..].Trim();
+            return await RemoveGoalAsync(key, cancellationToken);
+        }
+
+        if (normalized.StartsWith("goal run ", StringComparison.Ordinal))
+        {
+            var key = text["goal run ".Length..].Trim();
+            return await BuildGoalPlanConfirmationAsync(key, cancellationToken);
+        }
+
+        if (normalized.StartsWith("goal priority ", StringComparison.Ordinal))
+        {
+            var payload = text["goal priority ".Length..].Trim();
+            return await SetGoalPriorityAsync(payload, cancellationToken);
+        }
+
+        if (normalized.StartsWith("goal auto ", StringComparison.Ordinal))
+        {
+            var payload = text["goal auto ".Length..].Trim();
+            return await SetGoalAutoModeAsync(payload, cancellationToken);
+        }
+
+        if (normalized is "goal scheduler on" or "goals scheduler on")
+        {
+            _config.GoalSchedulerEnabled = true;
+            await SaveConfigToDiskAsync(cancellationToken);
+            return WebChatResponse.Simple("Goal scheduler enabled.");
+        }
+
+        if (normalized is "goal scheduler off" or "goals scheduler off")
+        {
+            _config.GoalSchedulerEnabled = false;
+            await SaveConfigToDiskAsync(cancellationToken);
+            return WebChatResponse.Simple("Goal scheduler disabled.");
+        }
+
+        if (normalized.StartsWith("goal scheduler every ", StringComparison.Ordinal))
+        {
+            var raw = text["goal scheduler every ".Length..].Trim();
+            if (int.TryParse(raw.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).FirstOrDefault(), out var seconds))
+            {
+                _config.GoalSchedulerIntervalSeconds = Math.Clamp(seconds, 10, 3600);
+                await SaveConfigToDiskAsync(cancellationToken);
+                return WebChatResponse.Simple($"Goal scheduler interval set to {_config.GoalSchedulerIntervalSeconds}s.");
+            }
+
+            return WebChatResponse.Simple("Use: goal scheduler every <seconds>");
+        }
+
+        if (normalized is "continue goal" or "continue goals" or "next goal")
+        {
+            return await ContinueLatestGoalAsync(cancellationToken);
+        }
+
+        if (normalized is "memory" or "agent memory")
+        {
+            return WebChatResponse.Simple(FormatMemory());
+        }
+
+        if (normalized is "memory clear" or "clear memory")
+        {
+            lock (_sync)
+            {
+                _intentMemory.Clear();
+            }
+
+            await SaveMemoryToDiskAsync(cancellationToken);
+            return WebChatResponse.Simple("Memory cleared.");
         }
 
         if (normalized is "unlock" or "unlock context" or "unlock context lock" or "release lock")
@@ -231,7 +339,7 @@ internal sealed class TrayLocalAgent : IDisposable
         var plan = _planner.PlanFromIntent(text);
         if (IsUnrecognizedPlan(plan))
         {
-            return WebChatResponse.Simple("Available commands: status, kill, reset kill, lock status, lock on <current window|app>, unlock, profile <safe|balanced|power>, arm, disarm, simulate presence, require presence, list apps [query] [allowed], run <intent>, dry-run <intent>.");
+            return WebChatResponse.Simple("Available commands: status, kill, reset kill, lock status, lock on <current window|app>, unlock, profile <safe|balanced|power>, arm, disarm, simulate presence, require presence, list apps [query] [allowed], goals, goal add <text>, goal run <id>, goal done <id>, goal remove <id>, goal priority <id> <low|normal|high>, goal auto <id> <on|off>, goal scheduler on|off|every <sec>, continue goal, memory, run <intent>, dry-run <intent>. Plugin intents: take screenshot, record screen [and audio] for <duration>, start recording [screen] [with/without audio], stop recording, jiggle mouse for <duration>.");
         }
 
         var pendingToken = CreatePendingAction(PendingActionType.ExecutePlan, text, plan, dryRun: false);
@@ -667,6 +775,62 @@ internal sealed class TrayLocalAgent : IDisposable
         return new WebApiSimpleResponse(result.Reply, result.Reply.Contains("Success: True", StringComparison.OrdinalIgnoreCase));
     }
 
+    public Task<WebGoalsResponse?> GetGoalsAsync(CancellationToken cancellationToken)
+    {
+        lock (_sync)
+        {
+            var items = _goals
+                .OrderBy(goal => goal.Completed)
+                .ThenByDescending(goal => goal.Priority)
+                .ThenByDescending(goal => goal.UpdatedAtUtc)
+                .Select(goal => new WebGoalItem(
+                    goal.Id,
+                    goal.Text,
+                    goal.Completed,
+                    goal.Priority,
+                    goal.AutoRunEnabled,
+                    goal.Attempts,
+                    goal.UpdatedAtUtc,
+                    goal.LastRunAtUtc,
+                    goal.LastResult))
+                .ToList();
+
+            return Task.FromResult<WebGoalsResponse?>(new WebGoalsResponse(
+                _config.GoalSchedulerEnabled,
+                _config.GoalSchedulerIntervalSeconds,
+                items));
+        }
+    }
+
+    public async Task<WebApiSimpleResponse?> AddGoalFromUiAsync(string text, CancellationToken cancellationToken)
+    {
+        var response = await AddGoalAsync(text, cancellationToken);
+        var success = response.Reply.StartsWith("Goal added", StringComparison.OrdinalIgnoreCase);
+        return new WebApiSimpleResponse(response.Reply, success);
+    }
+
+    public async Task<WebApiSimpleResponse?> SetGoalAutoFromUiAsync(string id, bool enabled, CancellationToken cancellationToken)
+    {
+        var command = $"{id} {(enabled ? "on" : "off")}";
+        var response = await SetGoalAutoModeAsync(command, cancellationToken);
+        var success = response.Reply.Contains("auto mode", StringComparison.OrdinalIgnoreCase);
+        return new WebApiSimpleResponse(response.Reply, success);
+    }
+
+    public async Task<WebApiSimpleResponse?> MarkGoalDoneFromUiAsync(string id, CancellationToken cancellationToken)
+    {
+        var response = await MarkGoalDoneAsync(id, cancellationToken);
+        var success = response.Reply.Contains("marked as done", StringComparison.OrdinalIgnoreCase);
+        return new WebApiSimpleResponse(response.Reply, success);
+    }
+
+    public async Task<WebApiSimpleResponse?> RemoveGoalFromUiAsync(string id, CancellationToken cancellationToken)
+    {
+        var response = await RemoveGoalAsync(id, cancellationToken);
+        var success = response.Reply.Contains("removed", StringComparison.OrdinalIgnoreCase);
+        return new WebApiSimpleResponse(response.Reply, success);
+    }
+
     public Task<WebAuditResponse?> GetAuditAsync(int take, CancellationToken cancellationToken)
     {
         var max = Math.Clamp(take, 1, 500);
@@ -782,6 +946,7 @@ internal sealed class TrayLocalAgent : IDisposable
             return new WebIntentResponse("Plan is empty.", false, null, null, null, PlanToJson(plan), GetModeLabel(plan));
         }
 
+        var beforeObservation = await CaptureObservationAsync(cancellationToken);
         var activeWindow = await _desktopClient.GetActiveWindowAsync(cancellationToken);
         var lockReason = ValidateAndApplyContextLock(plan, activeWindow);
         if (!string.IsNullOrWhiteSpace(lockReason))
@@ -807,7 +972,31 @@ internal sealed class TrayLocalAgent : IDisposable
             _loggerFactory.CreateLogger<Executor>());
 
         var result = await executor.ExecutePlanAsync(plan, dryRun, cancellationToken);
+        string recoveryNote = string.Empty;
+        if (!dryRun && _config.AutoRecoveryEnabled && _config.AutoRecoveryMaxAttempts > 0)
+        {
+            var recovered = await TryAutoRecoverAsync(plan, result, executor, cancellationToken);
+            if (recovered.RecoveredResult != null)
+            {
+                result = MergeExecutionResults(result, recovered.RecoveredResult);
+                recoveryNote = recovered.Note;
+            }
+        }
+
+        var afterObservation = await CaptureObservationAsync(cancellationToken);
+        await RecordIntentMemoryAsync(source, plan, result, beforeObservation, afterObservation, cancellationToken);
+        await UpdateGoalProgressAsync(source, result, cancellationToken);
+
+        var perceptionNote = BuildPerceptionNote(beforeObservation, afterObservation);
         var reply = AppendNotice(FormatExecution(result), GetRewriteNotice(plan));
+        if (!string.IsNullOrWhiteSpace(perceptionNote))
+        {
+            reply = $"{reply} {perceptionNote}";
+        }
+        if (!string.IsNullOrWhiteSpace(recoveryNote))
+        {
+            reply = $"{reply} {recoveryNote}";
+        }
         return new WebIntentResponse(reply, false, null, null, ExecutionToLines(result), PlanToJson(plan), GetModeLabel(plan));
     }
 
@@ -906,6 +1095,650 @@ internal sealed class TrayLocalAgent : IDisposable
         }
 
         return string.Empty;
+    }
+
+    private async Task<WebChatResponse> AddGoalAsync(string goalText, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(goalText))
+        {
+            return WebChatResponse.Simple("Goal text is required.");
+        }
+
+        GoalState goal;
+        lock (_sync)
+        {
+            var now = DateTimeOffset.UtcNow;
+            goal = new GoalState
+            {
+                Id = Guid.NewGuid().ToString("N")[..8],
+                Text = goalText.Trim(),
+                Completed = false,
+                CreatedAtUtc = now,
+                UpdatedAtUtc = now,
+                LastRunAtUtc = now,
+                Attempts = 0,
+                LastResult = null,
+                Priority = GoalPriorityNormal,
+                AutoRunEnabled = true
+            };
+            _goals.Add(goal);
+        }
+
+        await SaveGoalsToDiskAsync(cancellationToken);
+        return WebChatResponse.Simple($"Goal added [{goal.Id}]: {goal.Text}");
+    }
+
+    private async Task<WebChatResponse> MarkGoalDoneAsync(string key, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            return WebChatResponse.Simple("Goal id or text is required.");
+        }
+
+        GoalState? updated = null;
+        lock (_sync)
+        {
+            var index = FindGoalIndexLocked(key);
+            if (index >= 0)
+            {
+                var goal = _goals[index];
+                goal.Completed = true;
+                goal.UpdatedAtUtc = DateTimeOffset.UtcNow;
+                goal.LastResult = "Marked as done by user.";
+                updated = goal;
+            }
+        }
+
+        if (updated == null)
+        {
+            return WebChatResponse.Simple("Goal not found.");
+        }
+
+        await SaveGoalsToDiskAsync(cancellationToken);
+        return WebChatResponse.Simple($"Goal [{updated.Id}] marked as done.");
+    }
+
+    private async Task<WebChatResponse> RemoveGoalAsync(string key, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            return WebChatResponse.Simple("Goal id or text is required.");
+        }
+
+        GoalState? removed = null;
+        lock (_sync)
+        {
+            var index = FindGoalIndexLocked(key);
+            if (index >= 0)
+            {
+                removed = _goals[index];
+                _goals.RemoveAt(index);
+            }
+        }
+
+        if (removed == null)
+        {
+            return WebChatResponse.Simple("Goal not found.");
+        }
+
+        await SaveGoalsToDiskAsync(cancellationToken);
+        return WebChatResponse.Simple($"Goal [{removed.Id}] removed.");
+    }
+
+    private async Task<WebChatResponse> SetGoalPriorityAsync(string payload, CancellationToken cancellationToken)
+    {
+        var parts = payload.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length < 2)
+        {
+            return WebChatResponse.Simple("Use: goal priority <id|text> <low|normal|high>");
+        }
+
+        var priorityToken = parts[^1];
+        var key = string.Join(' ', parts.Take(parts.Length - 1));
+        if (!TryParseGoalPriority(priorityToken, out var priority))
+        {
+            return WebChatResponse.Simple("Priority must be: low, normal, or high.");
+        }
+
+        GoalState? updated = null;
+        lock (_sync)
+        {
+            var index = FindGoalIndexLocked(key);
+            if (index >= 0)
+            {
+                var goal = _goals[index];
+                goal.Priority = priority;
+                goal.UpdatedAtUtc = DateTimeOffset.UtcNow;
+                updated = goal;
+            }
+        }
+
+        if (updated == null)
+        {
+            return WebChatResponse.Simple("Goal not found.");
+        }
+
+        await SaveGoalsToDiskAsync(cancellationToken);
+        return WebChatResponse.Simple($"Goal [{updated.Id}] priority set to {FormatGoalPriority(updated.Priority)}.");
+    }
+
+    private async Task<WebChatResponse> SetGoalAutoModeAsync(string payload, CancellationToken cancellationToken)
+    {
+        var parts = payload.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length < 2)
+        {
+            return WebChatResponse.Simple("Use: goal auto <id|text> <on|off>");
+        }
+
+        var modeToken = parts[^1].Trim().ToLowerInvariant();
+        bool enabled;
+        if (modeToken is "on" or "enable" or "enabled" or "true")
+        {
+            enabled = true;
+        }
+        else if (modeToken is "off" or "disable" or "disabled" or "false")
+        {
+            enabled = false;
+        }
+        else
+        {
+            return WebChatResponse.Simple("Auto mode must be on or off.");
+        }
+
+        var key = string.Join(' ', parts.Take(parts.Length - 1));
+        GoalState? updated = null;
+        lock (_sync)
+        {
+            var index = FindGoalIndexLocked(key);
+            if (index >= 0)
+            {
+                var goal = _goals[index];
+                goal.AutoRunEnabled = enabled;
+                goal.UpdatedAtUtc = DateTimeOffset.UtcNow;
+                updated = goal;
+            }
+        }
+
+        if (updated == null)
+        {
+            return WebChatResponse.Simple("Goal not found.");
+        }
+
+        await SaveGoalsToDiskAsync(cancellationToken);
+        return WebChatResponse.Simple($"Goal [{updated.Id}] auto mode {(updated.AutoRunEnabled ? "ON" : "OFF")}.");
+    }
+
+    private Task<WebChatResponse> BuildGoalPlanConfirmationAsync(string key, CancellationToken cancellationToken)
+    {
+        GoalState? goal;
+        lock (_sync)
+        {
+            var index = FindGoalIndexLocked(key);
+            goal = index >= 0 ? _goals[index] : null;
+        }
+
+        if (goal == null)
+        {
+            return Task.FromResult(WebChatResponse.Simple("Goal not found."));
+        }
+
+        if (goal.Completed)
+        {
+            return Task.FromResult(WebChatResponse.Simple($"Goal [{goal.Id}] is already completed."));
+        }
+
+        var plan = _planner.PlanFromIntent(goal.Text);
+        if (IsUnrecognizedPlan(plan))
+        {
+            return Task.FromResult(WebChatResponse.Simple($"Goal [{goal.Id}] could not be mapped to a safe plan. Edit it or use a clearer command."));
+        }
+
+        var source = $"goal:{goal.Id} {goal.Text}";
+        var token = CreatePendingAction(PendingActionType.ExecutePlan, source, plan, dryRun: false);
+        var notice = GetRewriteNotice(plan);
+        var prompt = string.IsNullOrWhiteSpace(notice)
+            ? $"Goal [{goal.Id}] interpreted. Confirm execution?"
+            : $"Goal [{goal.Id}] interpreted. {notice}. Confirm execution?";
+        return Task.FromResult(WebChatResponse.ConfirmWithSteps(prompt, token, PlanToLines(plan), PlanToJson(plan), GetModeLabel(plan)));
+    }
+
+    private async Task<WebChatResponse> ContinueLatestGoalAsync(CancellationToken cancellationToken)
+    {
+        GoalState? goal;
+        lock (_sync)
+        {
+            goal = _goals
+                .Where(item => !item.Completed)
+                .OrderByDescending(item => item.Priority)
+                .ThenByDescending(item => item.UpdatedAtUtc)
+                .FirstOrDefault();
+        }
+
+        if (goal == null)
+        {
+            return WebChatResponse.Simple("No open goals. Use `goal add <text>` first.");
+        }
+
+        return await BuildGoalPlanConfirmationAsync(goal.Id, cancellationToken);
+    }
+
+    private string FormatGoals()
+    {
+        List<GoalState> snapshot;
+        lock (_sync)
+        {
+            snapshot = _goals
+                .OrderBy(item => item.Completed)
+                .ThenByDescending(item => item.Priority)
+                .ThenByDescending(item => item.UpdatedAtUtc)
+                .Take(12)
+                .ToList();
+        }
+
+        if (snapshot.Count == 0)
+        {
+            return "No goals yet. Use `goal add <text>`.";
+        }
+
+        var header = $"Goal scheduler: {(_config.GoalSchedulerEnabled ? "on" : "off")} every {_config.GoalSchedulerIntervalSeconds}s";
+        var lines = snapshot.Select(goal =>
+        {
+            var status = goal.Completed ? "done" : "open";
+            var attempts = goal.Attempts > 0 ? $" attempts:{goal.Attempts}" : string.Empty;
+            var priority = FormatGoalPriority(goal.Priority);
+            var auto = goal.AutoRunEnabled ? "auto:on" : "auto:off";
+            return $"[{goal.Id}] {status} [{priority}] {auto} - {goal.Text}{attempts}";
+        });
+        return $"{header}{Environment.NewLine}{string.Join(Environment.NewLine, lines)}";
+    }
+
+    private string FormatMemory()
+    {
+        List<IntentMemoryEntry> snapshot;
+        lock (_sync)
+        {
+            snapshot = _intentMemory
+                .OrderByDescending(item => item.TimestampUtc)
+                .Take(10)
+                .ToList();
+        }
+
+        if (snapshot.Count == 0)
+        {
+            return "Memory is empty.";
+        }
+
+        var lines = snapshot.Select(item =>
+        {
+            var status = item.Success ? "ok" : "fail";
+            var perception = string.IsNullOrWhiteSpace(item.AfterWindow)
+                ? string.Empty
+                : $" | window:{item.AfterWindow}";
+            return $"{item.TimestampUtc:HH:mm:ss} [{status}] {item.IntentSummary}{perception}";
+        });
+        return string.Join(Environment.NewLine, lines);
+    }
+
+    private async Task RecordIntentMemoryAsync(
+        string source,
+        ActionPlan plan,
+        ExecutionResult result,
+        ObservationSnapshot before,
+        ObservationSnapshot after,
+        CancellationToken cancellationToken)
+    {
+        IntentMemoryEntry entry;
+        lock (_sync)
+        {
+            var summary = source.Trim();
+            if (summary.Length > 180)
+            {
+                summary = $"{summary[..180]}...";
+            }
+
+            entry = new IntentMemoryEntry(
+                TimestampUtc: DateTimeOffset.UtcNow,
+                Source: source,
+                IntentSummary: summary,
+                Success: result.Success,
+                PlanSteps: plan.Steps.Count,
+                ResultMessage: Compact(result.Message, 160),
+                BeforeWindow: before.WindowDisplay,
+                AfterWindow: after.WindowDisplay);
+
+            _intentMemory.Add(entry);
+            if (_intentMemory.Count > 200)
+            {
+                _intentMemory.RemoveRange(0, _intentMemory.Count - 200);
+            }
+        }
+
+        await SaveMemoryToDiskAsync(cancellationToken);
+    }
+
+    private async Task UpdateGoalProgressAsync(string source, ExecutionResult result, CancellationToken cancellationToken)
+    {
+        if (!TryGetGoalIdFromSource(source, out var goalId))
+        {
+            return;
+        }
+
+        lock (_sync)
+        {
+            var index = _goals.FindIndex(goal => string.Equals(goal.Id, goalId, StringComparison.OrdinalIgnoreCase));
+            if (index < 0)
+            {
+                return;
+            }
+
+            var current = _goals[index];
+            current.UpdatedAtUtc = DateTimeOffset.UtcNow;
+            current.LastRunAtUtc = DateTimeOffset.UtcNow;
+            current.Attempts += 1;
+            current.LastResult = Compact(result.Message, 180);
+            current.Completed = current.Completed || result.Success;
+        }
+
+        await SaveGoalsToDiskAsync(cancellationToken);
+    }
+
+    private static bool TryGetGoalIdFromSource(string source, out string goalId)
+    {
+        goalId = string.Empty;
+        if (!source.StartsWith("goal:", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var payload = source["goal:".Length..].Trim();
+        if (string.IsNullOrWhiteSpace(payload))
+        {
+            return false;
+        }
+
+        goalId = payload.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)[0];
+        return !string.IsNullOrWhiteSpace(goalId);
+    }
+
+    private static string BuildPerceptionNote(ObservationSnapshot before, ObservationSnapshot after)
+    {
+        if (string.IsNullOrWhiteSpace(before.WindowDisplay) && string.IsNullOrWhiteSpace(after.WindowDisplay))
+        {
+            return string.Empty;
+        }
+
+        var beforeText = string.IsNullOrWhiteSpace(before.WindowDisplay) ? "n/a" : before.WindowDisplay;
+        var afterText = string.IsNullOrWhiteSpace(after.WindowDisplay) ? "n/a" : after.WindowDisplay;
+        if (string.Equals(beforeText, afterText, StringComparison.OrdinalIgnoreCase))
+        {
+            return $"Perception: {afterText}.";
+        }
+
+        return $"Perception: {beforeText} -> {afterText}.";
+    }
+
+    private async Task<RecoveryAttemptOutcome> TryAutoRecoverAsync(
+        ActionPlan originalPlan,
+        ExecutionResult initialResult,
+        Executor executor,
+        CancellationToken cancellationToken)
+    {
+        if (initialResult.Success)
+        {
+            return RecoveryAttemptOutcome.None;
+        }
+
+        for (var attempt = 0; attempt < _config.AutoRecoveryMaxAttempts; attempt++)
+        {
+            if (!TryBuildRecoveryPlan(originalPlan, initialResult, attempt, out var recoveryPlan, out var reason))
+            {
+                return RecoveryAttemptOutcome.None;
+            }
+
+            await WriteAuditAsync(
+                "auto_recovery_attempt",
+                $"Auto-recovery attempt {attempt + 1}: {reason}",
+                cancellationToken,
+                new { attempt = attempt + 1, reason, steps = recoveryPlan.Steps.Count });
+
+            var recovered = await executor.ExecutePlanAsync(recoveryPlan, dryRun: false, cancellationToken);
+            if (recovered.Success)
+            {
+                return new RecoveryAttemptOutcome(recovered, $"Auto-recovery succeeded ({attempt + 1}/{_config.AutoRecoveryMaxAttempts}).");
+            }
+        }
+
+        return RecoveryAttemptOutcome.None;
+    }
+
+    private bool TryBuildRecoveryPlan(
+        ActionPlan originalPlan,
+        ExecutionResult failedResult,
+        int attempt,
+        out ActionPlan recoveryPlan,
+        out string reason)
+    {
+        recoveryPlan = new ActionPlan();
+        reason = string.Empty;
+
+        var failedStep = failedResult.Steps.FirstOrDefault(step => !step.Success);
+        if (failedStep == null || failedStep.Index < 0 || failedStep.Index >= originalPlan.Steps.Count)
+        {
+            return false;
+        }
+
+        var originalFailedStep = originalPlan.Steps[failedStep.Index];
+        if (originalFailedStep.Type is not (ActionType.Find or ActionType.Click))
+        {
+            return false;
+        }
+
+        if (!IsRecoverableUiFailureMessage(failedStep.Message))
+        {
+            return false;
+        }
+
+        var steps = new List<PlanStep>();
+        if (!string.IsNullOrWhiteSpace(originalFailedStep.ExpectedAppId))
+        {
+            steps.Add(new PlanStep { Type = ActionType.OpenApp, AppIdOrPath = originalFailedStep.ExpectedAppId });
+        }
+
+        var waitMs = Math.Clamp(_config.AutoRecoveryWaitMs * (attempt + 1), 100, 5000);
+        steps.Add(new PlanStep { Type = ActionType.WaitFor, WaitFor = TimeSpan.FromMilliseconds(waitMs) });
+
+        for (var i = failedStep.Index; i < originalPlan.Steps.Count; i++)
+        {
+            steps.Add(ClonePlanStep(originalPlan.Steps[i]));
+        }
+
+        var firstAction = steps.FirstOrDefault(step => step.Type is ActionType.Find or ActionType.Click);
+        if (firstAction != null)
+        {
+            if (firstAction.Type == ActionType.Click && firstAction.Selector == null && !string.IsNullOrWhiteSpace(firstAction.Text))
+            {
+                firstAction.Selector = new Selector { NameContains = firstAction.Text };
+            }
+
+            var selector = firstAction.Selector;
+            if (selector != null && !string.IsNullOrWhiteSpace(selector.NameContains))
+            {
+                var tokens = selector.NameContains
+                    .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .Where(token => token.Length >= 3)
+                    .ToList();
+
+                if (tokens.Count > 0)
+                {
+                    selector.NameContains = tokens[0];
+                }
+            }
+        }
+
+        reason = $"recovering {originalFailedStep.Type} from step {failedStep.Index + 1}";
+        recoveryPlan = new ActionPlan
+        {
+            Intent = $"{originalPlan.Intent} [auto-recovery]",
+            Steps = steps
+        };
+        return true;
+    }
+
+    private static bool IsRecoverableUiFailureMessage(string? message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            return false;
+        }
+
+        return message.Contains("No target to click", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("No elements found", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("not found", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static ExecutionResult MergeExecutionResults(ExecutionResult primary, ExecutionResult recovered)
+    {
+        var merged = new ExecutionResult
+        {
+            Success = recovered.Success,
+            Message = recovered.Success ? $"Recovered: {recovered.Message}" : primary.Message
+        };
+
+        merged.Steps.AddRange(primary.Steps);
+        for (var i = 0; i < recovered.Steps.Count; i++)
+        {
+            var step = recovered.Steps[i];
+            merged.Steps.Add(new StepResult
+            {
+                Index = primary.Steps.Count + i,
+                Type = step.Type,
+                Success = step.Success,
+                Message = $"[recovery] {step.Message}",
+                Data = step.Data
+            });
+        }
+
+        return merged;
+    }
+
+    private static PlanStep ClonePlanStep(PlanStep step)
+    {
+        return new PlanStep
+        {
+            Type = step.Type,
+            Selector = step.Selector == null
+                ? null
+                : new Selector
+                {
+                    Role = step.Selector.Role,
+                    NameContains = step.Selector.NameContains,
+                    AutomationId = step.Selector.AutomationId,
+                    ClassName = step.Selector.ClassName,
+                    AncestorNameContains = step.Selector.AncestorNameContains,
+                    Index = step.Selector.Index,
+                    WindowId = step.Selector.WindowId,
+                    BoundsHint = step.Selector.BoundsHint == null
+                        ? null
+                        : new Rect
+                        {
+                            X = step.Selector.BoundsHint.X,
+                            Y = step.Selector.BoundsHint.Y,
+                            Width = step.Selector.BoundsHint.Width,
+                            Height = step.Selector.BoundsHint.Height
+                        }
+                },
+            ExpectedAppId = step.ExpectedAppId,
+            ExpectedWindowId = step.ExpectedWindowId,
+            Text = step.Text,
+            Target = step.Target,
+            AppIdOrPath = step.AppIdOrPath,
+            Keys = step.Keys == null ? null : new List<string>(step.Keys),
+            Point = step.Point == null
+                ? null
+                : new Rect
+                {
+                    X = step.Point.X,
+                    Y = step.Point.Y,
+                    Width = step.Point.Width,
+                    Height = step.Point.Height
+                },
+            ElementId = step.ElementId,
+            WaitFor = step.WaitFor,
+            Note = step.Note
+        };
+    }
+
+    private async Task<ObservationSnapshot> CaptureObservationAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var snapshot = await _contextProvider.GetSnapshotAsync(cancellationToken);
+            var window = snapshot.ActiveWindow;
+            if (window == null)
+            {
+                return ObservationSnapshot.Empty;
+            }
+
+            var title = string.IsNullOrWhiteSpace(window.Title) ? "<untitled>" : window.Title.Trim();
+            var appId = string.IsNullOrWhiteSpace(window.AppId) ? "<unknown-app>" : window.AppId.Trim();
+            return new ObservationSnapshot(window.Id ?? string.Empty, $"{appId} - {Compact(title, 80)}");
+        }
+        catch
+        {
+            return ObservationSnapshot.Empty;
+        }
+    }
+
+    private int FindGoalIndexLocked(string key)
+    {
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            return -1;
+        }
+
+        var trimmed = key.Trim();
+        var byId = _goals.FindIndex(goal => string.Equals(goal.Id, trimmed, StringComparison.OrdinalIgnoreCase));
+        if (byId >= 0)
+        {
+            return byId;
+        }
+
+        return _goals.FindIndex(goal => goal.Text.Contains(trimmed, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool TryParseGoalPriority(string token, out int priority)
+    {
+        priority = GoalPriorityNormal;
+        var normalized = token.Trim().ToLowerInvariant();
+        switch (normalized)
+        {
+            case "low":
+            case "l":
+                priority = GoalPriorityLow;
+                return true;
+            case "normal":
+            case "medium":
+            case "med":
+            case "n":
+                priority = GoalPriorityNormal;
+                return true;
+            case "high":
+            case "h":
+                priority = GoalPriorityHigh;
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private static string FormatGoalPriority(int priority)
+    {
+        return priority switch
+        {
+            <= GoalPriorityLow => "low",
+            >= GoalPriorityHigh => "high",
+            _ => "normal"
+        };
     }
 
     private static string FormatExecution(ExecutionResult result)
@@ -1029,6 +1862,13 @@ internal sealed class TrayLocalAgent : IDisposable
             || normalized.StartsWith("type ", StringComparison.Ordinal)
             || normalized.StartsWith("search ", StringComparison.Ordinal)
             || normalized.StartsWith("cerca ", StringComparison.Ordinal)
+            || normalized.StartsWith("record ", StringComparison.Ordinal)
+            || normalized.StartsWith("start recording", StringComparison.Ordinal)
+            || normalized.StartsWith("stop recording", StringComparison.Ordinal)
+            || normalized.StartsWith("snapshot", StringComparison.Ordinal)
+            || normalized.StartsWith("screenshot", StringComparison.Ordinal)
+            || normalized.StartsWith("take screenshot", StringComparison.Ordinal)
+            || normalized.StartsWith("take snapshot", StringComparison.Ordinal)
             || normalized.Contains(" and ", StringComparison.Ordinal)
             || normalized.Contains(" then ", StringComparison.Ordinal);
     }
@@ -1251,43 +2091,115 @@ internal sealed class TrayLocalAgent : IDisposable
                         .ToList();
                 }
 
-                if (dueSchedules.Count == 0)
+                var scheduleUpdated = false;
+                if (dueSchedules.Count > 0)
                 {
-                    continue;
-                }
-
-                foreach (var schedule in dueSchedules)
-                {
-                    try
+                    foreach (var schedule in dueSchedules)
                     {
-                        await RunTaskAsync(schedule.TaskName, dryRun: false, cancellationToken);
-                    }
-                    catch
-                    {
-                        // Keep scheduler resilient.
-                    }
-
-                    lock (_sync)
-                    {
-                        var index = _schedules.FindIndex(item => string.Equals(item.Id, schedule.Id, StringComparison.OrdinalIgnoreCase));
-                        if (index >= 0)
+                        try
                         {
-                            _schedules[index] = _schedules[index] with
+                            await RunTaskAsync(schedule.TaskName, dryRun: false, cancellationToken);
+                        }
+                        catch
+                        {
+                            // Keep scheduler resilient.
+                        }
+
+                        lock (_sync)
+                        {
+                            var index = _schedules.FindIndex(item => string.Equals(item.Id, schedule.Id, StringComparison.OrdinalIgnoreCase));
+                            if (index >= 0)
                             {
-                                LastRunAtUtc = now,
-                                UpdatedAt = now
-                            };
+                                _schedules[index] = _schedules[index] with
+                                {
+                                    LastRunAtUtc = now,
+                                    UpdatedAt = now
+                                };
+                                scheduleUpdated = true;
+                            }
                         }
                     }
                 }
 
-                await SaveSchedulesToDiskAsync(cancellationToken);
+                var goalsUpdated = await RunDueGoalsAsync(now, cancellationToken);
+                if (scheduleUpdated)
+                {
+                    await SaveSchedulesToDiskAsync(cancellationToken);
+                }
+
+                if (goalsUpdated)
+                {
+                    await SaveGoalsToDiskAsync(cancellationToken);
+                }
             }
         }
         catch (OperationCanceledException)
         {
             // Expected at shutdown.
         }
+    }
+
+    private async Task<bool> RunDueGoalsAsync(DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        if (!_config.GoalSchedulerEnabled || _killSwitch.IsTripped)
+        {
+            return false;
+        }
+
+        var interval = TimeSpan.FromSeconds(Math.Clamp(_config.GoalSchedulerIntervalSeconds, 10, 3600));
+        if (_lastGoalSchedulerSweepUtc != DateTimeOffset.MinValue && now - _lastGoalSchedulerSweepUtc < interval)
+        {
+            return false;
+        }
+
+        _lastGoalSchedulerSweepUtc = now;
+
+        List<GoalState> dueGoals;
+        lock (_sync)
+        {
+            dueGoals = _goals
+                .Where(goal => !goal.Completed && goal.AutoRunEnabled && IsGoalDue(goal, now, interval))
+                .OrderByDescending(goal => goal.Priority)
+                .ThenByDescending(goal => goal.UpdatedAtUtc)
+                .Take(Math.Clamp(_config.GoalSchedulerMaxPerTick, 1, 10))
+                .Select(CloneGoalState)
+                .ToList();
+        }
+
+        if (dueGoals.Count == 0)
+        {
+            return false;
+        }
+
+        foreach (var goal in dueGoals)
+        {
+            try
+            {
+                var response = await ExecuteGoalInternalAsync(goal.Id, approvedByUser: false, cancellationToken);
+                await WriteAuditAsync(
+                    "goal_scheduler_run",
+                    $"Goal scheduler executed [{goal.Id}] => {Compact(response.Reply, 120)}",
+                    cancellationToken,
+                    new { goal.Id, goal.Text, goal.Priority });
+            }
+            catch (Exception ex)
+            {
+                lock (_sync)
+                {
+                    var index = _goals.FindIndex(item => string.Equals(item.Id, goal.Id, StringComparison.OrdinalIgnoreCase));
+                    if (index >= 0)
+                    {
+                        var item = _goals[index];
+                        item.LastRunAtUtc = now;
+                        item.UpdatedAtUtc = now;
+                        item.Attempts += 1;
+                        item.LastResult = Compact($"Scheduler failed: {ex.Message}", 180);
+                    }
+                }
+            }
+        }
+
+        return true;
     }
 
     private static bool IsScheduleDue(ScheduleState schedule, DateTimeOffset now)
@@ -1323,6 +2235,76 @@ internal sealed class TrayLocalAgent : IDisposable
         }
 
         return schedule.StartAtUtc.Value <= now;
+    }
+
+    private static bool IsGoalDue(GoalState goal, DateTimeOffset now, TimeSpan interval)
+    {
+        if (goal.Completed || !goal.AutoRunEnabled)
+        {
+            return false;
+        }
+
+        if (!goal.LastRunAtUtc.HasValue)
+        {
+            return true;
+        }
+
+        return now - goal.LastRunAtUtc.Value >= interval;
+    }
+
+    private async Task<WebIntentResponse> ExecuteGoalInternalAsync(string key, bool approvedByUser, CancellationToken cancellationToken)
+    {
+        GoalState? goal;
+        lock (_sync)
+        {
+            var index = FindGoalIndexLocked(key);
+            goal = index >= 0 ? _goals[index] : null;
+        }
+
+        if (goal == null)
+        {
+            return new WebIntentResponse("Goal not found.", false, null, null, null, null, null);
+        }
+
+        if (goal.Completed)
+        {
+            return new WebIntentResponse($"Goal [{goal.Id}] is already completed.", false, null, null, null, null, null);
+        }
+
+        var plan = _planner.PlanFromIntent(goal.Text);
+        if (IsUnrecognizedPlan(plan))
+        {
+            lock (_sync)
+            {
+                goal.LastRunAtUtc = DateTimeOffset.UtcNow;
+                goal.UpdatedAtUtc = DateTimeOffset.UtcNow;
+                goal.Attempts += 1;
+                goal.LastResult = "Goal plan could not be recognized.";
+            }
+
+            await SaveGoalsToDiskAsync(cancellationToken);
+            return new WebIntentResponse($"Goal [{goal.Id}] could not be mapped to a safe plan.", false, null, null, null, null, null);
+        }
+
+        var source = $"goal:{goal.Id} {goal.Text}";
+        return await ExecutePlanInternalAsync(source, plan, dryRun: false, approvedByUser, cancellationToken);
+    }
+
+    private static GoalState CloneGoalState(GoalState goal)
+    {
+        return new GoalState
+        {
+            Id = goal.Id,
+            Text = goal.Text,
+            Completed = goal.Completed,
+            CreatedAtUtc = goal.CreatedAtUtc,
+            UpdatedAtUtc = goal.UpdatedAtUtc,
+            LastRunAtUtc = goal.LastRunAtUtc,
+            Attempts = goal.Attempts,
+            LastResult = goal.LastResult,
+            Priority = goal.Priority,
+            AutoRunEnabled = goal.AutoRunEnabled
+        };
     }
 
     private async Task SaveTasksToDiskAsync(CancellationToken cancellationToken)
@@ -1396,6 +2378,106 @@ internal sealed class TrayLocalAgent : IDisposable
         catch
         {
             // Keep running with empty schedule list.
+        }
+    }
+
+    private async Task SaveGoalsToDiskAsync(CancellationToken cancellationToken)
+    {
+        List<GoalState> snapshot;
+        lock (_sync)
+        {
+            snapshot = _goals
+                .OrderBy(goal => goal.Completed)
+                .ThenByDescending(goal => goal.Priority)
+                .ThenByDescending(goal => goal.UpdatedAtUtc)
+                .ToList();
+        }
+
+        var path = Path.GetFullPath(_goalLibraryPath);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        await File.WriteAllTextAsync(path, JsonSerializer.Serialize(snapshot, JsonOptions), cancellationToken);
+    }
+
+    private void LoadGoalsFromDisk()
+    {
+        var path = Path.GetFullPath(_goalLibraryPath);
+        if (!File.Exists(path))
+        {
+            return;
+        }
+
+        try
+        {
+            var json = File.ReadAllText(path);
+            var parsed = JsonSerializer.Deserialize<List<GoalState>>(json, JsonOptions) ?? new List<GoalState>();
+            foreach (var goal in parsed)
+            {
+                if (string.IsNullOrWhiteSpace(goal.Id))
+                {
+                    goal.Id = Guid.NewGuid().ToString("N")[..8];
+                }
+
+                goal.Priority = Math.Clamp(goal.Priority, GoalPriorityLow, GoalPriorityHigh);
+                if (goal.CreatedAtUtc == default)
+                {
+                    goal.CreatedAtUtc = DateTimeOffset.UtcNow;
+                }
+
+                if (goal.UpdatedAtUtc == default)
+                {
+                    goal.UpdatedAtUtc = goal.CreatedAtUtc;
+                }
+            }
+
+            lock (_sync)
+            {
+                _goals.Clear();
+                _goals.AddRange(parsed);
+            }
+        }
+        catch
+        {
+            // Keep running with empty goals list.
+        }
+    }
+
+    private async Task SaveMemoryToDiskAsync(CancellationToken cancellationToken)
+    {
+        List<IntentMemoryEntry> snapshot;
+        lock (_sync)
+        {
+            snapshot = _intentMemory
+                .OrderByDescending(entry => entry.TimestampUtc)
+                .Take(200)
+                .ToList();
+        }
+
+        var path = Path.GetFullPath(_memoryLibraryPath);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        await File.WriteAllTextAsync(path, JsonSerializer.Serialize(snapshot, JsonOptions), cancellationToken);
+    }
+
+    private void LoadMemoryFromDisk()
+    {
+        var path = Path.GetFullPath(_memoryLibraryPath);
+        if (!File.Exists(path))
+        {
+            return;
+        }
+
+        try
+        {
+            var json = File.ReadAllText(path);
+            var parsed = JsonSerializer.Deserialize<List<IntentMemoryEntry>>(json, JsonOptions) ?? new List<IntentMemoryEntry>();
+            lock (_sync)
+            {
+                _intentMemory.Clear();
+                _intentMemory.AddRange(parsed.OrderByDescending(item => item.TimestampUtc).Take(200));
+            }
+        }
+        catch
+        {
+            // Keep running with empty memory.
         }
     }
 
@@ -1686,6 +2768,40 @@ internal sealed class TrayLocalAgent : IDisposable
     private sealed record ContextLockState(bool Enabled, string? WindowId, string? AppId, string? WindowTitle)
     {
         public static ContextLockState None => new(false, null, null, null);
+    }
+
+    private sealed class GoalState
+    {
+        public string Id { get; set; } = string.Empty;
+        public string Text { get; set; } = string.Empty;
+        public bool Completed { get; set; }
+        public DateTimeOffset CreatedAtUtc { get; set; }
+        public DateTimeOffset UpdatedAtUtc { get; set; }
+        public DateTimeOffset? LastRunAtUtc { get; set; }
+        public int Attempts { get; set; }
+        public string? LastResult { get; set; }
+        public int Priority { get; set; } = GoalPriorityNormal;
+        public bool AutoRunEnabled { get; set; } = true;
+    }
+
+    private sealed record IntentMemoryEntry(
+        DateTimeOffset TimestampUtc,
+        string Source,
+        string IntentSummary,
+        bool Success,
+        int PlanSteps,
+        string ResultMessage,
+        string? BeforeWindow,
+        string? AfterWindow);
+
+    private sealed record ObservationSnapshot(string WindowId, string WindowDisplay)
+    {
+        public static ObservationSnapshot Empty { get; } = new(string.Empty, string.Empty);
+    }
+
+    private sealed record RecoveryAttemptOutcome(ExecutionResult? RecoveredResult, string Note)
+    {
+        public static RecoveryAttemptOutcome None { get; } = new(null, string.Empty);
     }
 
     private sealed record ScheduleState(

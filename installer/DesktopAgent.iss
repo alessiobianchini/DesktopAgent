@@ -37,6 +37,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional icons:"
 Name: "startonfinish"; Description: "Start DesktopAgent after setup"; GroupDescription: "Post-install:"
+Name: "installffmpeg"; Description: "Install FFmpeg (required for screen recording)"; GroupDescription: "Optional components:"; Check: IsWingetAvailable
 
 [Files]
 Source: "{#DistDir}\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
@@ -49,6 +50,49 @@ Name: "{autodesktop}\DesktopAgent"; Filename: "{app}\tray\DesktopAgent.Tray.exe"
 
 [Run]
 Filename: "{app}\tray\DesktopAgent.Tray.exe"; Description: "Start DesktopAgent"; Flags: postinstall nowait skipifsilent; Tasks: startonfinish
+Filename: "{cmd}"; Parameters: "/C winget install -e --id Gyan.FFmpeg --accept-package-agreements --accept-source-agreements"; Flags: runhidden waituntilterminated skipifsilent; Tasks: installffmpeg
 
 [UninstallRun]
 Filename: "{app}\stop-desktopagent.cmd"; Flags: runhidden
+
+[Code]
+function CommandExists(const Command: string): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result :=
+    Exec(ExpandConstant('{cmd}'),
+         '/C where ' + Command,
+         '',
+         SW_HIDE,
+         ewWaitUntilTerminated,
+         ResultCode)
+    and (ResultCode = 0);
+end;
+
+function IsWingetAvailable: Boolean;
+begin
+  Result := CommandExists('winget');
+end;
+
+function IsFFmpegAvailable: Boolean;
+begin
+  Result := CommandExists('ffmpeg');
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+  begin
+    if not IsFFmpegAvailable then
+    begin
+      MsgBox(
+        'FFmpeg was not detected. Screen recording features require FFmpeg.'#13#10#13#10 +
+        'Install manually with:'#13#10 +
+        '  winget install -e --id Gyan.FFmpeg' #13#10#13#10 +
+        'Then restart DesktopAgent.',
+        mbInformation,
+        MB_OK);
+    end;
+  end;
+end;

@@ -49,6 +49,12 @@ public sealed class AgentConfig
     public int FindRetryDelayMs { get; set; } = 250;
     public bool ContextBindingEnabled { get; set; } = true;
     public bool ContextBindingRequireWindow { get; set; } = false;
+    public bool AutoRecoveryEnabled { get; set; } = true;
+    public int AutoRecoveryMaxAttempts { get; set; } = 1;
+    public int AutoRecoveryWaitMs { get; set; } = 700;
+    public bool GoalSchedulerEnabled { get; set; } = true;
+    public int GoalSchedulerIntervalSeconds { get; set; } = 300;
+    public int GoalSchedulerMaxPerTick { get; set; } = 1;
     public int ClipboardHistoryMaxItems { get; set; } = 50;
     public List<string> FilesystemAllowedRoots { get; set; } = new() { "." };
     public ProfilePresets Profiles { get; set; } = ProfilePresets.CreateDefault();

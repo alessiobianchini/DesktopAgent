@@ -33,6 +33,7 @@ public sealed class FallbackIntentInterpreter : IIntentInterpreter
             if (!ShouldFallback(rewrittenPlan))
             {
                 PreserveMouseJiggleDuration(intent, rewrittenPlan);
+                PreserveScreenRecordingDuration(intent, rewrittenPlan);
                 rewrittenPlan.Intent = intent;
                 if (rewrittenPlan.Steps.Count > 0 && string.IsNullOrWhiteSpace(rewrittenPlan.Steps[0].Note))
                 {
@@ -128,6 +129,35 @@ public sealed class FallbackIntentInterpreter : IIntentInterpreter
         }
 
         rewrittenMouse.WaitFor = originalDuration;
+    }
+
+    private void PreserveScreenRecordingDuration(string originalIntent, ActionPlan rewrittenPlan)
+    {
+        var rewrittenRecord = rewrittenPlan.Steps.FirstOrDefault(step => step.Type == ActionType.RecordScreen);
+        if (rewrittenRecord == null)
+        {
+            return;
+        }
+
+        var rewrittenDuration = rewrittenRecord.WaitFor ?? TimeSpan.FromSeconds(30);
+        if (rewrittenDuration != TimeSpan.FromSeconds(30))
+        {
+            return;
+        }
+
+        var originalPlan = _ruleBased.Interpret(originalIntent);
+        var originalRecord = originalPlan.Steps.FirstOrDefault(step => step.Type == ActionType.RecordScreen);
+        if (originalRecord?.WaitFor is not TimeSpan originalDuration)
+        {
+            return;
+        }
+
+        if (originalDuration <= TimeSpan.Zero || originalDuration == TimeSpan.FromSeconds(30))
+        {
+            return;
+        }
+
+        rewrittenRecord.WaitFor = originalDuration;
     }
 
     private string ToAuditText(string? raw)

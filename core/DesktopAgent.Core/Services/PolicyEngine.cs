@@ -69,6 +69,26 @@ public sealed class PolicyEngine : IPolicyEngine
             return PolicyDecision.RequireConfirmation("Opening URL requires confirmation");
         }
 
+        if (step.Type == ActionType.RecordScreen)
+        {
+            if (_config.RequireConfirmation)
+            {
+                return PolicyDecision.RequireConfirmation("Screen recording requires confirmation");
+            }
+
+            return PolicyDecision.Deny("Screen recording blocked when confirmation is disabled");
+        }
+
+        if (step.Type == ActionType.StartScreenRecording)
+        {
+            if (_config.RequireConfirmation)
+            {
+                return PolicyDecision.RequireConfirmation("Starting screen recording requires confirmation");
+            }
+
+            return PolicyDecision.Deny("Starting screen recording blocked when confirmation is disabled");
+        }
+
         if (step.Type == ActionType.LockScreen)
         {
             if (_config.RequireConfirmation)

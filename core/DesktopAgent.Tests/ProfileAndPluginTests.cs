@@ -161,6 +161,53 @@ public sealed class ProfileAndPluginTests
     }
 
     [Fact]
+    public void Interpreter_ParsesSnapshotAndScreenRecording()
+    {
+        var interpreter = new RuleBasedIntentInterpreter(new StubAppResolver(), new AgentConfig());
+
+        var snapshot = interpreter.Interpret("take screenshot");
+        Assert.Single(snapshot.Steps);
+        Assert.Equal(ActionType.CaptureScreen, snapshot.Steps[0].Type);
+
+        var recordWithAudio = interpreter.Interpret("record screen and audio for 2 minutes");
+        Assert.Single(recordWithAudio.Steps);
+        Assert.Equal(ActionType.RecordScreen, recordWithAudio.Steps[0].Type);
+        Assert.Equal(TimeSpan.FromMinutes(2), recordWithAudio.Steps[0].WaitFor);
+        Assert.Equal("audio:on", recordWithAudio.Steps[0].Text);
+
+        var recordWithoutAudio = interpreter.Interpret("registra schermo senza audio per 45 secondi");
+        Assert.Single(recordWithoutAudio.Steps);
+        Assert.Equal(ActionType.RecordScreen, recordWithoutAudio.Steps[0].Type);
+        Assert.Equal(TimeSpan.FromSeconds(45), recordWithoutAudio.Steps[0].WaitFor);
+        Assert.Equal("audio:off", recordWithoutAudio.Steps[0].Text);
+
+        var startRecording = interpreter.Interpret("start recording screen without audio");
+        Assert.Single(startRecording.Steps);
+        Assert.Equal(ActionType.StartScreenRecording, startRecording.Steps[0].Type);
+        Assert.Equal("audio:off", startRecording.Steps[0].Text);
+
+        var stopRecording = interpreter.Interpret("stop recording");
+        Assert.Single(stopRecording.Steps);
+        Assert.Equal(ActionType.StopScreenRecording, stopRecording.Steps[0].Type);
+    }
+
+    [Fact]
+    public void PolicyEngine_RequiresConfirmation_ForScreenRecording()
+    {
+        var engine = new PolicyEngine(new AgentConfig { RequireConfirmation = true });
+        var step = new PlanStep { Type = ActionType.RecordScreen, WaitFor = TimeSpan.FromSeconds(10) };
+
+        var decision = engine.Evaluate(step, new WindowRef());
+        Assert.True(decision.Allowed);
+        Assert.True(decision.RequiresConfirmation);
+
+        var startStep = new PlanStep { Type = ActionType.StartScreenRecording };
+        var startDecision = engine.Evaluate(startStep, new WindowRef());
+        Assert.True(startDecision.Allowed);
+        Assert.True(startDecision.RequiresConfirmation);
+    }
+
+    [Fact]
     public void Interpreter_ConvertsGoToTextIntoSearchAndKeepsOpenedBrowser()
     {
         var interpreter = new RuleBasedIntentInterpreter(new StubAppResolver(), new AgentConfig());
@@ -173,6 +220,96 @@ public sealed class ProfileAndPluginTests
         Assert.Equal(ActionType.OpenUrl, plan.Steps[1].Type);
         Assert.Equal("chrome", plan.Steps[1].AppIdOrPath);
         Assert.Equal("https://www.google.com/search?q=meteoam", plan.Steps[1].Target);
+    }
+
+    [Fact]
+    public void Interpreter_ParsesConversationalOpenCommands()
+    {
+        var interpreter = new RuleBasedIntentInterpreter(new StubAppResolver(), new AgentConfig());
+
+        var italian = interpreter.Interpret("potresti aprirmi notepad?");
+        Assert.Single(italian.Steps);
+        Assert.Equal(ActionType.OpenApp, italian.Steps[0].Type);
+        Assert.Equal("notepad", italian.Steps[0].AppIdOrPath);
+
+        var english = interpreter.Interpret("can you open for me notepad");
+        Assert.Single(english.Steps);
+        Assert.Equal(ActionType.OpenApp, english.Steps[0].Type);
+        Assert.Equal("notepad", english.Steps[0].AppIdOrPath);
+
+        var chatPrefixed = interpreter.Interpret("You: can you open for me notepad?");
+        Assert.Single(chatPrefixed.Steps);
+        Assert.Equal(ActionType.OpenApp, chatPrefixed.Steps[0].Type);
+        Assert.Equal("notepad", chatPrefixed.Steps[0].AppIdOrPath);
+    }
+
+    [Fact]
+    public void Interpreter_ParsesConversationalChainedCommands()
+    {
+        var interpreter = new RuleBasedIntentInterpreter(new StubAppResolver(), new AgentConfig());
+
+        var italian = interpreter.Interpret("mi apri notepad e poi scrivi ciao");
+        Assert.Equal(2, italian.Steps.Count);
+        Assert.Equal(ActionType.OpenApp, italian.Steps[0].Type);
+        Assert.Equal("notepad", italian.Steps[0].AppIdOrPath);
+        Assert.Equal(ActionType.TypeText, italian.Steps[1].Type);
+        Assert.Equal("ciao", italian.Steps[1].Text);
+        Assert.Equal("notepad", italian.Steps[1].ExpectedAppId);
+
+        var english = interpreter.Interpret("can you open for me notepad and then write hello");
+        Assert.Equal(2, english.Steps.Count);
+        Assert.Equal(ActionType.OpenApp, english.Steps[0].Type);
+        Assert.Equal("notepad", english.Steps[0].AppIdOrPath);
+        Assert.Equal(ActionType.TypeText, english.Steps[1].Type);
+        Assert.Equal("hello", english.Steps[1].Text);
+        Assert.Equal("notepad", english.Steps[1].ExpectedAppId);
+    }
+
+    [Fact]
+    public void Interpreter_KeepsBrowserContext_InConversationalChains()
+    {
+        var interpreter = new RuleBasedIntentInterpreter(new StubAppResolver(), new AgentConfig());
+
+        var onBrowser = interpreter.Interpret("open edge and search meteo gubbio on browser");
+        Assert.Equal(2, onBrowser.Steps.Count);
+        Assert.Equal(ActionType.OpenApp, onBrowser.Steps[0].Type);
+        Assert.Equal("edge", onBrowser.Steps[0].AppIdOrPath);
+        Assert.Equal(ActionType.OpenUrl, onBrowser.Steps[1].Type);
+        Assert.Equal("edge", onBrowser.Steps[1].AppIdOrPath);
+        Assert.Equal("https://www.google.com/search?q=meteo%20gubbio", onBrowser.Steps[1].Target);
+
+        var there = interpreter.Interpret("open edge and then search meteo gubbio there");
+        Assert.Equal(2, there.Steps.Count);
+        Assert.Equal(ActionType.OpenApp, there.Steps[0].Type);
+        Assert.Equal("edge", there.Steps[0].AppIdOrPath);
+        Assert.Equal(ActionType.OpenUrl, there.Steps[1].Type);
+        Assert.Equal("edge", there.Steps[1].AppIdOrPath);
+        Assert.Equal("https://www.google.com/search?q=meteo%20gubbio", there.Steps[1].Target);
+    }
+
+    [Fact]
+    public void Interpreter_ParsesChatLikeTaskCommands_WithSendConfirmationHook()
+    {
+        var interpreter = new RuleBasedIntentInterpreter(new StubAppResolver(), new AgentConfig());
+
+        var plan = interpreter.Interpret("apri teams, cerca mario rossi e inviagli ciao");
+        Assert.Equal(4, plan.Steps.Count);
+
+        Assert.Equal(ActionType.OpenApp, plan.Steps[0].Type);
+        Assert.Equal("teams", plan.Steps[0].AppIdOrPath);
+
+        Assert.Equal(ActionType.Find, plan.Steps[1].Type);
+        Assert.Equal("mario rossi", plan.Steps[1].Selector?.NameContains);
+        Assert.Equal("teams", plan.Steps[1].ExpectedAppId);
+
+        Assert.Equal(ActionType.TypeText, plan.Steps[2].Type);
+        Assert.Equal("ciao", plan.Steps[2].Text);
+        Assert.Equal("teams", plan.Steps[2].ExpectedAppId);
+
+        Assert.Equal(ActionType.Click, plan.Steps[3].Type);
+        Assert.Equal("send", plan.Steps[3].Selector?.NameContains);
+        Assert.Equal("send", plan.Steps[3].Target);
+        Assert.Equal("teams", plan.Steps[3].ExpectedAppId);
     }
 
     private sealed class StubAppResolver : IAppResolver

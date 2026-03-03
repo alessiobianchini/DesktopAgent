@@ -16,6 +16,10 @@ public static class AgentConfigSanitizer
         config.DangerousKeyCombos = CleanTokens(config.DangerousKeyCombos);
         config.FilesystemAllowedRoots = CleanTokens(config.FilesystemAllowedRoots);
         config.ClipboardHistoryMaxItems = Math.Clamp(config.ClipboardHistoryMaxItems, 1, 500);
+        config.AutoRecoveryMaxAttempts = Math.Clamp(config.AutoRecoveryMaxAttempts, 0, 3);
+        config.AutoRecoveryWaitMs = Math.Clamp(config.AutoRecoveryWaitMs, 100, 5000);
+        config.GoalSchedulerIntervalSeconds = Math.Clamp(config.GoalSchedulerIntervalSeconds, 10, 3600);
+        config.GoalSchedulerMaxPerTick = Math.Clamp(config.GoalSchedulerMaxPerTick, 1, 10);
         config.PostCheckTimeoutMs = Math.Clamp(config.PostCheckTimeoutMs, 100, 5000);
         config.PostCheckPollMs = Math.Clamp(config.PostCheckPollMs, 20, 1000);
         config.ActiveProfile = AgentProfileService.NormalizeProfile(config.ActiveProfile);

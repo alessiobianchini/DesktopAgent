@@ -23,6 +23,11 @@ public sealed class Executor : IExecutor
     private readonly ILogger<Executor> _logger;
     private static readonly object ClipboardHistoryLock = new();
     private static readonly List<ClipboardHistoryEntry> ClipboardHistory = new();
+    private readonly object _recordingSync = new();
+    private Process? _recordingProcess;
+    private string? _recordingOutputPath;
+    private DateTimeOffset? _recordingStartedAtUtc;
+    private bool _recordingAudio;
 
     public Executor(
         IDesktopAdapterClient client,
@@ -183,7 +188,13 @@ public sealed class Executor : IExecutor
                 case ActionType.ReadText:
                     return await ExecuteReadTextAsync(cancellationToken);
                 case ActionType.CaptureScreen:
-                    return await ExecuteCaptureAsync(cancellationToken);
+                    return await ExecuteCaptureAsync(step, cancellationToken);
+                case ActionType.RecordScreen:
+                    return await ExecuteRecordScreenAsync(step, cancellationToken);
+                case ActionType.StartScreenRecording:
+                    return await ExecuteStartScreenRecordingAsync(step, cancellationToken);
+                case ActionType.StopScreenRecording:
+                    return await ExecuteStopScreenRecordingAsync(cancellationToken);
                 case ActionType.GetClipboard:
                     var clip = await _client.GetClipboardAsync(cancellationToken);
                     AddClipboardHistory("get", clip.Text);
@@ -528,7 +539,7 @@ public sealed class Executor : IExecutor
         return new StepResult { Success = true, Message = "Read text", Data = regions };
     }
 
-    private async Task<StepResult> ExecuteCaptureAsync(CancellationToken cancellationToken)
+    private async Task<StepResult> ExecuteCaptureAsync(PlanStep step, CancellationToken cancellationToken)
     {
         var screenshot = await _client.CaptureScreenAsync(new ScreenshotRequest(), cancellationToken);
         if (screenshot.Png.IsEmpty)
@@ -536,7 +547,217 @@ public sealed class Executor : IExecutor
             return new StepResult { Success = false, Message = "Screenshot failed" };
         }
 
-        return new StepResult { Success = true, Message = "Captured screen", Data = new { screenshot.Width, screenshot.Height } };
+        try
+        {
+            var path = BuildMediaOutputPath(step.Target, "snapshot", ".png");
+            await File.WriteAllBytesAsync(path, screenshot.Png.ToByteArray(), cancellationToken);
+            return new StepResult
+            {
+                Success = true,
+                Message = $"Snapshot saved: {path}",
+                Data = new { path, screenshot.Width, screenshot.Height, bytes = screenshot.Png.Length }
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Saving screenshot failed");
+            return new StepResult { Success = false, Message = $"Screenshot save failed: {ex.Message}" };
+        }
+    }
+
+    private async Task<StepResult> ExecuteRecordScreenAsync(PlanStep step, CancellationToken cancellationToken)
+    {
+        var duration = step.WaitFor ?? TimeSpan.FromSeconds(30);
+        if (duration < TimeSpan.FromSeconds(1))
+        {
+            duration = TimeSpan.FromSeconds(1);
+        }
+        if (duration > TimeSpan.FromHours(2))
+        {
+            duration = TimeSpan.FromHours(2);
+        }
+
+        var includeAudioRequested = !string.Equals(step.Text, "audio:off", StringComparison.OrdinalIgnoreCase);
+        var outputPath = BuildMediaOutputPath(step.Target, "recording", ".mp4");
+
+        if (!OperatingSystem.IsWindows())
+        {
+            return new StepResult
+            {
+                Success = false,
+                Message = "Screen recording is currently supported only on Windows in this MVP.",
+                Data = new { outputPath, seconds = (int)Math.Round(duration.TotalSeconds), includeAudioRequested }
+            };
+        }
+
+        var seconds = Math.Max(1, (int)Math.Ceiling(duration.TotalSeconds));
+        var ffmpegPath = ResolveFfmpegPath();
+
+        var timeout = TimeSpan.FromSeconds(seconds + 30);
+        if (includeAudioRequested)
+        {
+            var withAudio = await RunProcessAsync(ffmpegPath, BuildRecordingArguments(outputPath, seconds, includeAudio: true), timeout, cancellationToken);
+            if (withAudio.Success)
+            {
+                return new StepResult
+                {
+                    Success = true,
+                    Message = $"Screen recording saved: {outputPath}",
+                    Data = new { outputPath, seconds, audio = true }
+                };
+            }
+
+            _logger.LogWarning("Screen recording with audio failed, retrying video-only. Error: {Error}", withAudio.Error);
+        }
+
+        var videoOnly = await RunProcessAsync(ffmpegPath, BuildRecordingArguments(outputPath, seconds, includeAudio: false), timeout, cancellationToken);
+        if (videoOnly.Success)
+        {
+            return new StepResult
+            {
+                Success = true,
+                Message = includeAudioRequested
+                    ? $"Screen recording saved (audio unavailable, recorded video-only): {outputPath}"
+                    : $"Screen recording saved: {outputPath}",
+                Data = new { outputPath, seconds, audio = false }
+            };
+        }
+
+        return new StepResult
+        {
+            Success = false,
+            Message = $"Screen recording failed: {videoOnly.Error ?? "ffmpeg not available or capture failed"}",
+            Data = new { outputPath, seconds, includeAudioRequested }
+        };
+    }
+
+    private Task<StepResult> ExecuteStartScreenRecordingAsync(PlanStep step, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var includeAudioRequested = !string.Equals(step.Text, "audio:off", StringComparison.OrdinalIgnoreCase);
+        var outputPath = BuildMediaOutputPath(step.Target, "recording-live", ".mp4");
+
+        if (!OperatingSystem.IsWindows())
+        {
+            return Task.FromResult(new StepResult
+            {
+                Success = false,
+                Message = "Live screen recording is currently supported only on Windows in this MVP.",
+                Data = new { outputPath, includeAudioRequested }
+            });
+        }
+
+        lock (_recordingSync)
+        {
+            if (_recordingProcess is { HasExited: false })
+            {
+                var runningFor = _recordingStartedAtUtc.HasValue
+                    ? (DateTimeOffset.UtcNow - _recordingStartedAtUtc.Value).TotalSeconds
+                    : 0;
+                return Task.FromResult(new StepResult
+                {
+                    Success = false,
+                    Message = "A screen recording is already running.",
+                    Data = new { outputPath = _recordingOutputPath, seconds = Math.Max(0, (int)runningFor), audio = _recordingAudio }
+                });
+            }
+
+            if (_recordingProcess is { HasExited: true })
+            {
+                _recordingProcess.Dispose();
+                _recordingProcess = null;
+                _recordingOutputPath = null;
+                _recordingStartedAtUtc = null;
+                _recordingAudio = false;
+            }
+        }
+
+        var ffmpegPath = ResolveFfmpegPath();
+        if (TryStartRecordingProcess(ffmpegPath, outputPath, includeAudioRequested, out var audioUsed, out var error))
+        {
+            lock (_recordingSync)
+            {
+                _recordingAudio = audioUsed;
+            }
+
+            return Task.FromResult(new StepResult
+            {
+                Success = true,
+                Message = audioUsed
+                    ? $"Screen recording started (with audio): {outputPath}"
+                    : $"Screen recording started (video-only): {outputPath}",
+                Data = new { outputPath, audio = audioUsed }
+            });
+        }
+
+        return Task.FromResult(new StepResult
+        {
+            Success = false,
+            Message = $"Start recording failed: {error ?? "ffmpeg not available or capture failed"}",
+            Data = new { outputPath, includeAudioRequested }
+        });
+    }
+
+    private Task<StepResult> ExecuteStopScreenRecordingAsync(CancellationToken cancellationToken)
+    {
+        Process? process;
+        string? outputPath;
+        DateTimeOffset? startedAtUtc;
+        bool audio;
+
+        lock (_recordingSync)
+        {
+            process = _recordingProcess;
+            outputPath = _recordingOutputPath;
+            startedAtUtc = _recordingStartedAtUtc;
+            audio = _recordingAudio;
+            _recordingProcess = null;
+            _recordingOutputPath = null;
+            _recordingStartedAtUtc = null;
+            _recordingAudio = false;
+        }
+
+        if (process == null || process.HasExited)
+        {
+            return Task.FromResult(new StepResult
+            {
+                Success = false,
+                Message = "No active recording to stop."
+            });
+        }
+
+        try
+        {
+            process.Kill(entireProcessTree: true);
+            process.WaitForExit(5000);
+        }
+        catch (Exception ex)
+        {
+            return Task.FromResult(new StepResult { Success = false, Message = $"Stop recording failed: {ex.Message}" });
+        }
+        finally
+        {
+            process.Dispose();
+        }
+
+        var elapsedSeconds = startedAtUtc.HasValue
+            ? Math.Max(0, (int)(DateTimeOffset.UtcNow - startedAtUtc.Value).TotalSeconds)
+            : 0;
+
+        long? bytes = null;
+        if (!string.IsNullOrWhiteSpace(outputPath) && File.Exists(outputPath))
+        {
+            bytes = new FileInfo(outputPath).Length;
+        }
+
+        return Task.FromResult(new StepResult
+        {
+            Success = true,
+            Message = string.IsNullOrWhiteSpace(outputPath)
+                ? "Screen recording stopped."
+                : $"Screen recording stopped: {outputPath}",
+            Data = new { outputPath, seconds = elapsedSeconds, audio, bytes }
+        });
     }
 
     private async Task<StepResult> ExecuteOpenAppAsync(PlanStep step, CancellationToken cancellationToken)
@@ -2141,6 +2362,201 @@ public sealed class Executor : IExecutor
             {
                 error = string.IsNullOrWhiteSpace(stdErr) ? $"{fileName} exited with code {process.ExitCode}" : stdErr.Trim();
                 return false;
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            return false;
+        }
+    }
+
+    private static async Task<(bool Success, string? Error)> RunProcessAsync(string fileName, string arguments, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var process = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = fileName,
+                    Arguments = arguments,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                }
+            };
+
+            process.Start();
+            var stdOutTask = process.StandardOutput.ReadToEndAsync();
+            var stdErrTask = process.StandardError.ReadToEndAsync();
+
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(timeout);
+
+            try
+            {
+                await process.WaitForExitAsync(timeoutCts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                try
+                {
+                    if (!process.HasExited)
+                    {
+                        process.Kill(entireProcessTree: true);
+                    }
+                }
+                catch
+                {
+                    // best-effort kill
+                }
+
+                return (false, cancellationToken.IsCancellationRequested
+                    ? "Recording canceled"
+                    : "Recording timed out");
+            }
+
+            var stdOut = await stdOutTask;
+            var stdErr = await stdErrTask;
+            if (process.ExitCode == 0)
+            {
+                return (true, null);
+            }
+
+            var error = string.IsNullOrWhiteSpace(stdErr) ? stdOut : stdErr;
+            if (string.IsNullOrWhiteSpace(error))
+            {
+                error = $"{fileName} exited with code {process.ExitCode}";
+            }
+            return (false, error.Trim());
+        }
+        catch (Exception ex)
+        {
+            return (false, ex.Message);
+        }
+    }
+
+    private static string BuildMediaOutputPath(string? requested, string prefix, string extension)
+    {
+        var root = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "DesktopAgent",
+            "media");
+        Directory.CreateDirectory(root);
+
+        var fileName = Path.GetFileName((requested ?? string.Empty).Trim().Trim('"', '\''));
+        if (string.IsNullOrWhiteSpace(fileName))
+        {
+            fileName = $"{prefix}-{DateTime.UtcNow:yyyyMMdd-HHmmss}-{Guid.NewGuid():N}{extension}";
+        }
+
+        if (!Path.HasExtension(fileName))
+        {
+            fileName += extension;
+        }
+
+        var safeChars = fileName
+            .Select(ch => Path.GetInvalidFileNameChars().Contains(ch) ? '_' : ch)
+            .ToArray();
+        var safeName = new string(safeChars);
+        if (!safeName.EndsWith(extension, StringComparison.OrdinalIgnoreCase))
+        {
+            safeName = Path.GetFileNameWithoutExtension(safeName) + extension;
+        }
+
+        return Path.Combine(root, safeName);
+    }
+
+    private static string ResolveFfmpegPath()
+    {
+        var ffmpegPath = Environment.GetEnvironmentVariable("DESKTOP_AGENT_FFMPEG_PATH");
+        return string.IsNullOrWhiteSpace(ffmpegPath) ? "ffmpeg" : ffmpegPath;
+    }
+
+    private static string BuildRecordingArguments(string outputPath, int seconds, bool includeAudio)
+    {
+        var fps = 12;
+        if (includeAudio)
+        {
+            return $"-y -f gdigrab -framerate {fps} -i desktop -f wasapi -i default -t {seconds} -c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac \"{outputPath}\"";
+        }
+
+        return $"-y -f gdigrab -framerate {fps} -i desktop -t {seconds} -c:v libx264 -preset veryfast -pix_fmt yuv420p \"{outputPath}\"";
+    }
+
+    private string BuildLiveRecordingArguments(string outputPath, bool includeAudio)
+    {
+        var fps = 12;
+        if (includeAudio)
+        {
+            return $"-y -f gdigrab -framerate {fps} -i desktop -f wasapi -i default -c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac \"{outputPath}\"";
+        }
+
+        return $"-y -f gdigrab -framerate {fps} -i desktop -c:v libx264 -preset veryfast -pix_fmt yuv420p \"{outputPath}\"";
+    }
+
+    private bool TryStartRecordingProcess(string ffmpegPath, string outputPath, bool includeAudioRequested, out bool audioUsed, out string? error)
+    {
+        audioUsed = false;
+        error = null;
+
+        if (TryStartRecordingProcessCore(ffmpegPath, outputPath, includeAudioRequested, out error))
+        {
+            audioUsed = includeAudioRequested;
+            return true;
+        }
+
+        if (!includeAudioRequested)
+        {
+            return false;
+        }
+
+        _logger.LogWarning("Live recording with audio failed, retrying video-only. Error: {Error}", error);
+        if (TryStartRecordingProcessCore(ffmpegPath, outputPath, includeAudio: false, out error))
+        {
+            audioUsed = false;
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool TryStartRecordingProcessCore(string ffmpegPath, string outputPath, bool includeAudio, out string? error)
+    {
+        error = null;
+        try
+        {
+            var process = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = ffmpegPath,
+                    Arguments = BuildLiveRecordingArguments(outputPath, includeAudio),
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                }
+            };
+
+            process.Start();
+            Thread.Sleep(800);
+            if (process.HasExited)
+            {
+                var code = process.ExitCode;
+                process.Dispose();
+                error = $"ffmpeg exited immediately with code {code}";
+                return false;
+            }
+
+            lock (_recordingSync)
+            {
+                _recordingProcess = process;
+                _recordingOutputPath = outputPath;
+                _recordingStartedAtUtc = DateTimeOffset.UtcNow;
+                _recordingAudio = includeAudio;
             }
 
             return true;
