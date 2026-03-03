@@ -144,6 +144,7 @@ jobs:
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
+          token: ${{ secrets.RELEASE_GITHUB_TOKEN != '' && secrets.RELEASE_GITHUB_TOKEN || github.token }}
           tag_name: ${{ steps.meta.outputs.tag }}
           name: DesktopAgent ${{ steps.meta.outputs.tag }}
           target_commitish: ${{ github.sha }}
