@@ -416,7 +416,11 @@ internal partial class QuickChatWindow : Window
         AppendUser(message);
         try
         {
-            var response = await _apiClient.SendChatAsync(message, CancellationToken.None);
+            // Run agent call off the UI thread because intent rewriting may perform
+            // blocking network operations (LLM fallback) in the current implementation.
+            var response = await Task.Run(
+                () => _apiClient.SendChatAsync(message, CancellationToken.None),
+                CancellationToken.None);
             RenderResponse(response);
         }
         catch (Exception ex)
@@ -440,7 +444,9 @@ internal partial class QuickChatWindow : Window
         SetBusy(true);
         try
         {
-            var response = await _apiClient.ConfirmAsync(_pendingToken, approve, CancellationToken.None);
+            var response = await Task.Run(
+                () => _apiClient.ConfirmAsync(_pendingToken, approve, CancellationToken.None),
+                CancellationToken.None);
             RenderResponse(response);
         }
         catch (Exception ex)

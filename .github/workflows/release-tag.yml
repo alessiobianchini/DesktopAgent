@@ -98,6 +98,14 @@ jobs:
           $content = Get-Content -Path $releasesFile -Raw
           [System.IO.File]::WriteAllText($releasesFile, $content, [System.Text.UTF8Encoding]::new($false))
 
+      - name: Validate release token access
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN || github.token }}
+        run: |
+          gh api "repos/${{ github.repository }}" --jq ".full_name" | Out-Null
+          Write-Host "Release token can access repo: ${{ github.repository }}"
+
       - name: Prepare code signing certificate
         id: codesign_cert
         shell: pwsh
@@ -141,7 +149,7 @@ jobs:
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          token: ${{ secrets.RELEASE_GITHUB_TOKEN != '' && secrets.RELEASE_GITHUB_TOKEN || github.token }}
+          token: ${{ secrets.RELEASE_GITHUB_TOKEN || github.token }}
           tag_name: ${{ steps.meta.outputs.tag }}
           name: DesktopAgent ${{ steps.meta.outputs.tag }}
           target_commitish: ${{ github.sha }}
