@@ -96,6 +96,13 @@ jobs:
           Write-Host " - $releasesFile"
           $packages | ForEach-Object { Write-Host " - $($_.FullName)" }
 
+      - name: Normalize RELEASES encoding (UTF-8 no BOM)
+        shell: pwsh
+        run: |
+          $releasesFile = "dist/velopack-win-x64/releases/RELEASES"
+          $content = Get-Content -Path $releasesFile -Raw
+          [System.IO.File]::WriteAllText($releasesFile, $content, [System.Text.UTF8Encoding]::new($false))
+
       - name: Prepare code signing certificate
         id: codesign_cert
         shell: pwsh
