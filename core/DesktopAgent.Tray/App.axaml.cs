@@ -580,6 +580,10 @@ public partial class App : Application
         settings.StatusRefreshSeconds = Math.Clamp(settings.StatusRefreshSeconds, 1, 60);
         settings.ApiTimeoutSeconds = Math.Clamp(settings.ApiTimeoutSeconds, 1, 3600);
         settings.AutoUpdateCheckIntervalMinutes = Math.Clamp(settings.AutoUpdateCheckIntervalMinutes, 5, 1440);
+        if (!string.IsNullOrWhiteSpace(settings.AutoUpdateSource) && !settings.AutoUpdateSource.EndsWith("/", StringComparison.Ordinal))
+        {
+            settings.AutoUpdateSource += "/";
+        }
         return settings;
     }
 
@@ -831,7 +835,7 @@ internal sealed class TraySettings
     public int StatusRefreshSeconds { get; set; } = 5;
     public int ApiTimeoutSeconds { get; set; } = 600;
     public bool AutoUpdateEnabled { get; set; } = true;
-    public string AutoUpdateSource { get; set; } = "https://github.com/alessiobianchini/DesktopAgent/releases/latest/download";
+    public string AutoUpdateSource { get; set; } = "https://github.com/alessiobianchini/DesktopAgent/releases/latest/download/";
     public int AutoUpdateCheckIntervalMinutes { get; set; } = 60;
     public bool AutoUpdateAutoApply { get; set; } = false;
     public bool AutoStartAdapter { get; set; } = true;
