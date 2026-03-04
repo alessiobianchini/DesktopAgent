@@ -1888,6 +1888,7 @@ internal sealed class TrayLocalAgent : IDisposable
         }
 
         var provider = (_config.LlmFallback.Provider ?? "ollama").Trim().ToLowerInvariant();
+        uri = NormalizeLlmEndpoint(uri, provider);
         var prompt = BuildTranslationPrompt(intent);
 
         try
@@ -1914,7 +1915,7 @@ internal sealed class TrayLocalAgent : IDisposable
             translated = CleanTranslationOutput(translated);
             if (string.IsNullOrWhiteSpace(translated))
             {
-                return WebChatResponse.Simple("Unable to translate right now.");
+                return WebChatResponse.Simple("Translation failed: model returned an empty response.");
             }
 
             await WriteAuditAsync("llm_translate_response", "Translation completed", cancellationToken, new
@@ -1952,7 +1953,7 @@ internal sealed class TrayLocalAgent : IDisposable
         using var response = await client.PostAsJsonAsync(endpoint, payload, JsonOptions, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
-            return null;
+            throw await BuildLlmHttpExceptionAsync(response, cancellationToken);
         }
 
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
@@ -1977,7 +1978,7 @@ internal sealed class TrayLocalAgent : IDisposable
         using var response = await client.PostAsJsonAsync(endpoint, payload, JsonOptions, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
-            return null;
+            throw await BuildLlmHttpExceptionAsync(response, cancellationToken);
         }
 
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
@@ -2010,7 +2011,7 @@ internal sealed class TrayLocalAgent : IDisposable
         using var response = await client.PostAsJsonAsync(endpoint, payload, JsonOptions, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
-            return null;
+            throw await BuildLlmHttpExceptionAsync(response, cancellationToken);
         }
 
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
@@ -2029,6 +2030,69 @@ internal sealed class TrayLocalAgent : IDisposable
 
         var first = choices[0];
         return first.TryGetProperty("text", out var text) ? text.GetString() : null;
+    }
+
+    private static Uri NormalizeLlmEndpoint(Uri uri, string provider)
+    {
+        if (!string.IsNullOrWhiteSpace(uri.AbsolutePath) && uri.AbsolutePath != "/")
+        {
+            return uri;
+        }
+
+        return provider switch
+        {
+            "openai" => new Uri(uri, "/v1/chat/completions"),
+            "llama.cpp" => new Uri(uri, "/completion"),
+            _ => new Uri(uri, "/api/generate")
+        };
+    }
+
+    private static async Task<Exception> BuildLlmHttpExceptionAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    {
+        var detail = await TryReadLlmErrorAsync(response, cancellationToken);
+        var status = (int)response.StatusCode;
+        var reason = response.ReasonPhrase ?? "HTTP error";
+        return new InvalidOperationException($"LLM HTTP {status} ({reason}): {detail}");
+    }
+
+    private static async Task<string> TryReadLlmErrorAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (string.IsNullOrWhiteSpace(body))
+            {
+                return "empty response body";
+            }
+
+            var trimmed = body.Trim();
+            try
+            {
+                using var doc = JsonDocument.Parse(trimmed);
+                if (doc.RootElement.ValueKind == JsonValueKind.Object)
+                {
+                    if (doc.RootElement.TryGetProperty("error", out var errorProp))
+                    {
+                        return Compact(errorProp.ToString(), 220);
+                    }
+
+                    if (doc.RootElement.TryGetProperty("message", out var messageProp))
+                    {
+                        return Compact(messageProp.ToString(), 220);
+                    }
+                }
+            }
+            catch
+            {
+                // Best effort: if it's not JSON, return compact text body.
+            }
+
+            return Compact(trimmed, 220);
+        }
+        catch
+        {
+            return "unable to read response body";
+        }
     }
 
     private static string BuildTranslationPrompt(TranslationIntent intent)

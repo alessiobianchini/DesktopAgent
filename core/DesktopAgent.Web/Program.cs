@@ -2401,6 +2401,7 @@ internal static class LlmTranslationService
         }
 
         var provider = (config.LlmFallback.Provider ?? "ollama").Trim().ToLowerInvariant();
+        uri = NormalizeLlmEndpoint(uri, provider);
         var prompt = BuildPrompt(intent);
         var includeRaw = config.AuditLlmIncludeRawText;
         var canAudit = config.AuditLlmInteractions;
@@ -2445,7 +2446,7 @@ internal static class LlmTranslationService
 
             if (string.IsNullOrWhiteSpace(translated))
             {
-                return TranslationResult.Fail("Translation failed or returned empty output.");
+                return TranslationResult.Fail("Translation failed: model returned an empty response.");
             }
 
             if (canAudit)
@@ -2505,7 +2506,7 @@ internal static class LlmTranslationService
         using var response = await client.PostAsJsonAsync(uri, payload, JsonOptions, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
-            return null;
+            throw await BuildLlmHttpExceptionAsync(response, cancellationToken);
         }
 
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
@@ -2535,7 +2536,7 @@ internal static class LlmTranslationService
         using var response = await client.PostAsJsonAsync(uri, payload, JsonOptions, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
-            return null;
+            throw await BuildLlmHttpExceptionAsync(response, cancellationToken);
         }
 
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
@@ -2568,7 +2569,7 @@ internal static class LlmTranslationService
         using var response = await client.PostAsJsonAsync(uri, payload, JsonOptions, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
-            return null;
+            throw await BuildLlmHttpExceptionAsync(response, cancellationToken);
         }
 
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
@@ -2587,6 +2588,66 @@ internal static class LlmTranslationService
         }
 
         return null;
+    }
+
+    private static Uri NormalizeLlmEndpoint(Uri uri, string provider)
+    {
+        if (!string.IsNullOrWhiteSpace(uri.AbsolutePath) && uri.AbsolutePath != "/")
+        {
+            return uri;
+        }
+
+        return provider switch
+        {
+            "openai" => new Uri(uri, "/v1/chat/completions"),
+            "llama.cpp" => new Uri(uri, "/completion"),
+            _ => new Uri(uri, "/api/generate")
+        };
+    }
+
+    private static async Task<Exception> BuildLlmHttpExceptionAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    {
+        var detail = await TryReadLlmErrorAsync(response, cancellationToken);
+        return new InvalidOperationException($"LLM HTTP {(int)response.StatusCode} ({response.ReasonPhrase ?? "HTTP error"}): {detail}");
+    }
+
+    private static async Task<string> TryReadLlmErrorAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (string.IsNullOrWhiteSpace(body))
+            {
+                return "empty response body";
+            }
+
+            var trimmed = body.Trim();
+            try
+            {
+                using var doc = JsonDocument.Parse(trimmed);
+                if (doc.RootElement.ValueKind == JsonValueKind.Object)
+                {
+                    if (doc.RootElement.TryGetProperty("error", out var errorProp))
+                    {
+                        return Compact(errorProp.ToString(), 220);
+                    }
+                    if (doc.RootElement.TryGetProperty("message", out var messageProp))
+                    {
+                        return Compact(messageProp.ToString(), 220);
+                    }
+                }
+            }
+            catch
+            {
+                // Best effort.
+            }
+
+            return Compact(trimmed, 220);
+        }
+        catch
+        {
+            return "unable to read response body";
+        }
     }
 
     private static string BuildPrompt(TranslationIntent intent)
