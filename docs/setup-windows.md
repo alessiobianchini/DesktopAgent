@@ -132,6 +132,7 @@ Tray config (`core/DesktopAgent.Tray/appsettings.json`):
 Notes:
 - When running with `dotnet run`, status is usually `dev mode` (not installed package).
 - To apply updates, the app should run from an installed/published package with a valid Velopack feed.
+- User agent settings are persisted in `%LocalAppData%\DesktopAgent\agentsettings.json` (survive app updates).
 - Tray menu includes:
   - `Check updates now`
   - `Apply downloaded update`

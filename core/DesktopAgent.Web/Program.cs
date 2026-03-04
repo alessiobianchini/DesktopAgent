@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Reflection;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using DesktopAgent.Core.Abstractions;
 using DesktopAgent.Core.Config;
 using DesktopAgent.Core.Models;
@@ -1998,54 +1999,63 @@ static bool TryParseTranslationIntent(string message, out TranslationIntent inte
         return false;
     }
 
-    var trimmed = message.Trim();
-    string remainder;
-    if (trimmed.StartsWith("translate ", StringComparison.OrdinalIgnoreCase))
-    {
-        remainder = trimmed["translate ".Length..].Trim();
-    }
-    else if (trimmed.StartsWith("traduci ", StringComparison.OrdinalIgnoreCase))
-    {
-        remainder = trimmed["traduci ".Length..].Trim();
-    }
-    else
+    var text = message.Trim();
+    var lower = text.ToLowerInvariant();
+    if (!lower.Contains("traduc", StringComparison.Ordinal)
+        && !lower.Contains("tradur", StringComparison.Ordinal)
+        && !lower.Contains("translat", StringComparison.Ordinal))
     {
         return false;
     }
 
-    if (string.IsNullOrWhiteSpace(remainder))
+    if (TryParseHeadAndBody(text, out var headTarget, out var headSource, out var headText))
     {
-        return false;
-    }
-
-    if (TryParseHeadAndBody(remainder, out var targetFromHead, out var sourceFromHead, out var textFromHead))
-    {
-        intent = new TranslationIntent(textFromHead, targetFromHead, sourceFromHead);
+        intent = new TranslationIntent(headText, headTarget, headSource);
         return true;
     }
 
-    var lower = remainder.ToLowerInvariant();
-    var sep = lower.LastIndexOf(" to ", StringComparison.Ordinal);
-    var sepLen = 4;
-    if (sep <= 0)
+    var inMarker = lower.LastIndexOf(" in ", StringComparison.Ordinal);
+    var toMarker = lower.LastIndexOf(" to ", StringComparison.Ordinal);
+    var marker = Math.Max(inMarker, toMarker);
+    if (marker <= 0)
     {
-        sep = lower.LastIndexOf(" in ", StringComparison.Ordinal);
-        sepLen = 4;
+        return false;
     }
 
-    if (sep > 0)
+    var before = text[..marker].Trim();
+    var after = text[(marker + 4)..].Trim();
+    if (!string.IsNullOrWhiteSpace(after))
     {
-        var text = remainder[..sep].Trim();
-        var descriptor = remainder[(sep + sepLen)..].Trim();
-        if (TryParseLanguageDescriptor(descriptor, out var target, out var source)
-            && !string.IsNullOrWhiteSpace(text))
+        var sep = after.IndexOfAny(new[] { '?', ':', '\n', ';', '!' });
+        var descriptor = sep >= 0 ? after[..sep].Trim() : after;
+        var bodyAfter = sep >= 0 ? after[(sep + 1)..].Trim() : string.Empty;
+
+        if (TryParseLanguageDescriptor(descriptor, out var target, out var source))
         {
-            intent = new TranslationIntent(text, target, source);
+            var body = !string.IsNullOrWhiteSpace(bodyAfter)
+                ? bodyAfter
+                : NormalizeTranslationLeadIn(before);
+            if (string.IsNullOrWhiteSpace(body))
+            {
+                return false;
+            }
+
+            intent = new TranslationIntent(body, target, source);
             return true;
         }
     }
 
     return false;
+}
+
+static string NormalizeTranslationLeadIn(string value)
+{
+    var text = value.Trim();
+    text = Regex.Replace(text, "^(can\\s+you\\s+)?(please\\s+)?translate\\s+", string.Empty, RegexOptions.IgnoreCase);
+    text = Regex.Replace(text, "^(puoi\\s+)?(per\\s+favore\\s+)?tradur(?:re|mi|re\\s+mi)?\\s+", string.Empty, RegexOptions.IgnoreCase);
+    text = Regex.Replace(text, "^(pui\\s+)?(per\\s+favore\\s+)?tradur(?:re|mi|re\\s+mi)?\\s+", string.Empty, RegexOptions.IgnoreCase);
+    text = Regex.Replace(text, "^(traduci|tradurre)\\s+", string.Empty, RegexOptions.IgnoreCase);
+    return text.Trim().Trim('?', ':', '.', '!', ',', ';');
 }
 
 static bool TryParseHeadAndBody(string remainder, out string targetLanguage, out string? sourceLanguage, out string text)
@@ -2090,21 +2100,33 @@ static bool TryParseLanguageHead(string head, out string targetLanguage, out str
         return false;
     }
 
-    string descriptor;
-    if (head.StartsWith("to ", StringComparison.OrdinalIgnoreCase))
+    var trimmed = head.Trim();
+    if (trimmed.StartsWith("translate to ", StringComparison.OrdinalIgnoreCase))
     {
-        descriptor = head["to ".Length..].Trim();
+        return TryParseLanguageDescriptor(trimmed["translate to ".Length..].Trim(), out targetLanguage, out sourceLanguage);
     }
-    else if (head.StartsWith("in ", StringComparison.OrdinalIgnoreCase))
+    if (trimmed.StartsWith("translate in ", StringComparison.OrdinalIgnoreCase))
     {
-        descriptor = head["in ".Length..].Trim();
+        return TryParseLanguageDescriptor(trimmed["translate in ".Length..].Trim(), out targetLanguage, out sourceLanguage);
     }
-    else
+    if (trimmed.StartsWith("traduci in ", StringComparison.OrdinalIgnoreCase))
     {
-        return false;
+        return TryParseLanguageDescriptor(trimmed["traduci in ".Length..].Trim(), out targetLanguage, out sourceLanguage);
+    }
+    if (trimmed.StartsWith("tradurre in ", StringComparison.OrdinalIgnoreCase))
+    {
+        return TryParseLanguageDescriptor(trimmed["tradurre in ".Length..].Trim(), out targetLanguage, out sourceLanguage);
+    }
+    if (trimmed.StartsWith("to ", StringComparison.OrdinalIgnoreCase))
+    {
+        return TryParseLanguageDescriptor(trimmed["to ".Length..].Trim(), out targetLanguage, out sourceLanguage);
+    }
+    if (trimmed.StartsWith("in ", StringComparison.OrdinalIgnoreCase))
+    {
+        return TryParseLanguageDescriptor(trimmed["in ".Length..].Trim(), out targetLanguage, out sourceLanguage);
     }
 
-    return TryParseLanguageDescriptor(descriptor, out targetLanguage, out sourceLanguage);
+    return false;
 }
 
 static bool TryParseLanguageDescriptor(string descriptor, out string targetLanguage, out string? sourceLanguage)

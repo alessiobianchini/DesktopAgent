@@ -1,8 +1,10 @@
 using System.Diagnostics;
 using System.Net.Http;
+using System.Net.Http.Json;
 using System.Reflection;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using DesktopAgent.Core.Abstractions;
 using DesktopAgent.Core.Config;
 using DesktopAgent.Core.Models;
@@ -331,6 +333,11 @@ internal sealed class TrayLocalAgent : IDisposable
             return await BuildPlanConfirmationAsync(intent, dryRun: false);
         }
 
+        if (TryParseTranslationIntent(text, out var translationIntent))
+        {
+            return await TranslateWithLlmAsync(translationIntent, cancellationToken);
+        }
+
         if (IsDirectIntent(normalized))
         {
             return await BuildPlanConfirmationAsync(text, dryRun: false);
@@ -339,7 +346,7 @@ internal sealed class TrayLocalAgent : IDisposable
         var plan = _planner.PlanFromIntent(text);
         if (IsUnrecognizedPlan(plan))
         {
-            return WebChatResponse.Simple("Available commands: status, kill, reset kill, lock status, lock on <current window|app>, unlock, profile <safe|balanced|power>, arm, disarm, simulate presence, require presence, list apps [query] [allowed], goals, goal add <text>, goal run <id>, goal done <id>, goal remove <id>, goal priority <id> <low|normal|high>, goal auto <id> <on|off>, goal scheduler on|off|every <sec>, continue goal, memory, run <intent>, dry-run <intent>. Plugin intents: take screenshot, record screen [and audio] for <duration>, start recording [screen] [with/without audio], stop recording, jiggle mouse for <duration>.");
+            return WebChatResponse.Simple("Available commands: status, kill, reset kill, lock status, lock on <current window|app>, unlock, profile <safe|balanced|power>, arm, disarm, simulate presence, require presence, list apps [query] [allowed], goals, goal add <text>, goal run <id>, goal done <id>, goal remove <id>, goal priority <id> <low|normal|high>, goal auto <id> <on|off>, goal scheduler on|off|every <sec>, continue goal, memory, run <intent>, dry-run <intent>, translate <text> to <language> (or 'translate to <language>: <text>'). Plugin intents: take screenshot, record screen [and audio] for <duration>, start recording [screen] [with/without audio], stop recording, jiggle mouse for <duration>.");
         }
 
         var pendingToken = CreatePendingAction(PendingActionType.ExecutePlan, text, plan, dryRun: false);
@@ -1862,6 +1869,398 @@ internal sealed class TrayLocalAgent : IDisposable
         }
     }
 
+    private async Task<WebChatResponse> TranslateWithLlmAsync(TranslationIntent intent, CancellationToken cancellationToken)
+    {
+        if (!_config.LlmFallbackEnabled)
+        {
+            return WebChatResponse.Simple("LLM is disabled. Enable it in config to use translation.");
+        }
+
+        var endpoint = _config.LlmFallback.Endpoint?.Trim();
+        if (string.IsNullOrWhiteSpace(endpoint) || !Uri.TryCreate(endpoint, UriKind.Absolute, out var uri))
+        {
+            return WebChatResponse.Simple("LLM endpoint is not configured or invalid.");
+        }
+
+        if (!uri.IsLoopback && !_config.AllowNonLoopbackLlmEndpoint)
+        {
+            return WebChatResponse.Simple("LLM endpoint must be local unless remote LLM is enabled.");
+        }
+
+        var provider = (_config.LlmFallback.Provider ?? "ollama").Trim().ToLowerInvariant();
+        var prompt = BuildTranslationPrompt(intent);
+
+        try
+        {
+            await WriteAuditAsync("llm_translate_request", "Translation requested", cancellationToken, new
+            {
+                provider,
+                model = _config.LlmFallback.Model,
+                endpoint,
+                target = intent.TargetLanguage,
+                source = intent.SourceLanguage,
+                input = _config.AuditLlmIncludeRawText ? intent.Text : "[redacted]",
+                inputLength = intent.Text.Length
+            });
+
+            using var client = new HttpClient { Timeout = _httpTimeout };
+            var translated = provider switch
+            {
+                "openai" => await CallOpenAiTranslationAsync(client, uri, prompt, cancellationToken),
+                "llama.cpp" => await CallLlamaCppTranslationAsync(client, uri, prompt, cancellationToken),
+                _ => await CallOllamaTranslationAsync(client, uri, prompt, cancellationToken)
+            };
+
+            translated = CleanTranslationOutput(translated);
+            if (string.IsNullOrWhiteSpace(translated))
+            {
+                return WebChatResponse.Simple("Unable to translate right now.");
+            }
+
+            await WriteAuditAsync("llm_translate_response", "Translation completed", cancellationToken, new
+            {
+                provider,
+                model = _config.LlmFallback.Model,
+                output = _config.AuditLlmIncludeRawText ? translated : "[redacted]",
+                outputLength = translated.Length
+            });
+
+            return WebChatResponse.Simple($"Translation ({provider}):\n{translated}");
+        }
+        catch (Exception ex)
+        {
+            await WriteAuditAsync("llm_translate_error", "Translation failed", cancellationToken, new
+            {
+                provider,
+                model = _config.LlmFallback.Model,
+                error = ex.Message
+            });
+            return WebChatResponse.Simple($"Translation failed: {Compact(ex.Message, 120)}");
+        }
+    }
+
+    private async Task<string?> CallOllamaTranslationAsync(HttpClient client, Uri endpoint, string prompt, CancellationToken cancellationToken)
+    {
+        var payload = new
+        {
+            model = _config.LlmFallback.Model,
+            prompt,
+            stream = false,
+            options = new { temperature = 0.1, num_predict = _config.LlmFallback.MaxTokens }
+        };
+
+        using var response = await client.PostAsJsonAsync(endpoint, payload, JsonOptions, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            return null;
+        }
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        return doc.RootElement.TryGetProperty("response", out var result) ? result.GetString() : null;
+    }
+
+    private async Task<string?> CallOpenAiTranslationAsync(HttpClient client, Uri endpoint, string prompt, CancellationToken cancellationToken)
+    {
+        var payload = new
+        {
+            model = _config.LlmFallback.Model,
+            messages = new[]
+            {
+                new { role = "system", content = "You are a precise translator. Return only translated text." },
+                new { role = "user", content = prompt }
+            },
+            temperature = 0.1,
+            max_tokens = _config.LlmFallback.MaxTokens
+        };
+
+        using var response = await client.PostAsJsonAsync(endpoint, payload, JsonOptions, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            return null;
+        }
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        if (!doc.RootElement.TryGetProperty("choices", out var choices)
+            || choices.ValueKind != JsonValueKind.Array
+            || choices.GetArrayLength() == 0)
+        {
+            return null;
+        }
+
+        var first = choices[0];
+        if (first.TryGetProperty("message", out var message) && message.TryGetProperty("content", out var content))
+        {
+            return content.GetString();
+        }
+
+        return first.TryGetProperty("text", out var text) ? text.GetString() : null;
+    }
+
+    private async Task<string?> CallLlamaCppTranslationAsync(HttpClient client, Uri endpoint, string prompt, CancellationToken cancellationToken)
+    {
+        var payload = new
+        {
+            prompt,
+            n_predict = _config.LlmFallback.MaxTokens,
+            temperature = 0.1
+        };
+
+        using var response = await client.PostAsJsonAsync(endpoint, payload, JsonOptions, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            return null;
+        }
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        if (doc.RootElement.TryGetProperty("content", out var content))
+        {
+            return content.GetString();
+        }
+
+        if (!doc.RootElement.TryGetProperty("choices", out var choices)
+            || choices.ValueKind != JsonValueKind.Array
+            || choices.GetArrayLength() == 0)
+        {
+            return null;
+        }
+
+        var first = choices[0];
+        return first.TryGetProperty("text", out var text) ? text.GetString() : null;
+    }
+
+    private static string BuildTranslationPrompt(TranslationIntent intent)
+    {
+        var source = string.IsNullOrWhiteSpace(intent.SourceLanguage)
+            ? string.Empty
+            : $"Source language: {intent.SourceLanguage}\n";
+
+        return
+            "You are a translation engine.\n" +
+            "Translate exactly, preserving tone and line breaks.\n" +
+            "Return only the translated text.\n" +
+            $"Target language: {intent.TargetLanguage}\n" +
+            source +
+            "TEXT START\n" +
+            intent.Text +
+            "\nTEXT END";
+    }
+
+    private static string? CleanTranslationOutput(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return null;
+        }
+
+        var text = raw.Trim();
+        if (text.StartsWith("translation:", StringComparison.OrdinalIgnoreCase))
+        {
+            text = text["translation:".Length..].Trim();
+        }
+
+        if (text.StartsWith("```", StringComparison.Ordinal))
+        {
+            text = text.Trim('`').Trim();
+        }
+
+        return string.IsNullOrWhiteSpace(text) ? null : text;
+    }
+
+    private static bool TryParseTranslationIntent(string message, out TranslationIntent intent)
+    {
+        intent = default;
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            return false;
+        }
+
+        var text = message.Trim();
+        var lower = text.ToLowerInvariant();
+        if (!lower.Contains("traduc", StringComparison.Ordinal)
+            && !lower.Contains("tradur", StringComparison.Ordinal)
+            && !lower.Contains("translat", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        if (TryParseTranslationHeadBody(text, out intent))
+        {
+            return true;
+        }
+
+        if (TryParseInlineTranslation(text, out intent))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryParseTranslationHeadBody(string text, out TranslationIntent intent)
+    {
+        intent = default;
+        var newlineIndex = text.IndexOf('\n');
+        if (newlineIndex > 0)
+        {
+            var head = text[..newlineIndex].Trim().TrimEnd(':');
+            var body = text[(newlineIndex + 1)..].Trim();
+            if (TryParseLanguageHead(head, out var target, out var source) && !string.IsNullOrWhiteSpace(body))
+            {
+                intent = new TranslationIntent(body, target, source);
+                return true;
+            }
+        }
+
+        var colonIndex = text.IndexOf(':');
+        if (colonIndex > 0)
+        {
+            var head = text[..colonIndex].Trim();
+            var body = text[(colonIndex + 1)..].Trim();
+            if (TryParseLanguageHead(head, out var target, out var source) && !string.IsNullOrWhiteSpace(body))
+            {
+                intent = new TranslationIntent(body, target, source);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool TryParseInlineTranslation(string text, out TranslationIntent intent)
+    {
+        intent = default;
+        var lowered = text.ToLowerInvariant();
+        var inMarker = lowered.LastIndexOf(" in ", StringComparison.Ordinal);
+        var toMarker = lowered.LastIndexOf(" to ", StringComparison.Ordinal);
+        var marker = Math.Max(inMarker, toMarker);
+        if (marker <= 0)
+        {
+            return false;
+        }
+
+        var markerLen = marker == inMarker ? 4 : 4;
+        var before = text[..marker].Trim();
+        var after = text[(marker + markerLen)..].Trim();
+        if (string.IsNullOrWhiteSpace(after))
+        {
+            return false;
+        }
+
+        var sep = after.IndexOfAny(new[] { '?', ':', '\n', ';', '!' });
+        var descriptor = sep >= 0 ? after[..sep].Trim() : after;
+        var postText = sep >= 0 ? after[(sep + 1)..].Trim() : string.Empty;
+        if (!TryParseLanguageDescriptor(descriptor, out var target, out var source))
+        {
+            return false;
+        }
+
+        var textBody = !string.IsNullOrWhiteSpace(postText)
+            ? postText
+            : NormalizeTranslationLeadIn(before);
+        if (string.IsNullOrWhiteSpace(textBody))
+        {
+            return false;
+        }
+
+        intent = new TranslationIntent(textBody, target, source);
+        return true;
+    }
+
+    private static string NormalizeTranslationLeadIn(string value)
+    {
+        var text = value.Trim();
+        text = Regex.Replace(text, "^(can\\s+you\\s+)?(please\\s+)?translate\\s+", string.Empty, RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, "^(puoi\\s+)?(per\\s+favore\\s+)?tradur(?:re|mi|re\\s+mi)?\\s+", string.Empty, RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, "^(pui\\s+)?(per\\s+favore\\s+)?tradur(?:re|mi|re\\s+mi)?\\s+", string.Empty, RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, "^(traduci|tradurre)\\s+", string.Empty, RegexOptions.IgnoreCase);
+        return text.Trim().Trim('?', ':', '.', '!', ',', ';');
+    }
+
+    private static bool TryParseLanguageHead(string head, out string target, out string? source)
+    {
+        target = string.Empty;
+        source = null;
+        if (string.IsNullOrWhiteSpace(head))
+        {
+            return false;
+        }
+
+        var trimmed = head.Trim();
+        if (trimmed.StartsWith("translate to ", StringComparison.OrdinalIgnoreCase))
+        {
+            return TryParseLanguageDescriptor(trimmed["translate to ".Length..], out target, out source);
+        }
+        if (trimmed.StartsWith("translate in ", StringComparison.OrdinalIgnoreCase))
+        {
+            return TryParseLanguageDescriptor(trimmed["translate in ".Length..], out target, out source);
+        }
+        if (trimmed.StartsWith("traduci in ", StringComparison.OrdinalIgnoreCase))
+        {
+            return TryParseLanguageDescriptor(trimmed["traduci in ".Length..], out target, out source);
+        }
+        if (trimmed.StartsWith("tradurre in ", StringComparison.OrdinalIgnoreCase))
+        {
+            return TryParseLanguageDescriptor(trimmed["tradurre in ".Length..], out target, out source);
+        }
+        if (trimmed.StartsWith("to ", StringComparison.OrdinalIgnoreCase))
+        {
+            return TryParseLanguageDescriptor(trimmed["to ".Length..], out target, out source);
+        }
+        if (trimmed.StartsWith("in ", StringComparison.OrdinalIgnoreCase))
+        {
+            return TryParseLanguageDescriptor(trimmed["in ".Length..], out target, out source);
+        }
+
+        return false;
+    }
+
+    private static bool TryParseLanguageDescriptor(string descriptor, out string target, out string? source)
+    {
+        target = string.Empty;
+        source = null;
+        if (string.IsNullOrWhiteSpace(descriptor))
+        {
+            return false;
+        }
+
+        var normalized = descriptor.Trim().Trim('?', ':', '.', '!', ',', ';');
+        var lower = normalized.ToLowerInvariant();
+        var marker = lower.IndexOf(" from ", StringComparison.Ordinal);
+        var markerLen = 6;
+        if (marker <= 0)
+        {
+            marker = lower.IndexOf(" da ", StringComparison.Ordinal);
+            markerLen = 4;
+        }
+
+        if (marker > 0)
+        {
+            target = normalized[..marker].Trim();
+            source = normalized[(marker + markerLen)..].Trim();
+        }
+        else
+        {
+            target = normalized;
+        }
+
+        if (string.IsNullOrWhiteSpace(target))
+        {
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(source))
+        {
+            source = null;
+        }
+
+        return true;
+    }
+
+    private readonly record struct TranslationIntent(string Text, string TargetLanguage, string? SourceLanguage);
+
     private static bool IsDirectIntent(string normalized)
     {
         if (normalized.StartsWith("http://", StringComparison.Ordinal) || normalized.StartsWith("https://", StringComparison.Ordinal))
@@ -2517,7 +2916,15 @@ internal sealed class TrayLocalAgent : IDisposable
             var candidate = configPath.Trim();
             if (!Path.IsPathRooted(candidate))
             {
-                candidate = Path.Combine(AppContext.BaseDirectory, candidate);
+                // Relative paths are anchored under LocalAppData so updates don't overwrite user settings.
+                var persistentPath = Path.GetFullPath(Path.Combine(storageRoot, candidate));
+                var legacyAppPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, candidate));
+                if (!File.Exists(persistentPath) && File.Exists(legacyAppPath))
+                {
+                    TryCopyConfigFile(legacyAppPath, persistentPath);
+                }
+
+                return persistentPath;
             }
 
             var fullPath = Path.GetFullPath(candidate);
@@ -2528,6 +2935,12 @@ internal sealed class TrayLocalAgent : IDisposable
 
             TryCopyConfigFile(fullPath, fallbackPath);
             return fallbackPath;
+        }
+
+        var legacyDefaultPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "agentsettings.json"));
+        if (!File.Exists(fallbackPath) && File.Exists(legacyDefaultPath))
+        {
+            TryCopyConfigFile(legacyDefaultPath, fallbackPath);
         }
 
         return fallbackPath;
