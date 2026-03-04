@@ -51,6 +51,7 @@ public partial class App : Application
     private DateTimeOffset _lastUpdateCheck = DateTimeOffset.MinValue;
     private string _updateStatus = "updates disabled";
     private bool _updatesEnabled;
+    private TrayVisualState _trayVisualState = TrayVisualState.Unknown;
 
     public override void Initialize()
     {
@@ -201,7 +202,7 @@ public partial class App : Application
             Menu = menu
         };
 
-        TrySetTrayIconImage(_trayIcon);
+        UpdateTrayIconVisual(armed: false);
         _trayIcon.Clicked += (_, _) => ShowQuickChat();
 
         _trayIcons = new TrayIcons { _trayIcon };
@@ -310,6 +311,8 @@ public partial class App : Application
             {
                 _trayIcon.ToolTipText = tooltip;
             }
+
+            UpdateTrayIconVisual(armed);
         });
     }
 
@@ -537,22 +540,54 @@ public partial class App : Application
         });
     }
 
-    private void TrySetTrayIconImage(TrayIcon trayIcon)
+    private void UpdateTrayIconVisual(bool armed)
+    {
+        if (_trayIcon == null)
+        {
+            return;
+        }
+
+        var next = armed ? TrayVisualState.Armed : TrayVisualState.Disarmed;
+        if (next == _trayVisualState)
+        {
+            return;
+        }
+
+        if (TrySetTrayIconImage(_trayIcon, next))
+        {
+            _trayVisualState = next;
+        }
+    }
+
+    private bool TrySetTrayIconImage(TrayIcon trayIcon, TrayVisualState state)
     {
         try
         {
-            var uri = new Uri("avares://DesktopAgent.Tray/Assets/tray.png");
+            var iconFile = state switch
+            {
+                TrayVisualState.Armed => "tray-armed.png",
+                TrayVisualState.Disarmed => "tray-disarmed.png",
+                _ => "tray.png"
+            };
+
+            var uri = new Uri($"avares://DesktopAgent.Tray/Assets/{iconFile}");
             if (!AssetLoader.Exists(uri))
             {
-                return;
+                uri = new Uri("avares://DesktopAgent.Tray/Assets/tray.png");
+                if (!AssetLoader.Exists(uri))
+                {
+                    return false;
+                }
             }
 
             using var iconStream = AssetLoader.Open(uri);
             trayIcon.Icon = new WindowIcon(iconStream);
+            return true;
         }
         catch
         {
             // If icon load fails, the platform default may be used.
+            return false;
         }
     }
 
@@ -825,6 +860,13 @@ public partial class App : Application
         _loggerFactory?.Dispose();
         TryStopManagedProcess(_managedAdapterProcess);
     }
+}
+
+internal enum TrayVisualState
+{
+    Unknown = 0,
+    Disarmed = 1,
+    Armed = 2
 }
 
 internal sealed class TraySettings
