@@ -2096,6 +2096,11 @@ internal sealed class TrayLocalAgent : IDisposable
             return true;
         }
 
+        if (TryParseImplicitTranslation(text, out intent))
+        {
+            return true;
+        }
+
         return false;
     }
 
@@ -2166,6 +2171,32 @@ internal sealed class TrayLocalAgent : IDisposable
         }
 
         intent = new TranslationIntent(textBody, target, source);
+        return true;
+    }
+
+    private static bool TryParseImplicitTranslation(string text, out TranslationIntent intent)
+    {
+        intent = default;
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return false;
+        }
+
+        var separatorIndex = text.IndexOfAny(new[] { '?', ':', '\n' });
+        if (separatorIndex <= 0 || separatorIndex >= text.Length - 1)
+        {
+            return false;
+        }
+
+        var leadIn = text[..separatorIndex].Trim();
+        var body = text[(separatorIndex + 1)..].Trim();
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            return false;
+        }
+
+        var target = InferDefaultTargetLanguage(leadIn, body);
+        intent = new TranslationIntent(body, target, null);
         return true;
     }
 
@@ -2257,6 +2288,42 @@ internal sealed class TrayLocalAgent : IDisposable
         }
 
         return true;
+    }
+
+    private static string InferDefaultTargetLanguage(string leadIn, string body)
+    {
+        var lead = (leadIn ?? string.Empty).ToLowerInvariant();
+        var text = (body ?? string.Empty).ToLowerInvariant();
+
+        if (lead.Contains("italian", StringComparison.Ordinal) || lead.Contains("italiano", StringComparison.Ordinal))
+        {
+            return "italian";
+        }
+
+        if (lead.Contains("english", StringComparison.Ordinal) || lead.Contains("inglese", StringComparison.Ordinal))
+        {
+            return "english";
+        }
+
+        var italianHints = new[]
+        {
+            "ciao", "sono", "come va", "grazie", "per favore", "buongiorno", "arrivederci", "oggi", "domani", "prego"
+        };
+        if (italianHints.Any(hint => text.Contains(hint, StringComparison.Ordinal)))
+        {
+            return "english";
+        }
+
+        var englishHints = new[]
+        {
+            "hello", "how are you", "thanks", "please", "good morning", "today", "tomorrow"
+        };
+        if (englishHints.Any(hint => text.Contains(hint, StringComparison.Ordinal)))
+        {
+            return "italian";
+        }
+
+        return "english";
     }
 
     private readonly record struct TranslationIntent(string Text, string TargetLanguage, string? SourceLanguage);

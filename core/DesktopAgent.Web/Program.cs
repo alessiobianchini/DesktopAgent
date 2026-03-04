@@ -2045,6 +2045,11 @@ static bool TryParseTranslationIntent(string message, out TranslationIntent inte
         }
     }
 
+    if (TryParseImplicitTranslation(text, out intent))
+    {
+        return true;
+    }
+
     return false;
 }
 
@@ -2056,6 +2061,67 @@ static string NormalizeTranslationLeadIn(string value)
     text = Regex.Replace(text, "^(pui\\s+)?(per\\s+favore\\s+)?tradur(?:re|mi|re\\s+mi)?\\s+", string.Empty, RegexOptions.IgnoreCase);
     text = Regex.Replace(text, "^(traduci|tradurre)\\s+", string.Empty, RegexOptions.IgnoreCase);
     return text.Trim().Trim('?', ':', '.', '!', ',', ';');
+}
+
+static bool TryParseImplicitTranslation(string text, out TranslationIntent intent)
+{
+    intent = default!;
+    if (string.IsNullOrWhiteSpace(text))
+    {
+        return false;
+    }
+
+    var separatorIndex = text.IndexOfAny(new[] { '?', ':', '\n' });
+    if (separatorIndex <= 0 || separatorIndex >= text.Length - 1)
+    {
+        return false;
+    }
+
+    var leadIn = text[..separatorIndex].Trim();
+    var body = text[(separatorIndex + 1)..].Trim();
+    if (string.IsNullOrWhiteSpace(body))
+    {
+        return false;
+    }
+
+    intent = new TranslationIntent(body, InferDefaultTargetLanguage(leadIn, body), null);
+    return true;
+}
+
+static string InferDefaultTargetLanguage(string leadIn, string body)
+{
+    var lead = (leadIn ?? string.Empty).ToLowerInvariant();
+    var text = (body ?? string.Empty).ToLowerInvariant();
+
+    if (lead.Contains("italian", StringComparison.Ordinal) || lead.Contains("italiano", StringComparison.Ordinal))
+    {
+        return "italian";
+    }
+
+    if (lead.Contains("english", StringComparison.Ordinal) || lead.Contains("inglese", StringComparison.Ordinal))
+    {
+        return "english";
+    }
+
+    var italianHints = new[]
+    {
+        "ciao", "sono", "come va", "grazie", "per favore", "buongiorno", "arrivederci", "oggi", "domani", "prego"
+    };
+    if (italianHints.Any(hint => text.Contains(hint, StringComparison.Ordinal)))
+    {
+        return "english";
+    }
+
+    var englishHints = new[]
+    {
+        "hello", "how are you", "thanks", "please", "good morning", "today", "tomorrow"
+    };
+    if (englishHints.Any(hint => text.Contains(hint, StringComparison.Ordinal)))
+    {
+        return "italian";
+    }
+
+    return "english";
 }
 
 static bool TryParseHeadAndBody(string remainder, out string targetLanguage, out string? sourceLanguage, out string text)
