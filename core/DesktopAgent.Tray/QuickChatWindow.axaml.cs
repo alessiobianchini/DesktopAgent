@@ -984,7 +984,7 @@ internal partial class QuickChatWindow : Window
     private async Task ShowUpdateDetailsAsync()
     {
         var details = _getChatUpdateDetails?.Invoke()
-            ?? new ChatUpdateDetails(false, "Updates", "No update information available.", false);
+            ?? new ChatUpdateDetails(false, "Updates", "No update information available.", false, false, string.Empty);
 
         var dialog = new Window
         {
@@ -1028,6 +1028,22 @@ internal partial class QuickChatWindow : Window
             dialog.Close();
         };
 
+        var showBlockersButton = new Button
+        {
+            Content = "Show blockers",
+            MinWidth = 110,
+            IsVisible = details.HasBlockers && !string.IsNullOrWhiteSpace(details.Blockers)
+        };
+        var showingBlockers = false;
+        showBlockersButton.Click += (_, _) =>
+        {
+            showingBlockers = !showingBlockers;
+            contentBox.Text = showingBlockers
+                ? details.Blockers
+                : (string.IsNullOrWhiteSpace(details.Details) ? "No details available." : details.Details);
+            showBlockersButton.Content = showingBlockers ? "Show details" : "Show blockers";
+        };
+
         var footer = new StackPanel
         {
             Orientation = Avalonia.Layout.Orientation.Horizontal,
@@ -1037,6 +1053,10 @@ internal partial class QuickChatWindow : Window
         if (details.CanApply)
         {
             footer.Children.Add(applyButton);
+        }
+        if (showBlockersButton.IsVisible)
+        {
+            footer.Children.Add(showBlockersButton);
         }
 
         footer.Children.Add(closeButton);
@@ -2930,4 +2950,4 @@ internal sealed record ChatSessionState(
     string InputText);
 
 internal sealed record ChatUpdateBadge(bool Visible, bool CanApply, string Text);
-internal sealed record ChatUpdateDetails(bool HasUpdate, string Title, string Details, bool CanApply);
+internal sealed record ChatUpdateDetails(bool HasUpdate, string Title, string Details, bool CanApply, bool HasBlockers, string Blockers);

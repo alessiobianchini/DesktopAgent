@@ -56,6 +56,7 @@ public partial class App : Application
     private UpdateManager? _updateManager;
     private VelopackAsset? _pendingUpdate;
     private bool _isVelopackInstalled;
+    private IReadOnlyList<string> _lastUpdateBlockers = Array.Empty<string>();
     private readonly SemaphoreSlim _updateGate = new(1, 1);
     private DateTimeOffset _lastUpdateCheck = DateTimeOffset.MinValue;
     private string _updateStatus = "updates disabled";
@@ -467,6 +468,7 @@ public partial class App : Application
 
     private void ApplyPendingUpdate()
     {
+        _lastUpdateBlockers = Array.Empty<string>();
         if (_updateManager == null || _pendingUpdate == null)
         {
             _ = WriteUpdateAuditAsync("update_apply_skipped", "No pending update to apply", null);
@@ -503,8 +505,27 @@ public partial class App : Application
             _managedAdapterProcess = null;
 
             _shutdown.Cancel();
-            Thread.Sleep(700);
-            _updateManager.ApplyUpdatesAndRestart(_pendingUpdate);
+            Thread.Sleep(900);
+
+            if (!string.IsNullOrWhiteSpace(installRoot))
+            {
+                var blockers = WaitForInstallRootToUnlock(installRoot!, timeoutMs: 5000);
+                if (blockers.Count > 0)
+                {
+                    _lastUpdateBlockers = blockers.ToList();
+                    _updateStatus = $"apply blocked: files in use ({blockers.Count})";
+                    _ = WriteUpdateAuditAsync("update_apply_blocked", "Apply blocked by running processes in install root", new
+                    {
+                        installRoot,
+                        blockers
+                    });
+                    RefreshUpdateUi();
+                    return;
+                }
+            }
+
+            TryApplyUpdateWithRetry(_updateManager, _pendingUpdate);
+            _lastUpdateBlockers = Array.Empty<string>();
         }
         catch (Exception ex)
         {
@@ -515,6 +536,25 @@ public partial class App : Application
                 error = ex.Message
             });
             RefreshUpdateUi();
+        }
+    }
+
+    private void TryApplyUpdateWithRetry(UpdateManager updateManager, VelopackAsset pendingUpdate)
+    {
+        try
+        {
+            updateManager.ApplyUpdatesAndRestart(pendingUpdate);
+        }
+        catch
+        {
+            var installRoot = TryResolveInstallRoot();
+            if (!string.IsNullOrWhiteSpace(installRoot))
+            {
+                TryTerminateProcessesInInstallRoot(installRoot!);
+                Thread.Sleep(800);
+            }
+
+            updateManager.ApplyUpdatesAndRestart(pendingUpdate);
         }
     }
 
@@ -1188,7 +1228,8 @@ public partial class App : Application
     {
         var pending = _pendingUpdate?.Version.ToString() ?? "none";
         var mode = _isVelopackInstalled ? "velopack" : "portable";
-        return $"Updates: {_updateStatus} | Pending: {pending} | Mode: {mode}";
+        var blockers = _lastUpdateBlockers.Count > 0 ? $" | Blockers: {_lastUpdateBlockers.Count}" : string.Empty;
+        return $"Updates: {_updateStatus} | Pending: {pending} | Mode: {mode}{blockers}";
     }
 
     private ChatUpdateBadge GetChatUpdateBadge()
@@ -1227,14 +1268,18 @@ public partial class App : Application
                 HasUpdate: true,
                 Title: $"Update v{_pendingUpdate.Version}",
                 Details: details,
-                CanApply: true);
+                CanApply: true,
+                HasBlockers: _lastUpdateBlockers.Count > 0,
+                Blockers: _lastUpdateBlockers.Count == 0 ? string.Empty : string.Join(Environment.NewLine, _lastUpdateBlockers));
         }
 
         return new ChatUpdateDetails(
             HasUpdate: false,
             Title: "Updates",
             Details: $"{_updateStatus}{Environment.NewLine}Source: {_settings.AutoUpdateSource}{Environment.NewLine}Mode: {(_isVelopackInstalled ? "Velopack installed" : "Portable/non-Velopack")}{Environment.NewLine}Exe: {Environment.ProcessPath}",
-            CanApply: false);
+            CanApply: false,
+            HasBlockers: _lastUpdateBlockers.Count > 0,
+            Blockers: _lastUpdateBlockers.Count == 0 ? string.Empty : string.Join(Environment.NewLine, _lastUpdateBlockers));
     }
 
     private static string? TryReadStringProperty(object source, params string[] names)
@@ -1424,6 +1469,68 @@ public partial class App : Application
         }
 
         return killed;
+    }
+
+    private static IReadOnlyList<string> WaitForInstallRootToUnlock(string installRoot, int timeoutMs)
+    {
+        var deadline = DateTimeOffset.UtcNow.AddMilliseconds(Math.Max(500, timeoutMs));
+        IReadOnlyList<string> blockers = Array.Empty<string>();
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            blockers = GetProcessesInInstallRoot(installRoot);
+            if (blockers.Count == 0)
+            {
+                return blockers;
+            }
+
+            Thread.Sleep(250);
+        }
+
+        return blockers;
+    }
+
+    private static IReadOnlyList<string> GetProcessesInInstallRoot(string installRoot)
+    {
+        var found = new List<string>();
+        var currentPid = Environment.ProcessId;
+        foreach (var process in Process.GetProcesses())
+        {
+            try
+            {
+                if (process.Id == currentPid)
+                {
+                    continue;
+                }
+
+                var path = process.MainModule?.FileName;
+                if (string.IsNullOrWhiteSpace(path))
+                {
+                    continue;
+                }
+
+                if (!path.StartsWith(installRoot, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (string.Equals(Path.GetFileName(path), "Update.exe", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                found.Add($"{process.ProcessName}:{process.Id}");
+            }
+            catch
+            {
+                // best effort
+            }
+            finally
+            {
+                process.Dispose();
+            }
+        }
+
+        return found;
     }
 
     private static bool IsTcpPortOpen(string endpoint)
