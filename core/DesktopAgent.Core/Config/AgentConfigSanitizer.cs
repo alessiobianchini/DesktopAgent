@@ -22,6 +22,8 @@ public static class AgentConfigSanitizer
         config.GoalSchedulerMaxPerTick = Math.Clamp(config.GoalSchedulerMaxPerTick, 1, 10);
         config.PostCheckTimeoutMs = Math.Clamp(config.PostCheckTimeoutMs, 100, 5000);
         config.PostCheckPollMs = Math.Clamp(config.PostCheckPollMs, 20, 1000);
+        config.ScreenRecordingAudioBackendPreference = NormalizeAudioBackendPreference(config.ScreenRecordingAudioBackendPreference);
+        config.ScreenRecordingAudioDevice = (config.ScreenRecordingAudioDevice ?? string.Empty).Trim();
         config.ActiveProfile = AgentProfileService.NormalizeProfile(config.ActiveProfile);
         config.Profiles ??= ProfilePresets.CreateDefault();
 
@@ -146,5 +148,16 @@ public static class AgentConfigSanitizer
         return RuntimeInformation.IsOSPlatform(OSPlatform.OSX)
             ? new[] { macFirst, macSecond, macThird }
             : new[] { windowsFirst, windowsSecond };
+    }
+
+    private static string NormalizeAudioBackendPreference(string? value)
+    {
+        var normalized = (value ?? string.Empty).Trim().ToLowerInvariant();
+        return normalized switch
+        {
+            "wasapi" => "wasapi",
+            "dshow" => "dshow",
+            _ => "auto"
+        };
     }
 }

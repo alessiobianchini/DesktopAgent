@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Avalonia;
@@ -35,8 +36,11 @@ internal partial class QuickChatWindow : Window
     private TextBox? _inputBox;
     private TabControl? _mainTabs;
     private TabItem? _chatTab;
+    private TabItem? _timelineTab;
     private Border? _chatTabBadgePanel;
     private TextBlock? _chatTabBadgeText;
+    private Border? _timelineTabBadgePanel;
+    private TextBlock? _timelineTabBadgeText;
     private TextBlock? _healthText;
     private ComboBox? _timelineFilterCombo;
     private TextBox? _timelineSearchBox;
@@ -46,6 +50,9 @@ internal partial class QuickChatWindow : Window
     private Button? _chatUpdateDetailsButton;
     private Button? _chatApplyUpdateButton;
     private ListBox? _timelineList;
+    private Button? _timelineCopyButton;
+    private Button? _timelineExportButton;
+    private TextBlock? _timelineStatusText;
     private ListBox? _commandPaletteList;
     private Button? _useSuggestionButton;
     private Border? _busyPanel;
@@ -78,6 +85,8 @@ internal partial class QuickChatWindow : Window
 
     private CheckBox? _cfgLlmEnabled;
     private ComboBox? _cfgLlmProvider;
+    private ComboBox? _cfgAudioBackend;
+    private TextBox? _cfgAudioDevice;
     private TextBox? _cfgLlmEndpoint;
     private TextBox? _cfgLlmModel;
     private TextBox? _cfgLlmTimeout;
@@ -127,6 +136,10 @@ internal partial class QuickChatWindow : Window
     private Button? _auditCopyButton;
     private Button? _auditClearButton;
     private TextBox? _auditBox;
+    private Button? _diagRefreshButton;
+    private Button? _diagCopyButton;
+    private TextBlock? _diagStatusText;
+    private TextBox? _diagBox;
 
     private string? _pendingToken;
     private string? _aiSuggestedCommand;
@@ -146,6 +159,7 @@ internal partial class QuickChatWindow : Window
     private int _unreadChatEvents;
     private int _unreadErrorEvents;
     private int _unreadInfoEvents;
+    private int _unreadTimelineEvents;
     private const int MaxTimelineLines = 140;
     private const int MaxRecentCommands = 20;
     private readonly string _sessionStatePath = ResolveSessionStatePath();
@@ -198,8 +212,11 @@ internal partial class QuickChatWindow : Window
         _inputBox = this.FindControl<TextBox>("InputBox");
         _mainTabs = this.FindControl<TabControl>("MainTabs");
         _chatTab = this.FindControl<TabItem>("ChatTab");
+        _timelineTab = this.FindControl<TabItem>("TimelineTab");
         _chatTabBadgePanel = this.FindControl<Border>("ChatTabBadgePanel");
         _chatTabBadgeText = this.FindControl<TextBlock>("ChatTabBadgeText");
+        _timelineTabBadgePanel = this.FindControl<Border>("TimelineTabBadgePanel");
+        _timelineTabBadgeText = this.FindControl<TextBlock>("TimelineTabBadgeText");
         _healthText = this.FindControl<TextBlock>("HealthText");
         _timelineFilterCombo = this.FindControl<ComboBox>("TimelineFilterCombo");
         _timelineSearchBox = this.FindControl<TextBox>("TimelineSearchBox");
@@ -209,6 +226,9 @@ internal partial class QuickChatWindow : Window
         _chatUpdateDetailsButton = this.FindControl<Button>("ChatUpdateDetailsButton");
         _chatApplyUpdateButton = this.FindControl<Button>("ChatApplyUpdateButton");
         _timelineList = this.FindControl<ListBox>("TimelineList");
+        _timelineCopyButton = this.FindControl<Button>("TimelineCopyButton");
+        _timelineExportButton = this.FindControl<Button>("TimelineExportButton");
+        _timelineStatusText = this.FindControl<TextBlock>("TimelineStatusText");
         _commandPaletteList = this.FindControl<ListBox>("CommandPaletteList");
         _useSuggestionButton = this.FindControl<Button>("UseSuggestionButton");
         _busyPanel = this.FindControl<Border>("BusyPanel");
@@ -241,6 +261,8 @@ internal partial class QuickChatWindow : Window
 
         _cfgLlmEnabled = this.FindControl<CheckBox>("CfgLlmEnabled");
         _cfgLlmProvider = this.FindControl<ComboBox>("CfgLlmProvider");
+        _cfgAudioBackend = this.FindControl<ComboBox>("CfgAudioBackend");
+        _cfgAudioDevice = this.FindControl<TextBox>("CfgAudioDevice");
         _cfgLlmEndpoint = this.FindControl<TextBox>("CfgLlmEndpoint");
         _cfgLlmModel = this.FindControl<TextBox>("CfgLlmModel");
         _cfgLlmTimeout = this.FindControl<TextBox>("CfgLlmTimeout");
@@ -290,6 +312,10 @@ internal partial class QuickChatWindow : Window
         _auditCopyButton = this.FindControl<Button>("AuditCopyButton");
         _auditClearButton = this.FindControl<Button>("AuditClearButton");
         _auditBox = this.FindControl<TextBox>("AuditBox");
+        _diagRefreshButton = this.FindControl<Button>("DiagRefreshButton");
+        _diagCopyButton = this.FindControl<Button>("DiagCopyButton");
+        _diagStatusText = this.FindControl<TextBlock>("DiagStatusText");
+        _diagBox = this.FindControl<TextBox>("DiagBox");
 
         if (_sendButton != null)
         {
@@ -387,6 +413,11 @@ internal partial class QuickChatWindow : Window
                 if (IsChatTabSelected())
                 {
                     ResetUnreadChatEvents();
+                }
+
+                if (IsTimelineTabSelected())
+                {
+                    ResetUnreadTimelineEvents();
                 }
             };
         }
@@ -535,12 +566,33 @@ internal partial class QuickChatWindow : Window
             _auditClearButton.Click += (_, _) => SetText(_auditBox, string.Empty);
         }
 
+        if (_timelineCopyButton != null)
+        {
+            _timelineCopyButton.Click += async (_, _) => await CopyTextAsync(string.Join(Environment.NewLine, _timelineEntries), "Timeline copied.");
+        }
+        if (_timelineExportButton != null)
+        {
+            _timelineExportButton.Click += (_, _) => ExportTimeline();
+        }
+        if (_diagRefreshButton != null)
+        {
+            _diagRefreshButton.Click += async (_, _) => await RefreshDiagnosticsAsync();
+        }
+        if (_diagCopyButton != null)
+        {
+            _diagCopyButton.Click += async (_, _) => await CopyTextAsync(_diagBox?.Text, "Diagnostics copied.");
+        }
+
         Opened += OnOpened;
         Activated += (_, _) =>
         {
             if (IsChatTabSelected())
             {
                 ResetUnreadChatEvents();
+            }
+            if (IsTimelineTabSelected())
+            {
+                ResetUnreadTimelineEvents();
             }
         };
         Closed += (_, _) =>
@@ -584,6 +636,7 @@ internal partial class QuickChatWindow : Window
         await LoadSchedulesAsync();
         await LoadGoalsAsync();
         await LoadAuditAsync();
+        await RefreshDiagnosticsAsync();
         _ = Task.Run(() => PollStatusAsync(_pollingCts.Token));
     }
 
@@ -856,6 +909,11 @@ internal partial class QuickChatWindow : Window
 
         PersistTimelineSession();
         SchedulePersistSessionState();
+        if (!IsTimelineTabSelected())
+        {
+            _unreadTimelineEvents = Math.Min(_unreadTimelineEvents + items.Count, 999);
+            UpdateTimelineBadge();
+        }
         ApplyTimelineFilter();
     }
 
@@ -893,6 +951,11 @@ internal partial class QuickChatWindow : Window
             }
 
             _timelineList.ItemsSource = items;
+            if (_timelineStatusText != null)
+            {
+                var filterLabel = string.IsNullOrWhiteSpace(query) ? filter : $"{filter} + search";
+                _timelineStatusText.Text = $"Showing {Math.Max(0, items.Count == 1 && items[0].Contains("No timeline.", StringComparison.OrdinalIgnoreCase) ? 0 : items.Count)} of {_timelineEntries.Count} ({filterLabel})";
+            }
         });
     }
 
@@ -1278,6 +1341,8 @@ internal partial class QuickChatWindow : Window
             SetText(_cfgLlmModel, config.Llm.Model ?? string.Empty);
             SetText(_cfgLlmTimeout, config.Llm.TimeoutSeconds.ToString(CultureInfo.InvariantCulture));
             SetText(_cfgLlmMaxTokens, config.Llm.MaxTokens.ToString(CultureInfo.InvariantCulture));
+            SelectAudioBackend(config.ScreenRecordingAudioBackendPreference ?? "auto");
+            SetText(_cfgAudioDevice, config.ScreenRecordingAudioDevice ?? string.Empty);
 
             SelectProvider(config.Llm.Provider ?? "ollama");
             AppendConfigStatus("Config loaded.");
@@ -1308,6 +1373,8 @@ internal partial class QuickChatWindow : Window
                 MaxActionsPerSecond: null,
                 QuizSafeModeEnabled: null,
                 OcrEnabled: null,
+                ScreenRecordingAudioBackendPreference: GetSelectedAudioBackend(),
+                ScreenRecordingAudioDevice: _cfgAudioDevice?.Text?.Trim(),
                 AdapterRestartCommand: null,
                 AdapterRestartWorkingDir: null,
                 FindRetryCount: null,
@@ -1907,12 +1974,28 @@ internal partial class QuickChatWindow : Window
         return ReferenceEquals(_mainTabs.SelectedItem, _chatTab);
     }
 
+    private bool IsTimelineTabSelected()
+    {
+        if (_mainTabs == null || _timelineTab == null)
+        {
+            return false;
+        }
+
+        return ReferenceEquals(_mainTabs.SelectedItem, _timelineTab);
+    }
+
     private void ResetUnreadChatEvents()
     {
         _unreadChatEvents = 0;
         _unreadErrorEvents = 0;
         _unreadInfoEvents = 0;
         UpdateUnreadBadge();
+    }
+
+    private void ResetUnreadTimelineEvents()
+    {
+        _unreadTimelineEvents = 0;
+        UpdateTimelineBadge();
     }
 
     private void UpdateUnreadBadge()
@@ -1945,6 +2028,287 @@ internal partial class QuickChatWindow : Window
                 ? $"! {_chatTabBadgeText.Text}"
                 : _chatTabBadgeText.Text;
         });
+    }
+
+    private void UpdateTimelineBadge()
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (_timelineTabBadgePanel == null || _timelineTabBadgeText == null)
+            {
+                return;
+            }
+
+            var hasUnread = _unreadTimelineEvents > 0;
+            _timelineTabBadgePanel.IsVisible = hasUnread;
+            if (!hasUnread)
+            {
+                ToolTip.SetTip(_timelineTabBadgePanel, null);
+                return;
+            }
+
+            _timelineTabBadgeText.Text = _unreadTimelineEvents > 99 ? "99+" : _unreadTimelineEvents.ToString(CultureInfo.InvariantCulture);
+            ToolTip.SetTip(_timelineTabBadgePanel, $"New timeline events: {_unreadTimelineEvents}");
+        });
+    }
+
+    private void ExportTimeline()
+    {
+        try
+        {
+            var root = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "DesktopAgent",
+                "exports");
+            Directory.CreateDirectory(root);
+            var file = Path.Combine(root, $"timeline-{DateTimeOffset.Now:yyyyMMdd-HHmmss}.txt");
+            File.WriteAllLines(file, _timelineEntries);
+            SetText(_timelineStatusText, $"Timeline exported: {file}");
+            AppendSystem($"Timeline exported: {file}");
+        }
+        catch (Exception ex)
+        {
+            SetText(_timelineStatusText, $"Timeline export failed: {ex.Message}");
+        }
+    }
+
+    private async Task RefreshDiagnosticsAsync()
+    {
+        try
+        {
+            var lines = new List<string>
+            {
+                $"Timestamp: {DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss zzz}",
+                $"Process: {Environment.ProcessPath}",
+                $"OS: {RuntimeInformation.OSDescription}",
+                $"Framework: {RuntimeInformation.FrameworkDescription}",
+                string.Empty
+            };
+
+            var status = await _apiClient.GetStatusAsync(CancellationToken.None);
+            if (status?.Adapter != null)
+            {
+                lines.Add($"Adapter: armed={status.Adapter.Armed}, requirePresence={status.Adapter.RequireUserPresence}, message={status.Adapter.Message}");
+            }
+            else
+            {
+                lines.Add("Adapter: unavailable");
+            }
+
+            if (status?.Llm != null)
+            {
+                lines.Add($"LLM: enabled={status.Llm.Enabled}, available={status.Llm.Available}, provider={status.Llm.Provider}, endpoint={status.Llm.Endpoint}");
+            }
+
+            var ffmpegPath = await Task.Run(() => ResolveCommandPath("ffmpeg"), CancellationToken.None);
+            var tesseractPath = await Task.Run(() => ResolveCommandPath("tesseract"), CancellationToken.None);
+            var ffmpegEnvPath = (Environment.GetEnvironmentVariable("DESKTOP_AGENT_FFMPEG_PATH") ?? string.Empty).Trim();
+            var ffmpegFound = !string.IsNullOrWhiteSpace(ffmpegPath);
+            var tesseractFound = !string.IsNullOrWhiteSpace(tesseractPath);
+            var hasWasapi = false;
+            var hasDshow = false;
+            var dshowAudioDevices = new List<string>();
+
+            lines.Add($"ffmpeg env override: {(string.IsNullOrWhiteSpace(ffmpegEnvPath) ? "<none>" : ffmpegEnvPath)}");
+            lines.Add($"ffmpeg: {(ffmpegFound ? $"found ({ffmpegPath})" : "missing")}");
+            lines.Add($"tesseract: {(tesseractFound ? $"found ({tesseractPath})" : "missing")}");
+
+            if (ffmpegFound)
+            {
+                var devices = await Task.Run(() => RunProcessCapture(ffmpegPath!, "-hide_banner -devices", 7000), CancellationToken.None);
+                var devicesText = string.Join(Environment.NewLine, new[] { devices.StdOut, devices.StdErr });
+                hasWasapi = Regex.IsMatch(devicesText, @"\bwasapi\b", RegexOptions.IgnoreCase);
+                hasDshow = Regex.IsMatch(devicesText, @"\bdshow\b", RegexOptions.IgnoreCase);
+                lines.Add($"ffmpeg audio backends: {(hasWasapi || hasDshow ? $"{(hasWasapi ? "WASAPI" : "")}{(hasWasapi && hasDshow ? ", " : "")}{(hasDshow ? "DirectShow" : "")}" : "none detected")}");
+
+                var version = await Task.Run(() => RunProcessCapture(ffmpegPath!, "-hide_banner -version", 6000), CancellationToken.None);
+                var versionLine = version.StdOut
+                    .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                    .FirstOrDefault() ?? "<unknown>";
+                lines.Add($"ffmpeg version: {versionLine}");
+
+                if (hasDshow)
+                {
+                    var dshowList = await Task.Run(() => RunProcessCapture(ffmpegPath!, "-hide_banner -f dshow -list_devices true -i dummy", 9000), CancellationToken.None);
+                    dshowAudioDevices = ParseDirectShowAudioDevices(dshowList.StdErr).ToList();
+                    lines.Add($"dshow audio devices: {(dshowAudioDevices.Count == 0 ? "none" : string.Join(" | ", dshowAudioDevices.Take(5)))}");
+                }
+            }
+
+            lines.Add(string.Empty);
+
+            var startupPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DesktopAgent", "tray-startup.log");
+            var velopackPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DesktopAgent", "velopack.log");
+            lines.Add($"startup log: {startupPath}");
+            lines.Add($"velopack log: {velopackPath}");
+            lines.Add(string.Empty);
+            lines.Add("--- startup tail ---");
+            lines.AddRange(ReadFileTail(startupPath, 40));
+            lines.Add(string.Empty);
+            lines.Add("--- velopack tail ---");
+            lines.AddRange(ReadFileTail(velopackPath, 60));
+
+            SetText(_diagBox, string.Join(Environment.NewLine, lines));
+
+            var issues = new List<string>();
+            if (!ffmpegFound)
+            {
+                issues.Add("Install FFmpeg (Plugin setup).");
+            }
+            else if (!hasWasapi && !hasDshow)
+            {
+                issues.Add("FFmpeg build has no WASAPI/DirectShow input.");
+            }
+            else if (hasDshow && dshowAudioDevices.Count == 0)
+            {
+                issues.Add("No DirectShow audio devices found.");
+            }
+            if (status?.Adapter == null)
+            {
+                issues.Add("Adapter offline. Use Restart Adapter.");
+            }
+            if (issues.Count == 0)
+            {
+                SetText(_diagStatusText, "Environment check: OK");
+            }
+            else
+            {
+                SetText(_diagStatusText, $"Environment check: issues found ({string.Join(" | ", issues)})");
+            }
+        }
+        catch (Exception ex)
+        {
+            SetText(_diagStatusText, $"Diagnostics failed: {ex.Message}");
+        }
+    }
+
+    private static IEnumerable<string> ParseDirectShowAudioDevices(string? text)
+    {
+        var dump = text ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(dump))
+        {
+            return Array.Empty<string>();
+        }
+
+        var devices = new List<string>();
+        var inAudioSection = false;
+        foreach (var rawLine in dump.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var line = rawLine.Trim();
+            if (line.Contains("DirectShow audio devices", StringComparison.OrdinalIgnoreCase))
+            {
+                inAudioSection = true;
+                continue;
+            }
+
+            if (line.Contains("DirectShow video devices", StringComparison.OrdinalIgnoreCase))
+            {
+                inAudioSection = false;
+            }
+
+            if (!inAudioSection)
+            {
+                continue;
+            }
+
+            var match = Regex.Match(line, "\"([^\"]+)\"");
+            if (match.Success)
+            {
+                var name = match.Groups[1].Value.Trim();
+                if (!string.IsNullOrWhiteSpace(name))
+                {
+                    devices.Add(name);
+                }
+            }
+        }
+
+        return devices.Distinct(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static string? ResolveCommandPath(string command)
+    {
+        try
+        {
+            var checker = OperatingSystem.IsWindows() ? "where" : "which";
+            var result = RunProcessCapture(checker, command, 3000);
+            if (result.TimedOut || result.ExitCode != 0)
+            {
+                return null;
+            }
+
+            var path = result.StdOut
+                .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(static line => line.Trim())
+                .FirstOrDefault(static line => !string.IsNullOrWhiteSpace(line));
+            return string.IsNullOrWhiteSpace(path) ? null : path;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static ProcessCaptureResult RunProcessCapture(string fileName, string arguments, int timeoutMs)
+    {
+        try
+        {
+            using var process = Process.Start(new ProcessStartInfo
+            {
+                FileName = fileName,
+                Arguments = arguments,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WindowStyle = ProcessWindowStyle.Hidden
+            });
+            if (process == null)
+            {
+                return new ProcessCaptureResult(-1, string.Empty, "Process start returned null.", TimedOut: false);
+            }
+
+            var exited = process.WaitForExit(timeoutMs);
+            if (!exited)
+            {
+                try
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+                catch
+                {
+                    // ignored
+                }
+
+                return new ProcessCaptureResult(-1, string.Empty, "Process timeout.", TimedOut: true);
+            }
+
+            var output = process.StandardOutput.ReadToEnd();
+            var error = process.StandardError.ReadToEnd();
+            return new ProcessCaptureResult(process.ExitCode, output ?? string.Empty, error ?? string.Empty, TimedOut: false);
+        }
+        catch (Exception ex)
+        {
+            return new ProcessCaptureResult(-1, string.Empty, ex.Message, TimedOut: false);
+        }
+    }
+
+    private readonly record struct ProcessCaptureResult(int ExitCode, string StdOut, string StdErr, bool TimedOut);
+
+    private static IEnumerable<string> ReadFileTail(string path, int maxLines)
+    {
+        try
+        {
+            if (!File.Exists(path))
+            {
+                return new[] { "<not found>" };
+            }
+
+            return File.ReadLines(path).TakeLast(Math.Max(1, maxLines));
+        }
+        catch (Exception ex)
+        {
+            return new[] { $"<read failed: {ex.Message}>" };
+        }
     }
 
     private void AppendUser(string text) => AppendLine("YOU", text);
@@ -2086,6 +2450,27 @@ internal partial class QuickChatWindow : Window
         _cfgLlmProvider.SelectedIndex = 0;
     }
 
+    private void SelectAudioBackend(string backend)
+    {
+        if (_cfgAudioBackend == null)
+        {
+            return;
+        }
+
+        var normalized = backend.Trim().ToLowerInvariant();
+        for (var i = 0; i < _cfgAudioBackend.ItemCount; i++)
+        {
+            if (_cfgAudioBackend.Items[i] is ComboBoxItem item &&
+                string.Equals(item.Content?.ToString(), normalized, StringComparison.OrdinalIgnoreCase))
+            {
+                _cfgAudioBackend.SelectedIndex = i;
+                return;
+            }
+        }
+
+        _cfgAudioBackend.SelectedIndex = 0;
+    }
+
     private string GetSelectedProvider()
     {
         if (_cfgLlmProvider?.SelectedItem is ComboBoxItem combo && combo.Content != null)
@@ -2094,6 +2479,16 @@ internal partial class QuickChatWindow : Window
         }
 
         return "ollama";
+    }
+
+    private string GetSelectedAudioBackend()
+    {
+        if (_cfgAudioBackend?.SelectedItem is ComboBoxItem combo && combo.Content != null)
+        {
+            return combo.Content.ToString() ?? "auto";
+        }
+
+        return "auto";
     }
 
     private static int? ParseInt(string? value)
@@ -2231,31 +2626,7 @@ internal partial class QuickChatWindow : Window
 
     private static bool CommandExists(string command)
     {
-        try
-        {
-            var checker = OperatingSystem.IsWindows() ? "where" : "which";
-            using var process = Process.Start(new ProcessStartInfo
-            {
-                FileName = checker,
-                Arguments = command,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                WindowStyle = ProcessWindowStyle.Hidden
-            });
-            if (process == null)
-            {
-                return false;
-            }
-
-            process.WaitForExit(2500);
-            return process.HasExited && process.ExitCode == 0;
-        }
-        catch
-        {
-            return false;
-        }
+        return !string.IsNullOrWhiteSpace(ResolveCommandPath(command));
     }
 
     private void LoadSessionState()

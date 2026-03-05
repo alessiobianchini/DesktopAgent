@@ -2630,31 +2630,72 @@ public sealed class Executor : IExecutor
     private List<FfmpegAudioInput> ResolveAvailableAudioInputs(string ffmpegPath)
     {
         var inputs = new List<FfmpegAudioInput>();
-        if (!FfmpegSupportsInput(ffmpegPath, "wasapi"))
+        var pref = (_config.ScreenRecordingAudioBackendPreference ?? "auto").Trim().ToLowerInvariant();
+        var preferredDevice = (_config.ScreenRecordingAudioDevice ?? string.Empty).Trim();
+        var wasapiSupported = FfmpegSupportsInput(ffmpegPath, "wasapi");
+        var dshowSupported = FfmpegSupportsInput(ffmpegPath, "dshow");
+
+        FfmpegAudioInput? dshowInput = null;
+        if (dshowSupported)
+        {
+            if (!string.IsNullOrWhiteSpace(preferredDevice))
+            {
+                var escapedPref = EscapeFfmpegDshowDevice(preferredDevice);
+                dshowInput = new FfmpegAudioInput($"DirectShow ({preferredDevice})", $"-f dshow -i audio=\"{escapedPref}\"");
+            }
+            else if (TryGetFirstDshowAudioDevice(ffmpegPath, out var detected))
+            {
+                var escaped = EscapeFfmpegDshowDevice(detected);
+                dshowInput = new FfmpegAudioInput($"DirectShow ({detected})", $"-f dshow -i audio=\"{escaped}\"");
+            }
+        }
+
+        switch (pref)
+        {
+            case "wasapi":
+                if (wasapiSupported)
+                {
+                    inputs.Add(new FfmpegAudioInput("WASAPI", "-f wasapi -i default"));
+                }
+                if (dshowInput != null)
+                {
+                    inputs.Add(dshowInput.Value);
+                }
+                break;
+
+            case "dshow":
+                if (dshowInput != null)
+                {
+                    inputs.Add(dshowInput.Value);
+                }
+                if (wasapiSupported)
+                {
+                    inputs.Add(new FfmpegAudioInput("WASAPI", "-f wasapi -i default"));
+                }
+                break;
+
+            default:
+                if (wasapiSupported)
+                {
+                    inputs.Add(new FfmpegAudioInput("WASAPI", "-f wasapi -i default"));
+                }
+                if (dshowInput != null)
+                {
+                    inputs.Add(dshowInput.Value);
+                }
+                break;
+        }
+
+        if (!wasapiSupported)
         {
             _logger.LogInformation("ffmpeg input format wasapi not available.");
         }
-        else
-        {
-            inputs.Add(new FfmpegAudioInput("WASAPI", "-f wasapi -i default"));
-        }
-
-        if (!FfmpegSupportsInput(ffmpegPath, "dshow"))
-        {
-            return inputs;
-        }
-
-        if (TryGetFirstDshowAudioDevice(ffmpegPath, out var deviceName))
-        {
-            var escaped = EscapeFfmpegDshowDevice(deviceName);
-            inputs.Add(new FfmpegAudioInput("DirectShow", $"-f dshow -i audio=\"{escaped}\""));
-        }
-        else
+        if (dshowSupported && dshowInput == null)
         {
             _logger.LogInformation("ffmpeg dshow detected but no audio device found.");
         }
 
-        return inputs;
+        return inputs.DistinctBy(input => input.InputArguments).ToList();
     }
 
     private static bool FfmpegSupportsInput(string ffmpegPath, string inputName)

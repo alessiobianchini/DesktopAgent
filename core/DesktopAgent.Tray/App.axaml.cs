@@ -10,6 +10,8 @@ using DesktopAgent.Core.Services;
 using DesktopAgent.Proto;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using System.Reflection;
+using System.Text.RegularExpressions;
 using Velopack;
 
 namespace DesktopAgent.Tray;
@@ -532,9 +534,95 @@ public partial class App : Application
 
             if (_applyUpdateItem != null)
             {
-                _applyUpdateItem.IsEnabled = _pendingUpdate != null;
+                _applyUpdateItem.IsEnabled = CanApplyPendingUpdate();
             }
         });
+    }
+
+    private bool CanApplyPendingUpdate()
+    {
+        if (_pendingUpdate == null)
+        {
+            return false;
+        }
+
+        var current = ReadCurrentVersionString();
+        if (string.IsNullOrWhiteSpace(current))
+        {
+            return true;
+        }
+
+        return IsVersionGreater(_pendingUpdate.Version.ToString(), current);
+    }
+
+    private static string ReadCurrentVersionString()
+    {
+        try
+        {
+            var exeDir = AppContext.BaseDirectory;
+            var sqVersionPath = Path.Combine(exeDir, "sq.version");
+            if (File.Exists(sqVersionPath))
+            {
+                var text = File.ReadAllText(sqVersionPath);
+                var match = Regex.Match(text, "<version>([^<]+)</version>", RegexOptions.IgnoreCase);
+                if (match.Success)
+                {
+                    return match.Groups[1].Value.Trim();
+                }
+            }
+        }
+        catch
+        {
+            // ignore
+        }
+
+        try
+        {
+            var asm = Assembly.GetExecutingAssembly();
+            var info = asm.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
+            if (!string.IsNullOrWhiteSpace(info))
+            {
+                return info.Trim();
+            }
+        }
+        catch
+        {
+            // ignore
+        }
+
+        return string.Empty;
+    }
+
+    private static bool IsVersionGreater(string left, string right)
+    {
+        var l = NormalizeSemVerCore(left);
+        var r = NormalizeSemVerCore(right);
+        return CompareSemVerCore(l, r) > 0;
+    }
+
+    private static int CompareSemVerCore((int Major, int Minor, int Patch) a, (int Major, int Minor, int Patch) b)
+    {
+        var c = a.Major.CompareTo(b.Major);
+        if (c != 0) return c;
+        c = a.Minor.CompareTo(b.Minor);
+        if (c != 0) return c;
+        return a.Patch.CompareTo(b.Patch);
+    }
+
+    private static (int Major, int Minor, int Patch) NormalizeSemVerCore(string value)
+    {
+        var raw = (value ?? string.Empty).Trim();
+        if (raw.StartsWith('v') || raw.StartsWith('V'))
+        {
+            raw = raw[1..];
+        }
+
+        var core = raw.Split('-', 2)[0];
+        var parts = core.Split('.', StringSplitOptions.RemoveEmptyEntries);
+        var major = parts.Length > 0 && int.TryParse(parts[0], out var m) ? m : 0;
+        var minor = parts.Length > 1 && int.TryParse(parts[1], out var n) ? n : 0;
+        var patch = parts.Length > 2 && int.TryParse(parts[2], out var p) ? p : 0;
+        return (major, minor, patch);
     }
 
     private async Task WriteUpdateAuditAsync(string eventType, string message, object? data)
@@ -776,6 +864,8 @@ public partial class App : Application
                     MaxActionsPerSecond: null,
                     QuizSafeModeEnabled: null,
                     OcrEnabled: true,
+                    ScreenRecordingAudioBackendPreference: null,
+                    ScreenRecordingAudioDevice: null,
                     AdapterRestartCommand: null,
                     AdapterRestartWorkingDir: null,
                     FindRetryCount: null,
@@ -996,7 +1086,7 @@ public partial class App : Application
                 _quickChatWindow.Show();
             }
 
-            _quickChatWindow.WindowState = WindowState.Normal;
+            _quickChatWindow.WindowState = WindowState.Maximized;
             _quickChatWindow.Activate();
         });
     }
@@ -1104,7 +1194,10 @@ public partial class App : Application
     {
         if (_pendingUpdate != null)
         {
-            return new ChatUpdateBadge(true, true, $"Update available: v{_pendingUpdate.Version}");
+            var canApply = CanApplyPendingUpdate();
+            return canApply
+                ? new ChatUpdateBadge(true, true, $"Update available: v{_pendingUpdate.Version}")
+                : new ChatUpdateBadge(false, false, string.Empty);
         }
 
         if (_updatesEnabled && _updateStatus.StartsWith("downloading", StringComparison.OrdinalIgnoreCase))

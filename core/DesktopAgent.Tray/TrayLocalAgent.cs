@@ -419,6 +419,8 @@ internal sealed class TrayLocalAgent : IDisposable
             QuizSafeModeEnabled: _config.QuizSafeModeEnabled,
             OcrEnabled: _config.OcrEnabled,
             OcrRestartRequired: _ocrRestartRequired,
+            ScreenRecordingAudioBackendPreference: _config.ScreenRecordingAudioBackendPreference,
+            ScreenRecordingAudioDevice: _config.ScreenRecordingAudioDevice,
             AdapterRestartCommand: _config.AdapterRestartCommand,
             AdapterRestartWorkingDir: _config.AdapterRestartWorkingDir,
             FindRetryCount: _config.FindRetryCount,
@@ -473,6 +475,16 @@ internal sealed class TrayLocalAgent : IDisposable
         {
             _config.OcrEnabled = payload.OcrEnabled.Value;
             _ocrRestartRequired = true;
+        }
+
+        if (payload.ScreenRecordingAudioBackendPreference != null)
+        {
+            _config.ScreenRecordingAudioBackendPreference = payload.ScreenRecordingAudioBackendPreference.Trim();
+        }
+
+        if (payload.ScreenRecordingAudioDevice != null)
+        {
+            _config.ScreenRecordingAudioDevice = payload.ScreenRecordingAudioDevice.Trim();
         }
 
         if (payload.AdapterRestartCommand != null)

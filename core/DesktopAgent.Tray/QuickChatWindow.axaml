@@ -162,15 +162,36 @@
         </Grid>
       </TabItem>
 
-      <TabItem Header="Timeline">
+      <TabItem x:Name="TimelineTab">
+        <TabItem.Header>
+          <StackPanel Orientation="Horizontal" Spacing="6">
+            <TextBlock Text="Timeline" />
+            <Border x:Name="TimelineTabBadgePanel"
+                    IsVisible="False"
+                    Background="#3E3A1F"
+                    CornerRadius="10"
+                    Padding="6,1"
+                    MinWidth="20">
+              <TextBlock x:Name="TimelineTabBadgeText"
+                         Text="0"
+                         HorizontalAlignment="Center"
+                         FontSize="11"
+                         FontWeight="SemiBold" />
+            </Border>
+          </StackPanel>
+        </TabItem.Header>
         <Border Margin="8"
                 BorderBrush="#2A3950"
                 BorderThickness="1"
                 CornerRadius="8"
                 Background="#0F1520"
                 Padding="8">
-          <Grid RowDefinitions="Auto,Auto,*">
-            <TextBlock Text="Execution timeline" Opacity="0.85" />
+          <Grid RowDefinitions="Auto,Auto,Auto,*">
+            <Grid ColumnDefinitions="*,Auto,Auto">
+              <TextBlock Text="Execution timeline" Opacity="0.85" VerticalAlignment="Center" />
+              <Button x:Name="TimelineCopyButton" Grid.Column="1" Content="Copy" MinWidth="80" Margin="8,0,0,0" />
+              <Button x:Name="TimelineExportButton" Grid.Column="2" Content="Export" MinWidth="90" Margin="8,0,0,0" />
+            </Grid>
             <Grid Grid.Row="1" Margin="0,8,0,8" ColumnDefinitions="180,*">
               <ComboBox x:Name="TimelineFilterCombo" SelectedIndex="0">
                 <ComboBoxItem Content="All" />
@@ -182,15 +203,16 @@
                        Margin="8,0,0,0"
                        Watermark="Search timeline..." />
             </Grid>
+            <TextBlock x:Name="TimelineStatusText" Grid.Row="2" Opacity="0.75" />
             <ListBox x:Name="TimelineList"
-                     Grid.Row="2"
+                     Grid.Row="3"
                      Margin="0,6,0,0" />
           </Grid>
         </Border>
       </TabItem>
 
       <TabItem Header="Config">
-        <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,*" ColumnDefinitions="220,*" Margin="8">
+        <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,*" ColumnDefinitions="220,*" Margin="8">
           <TextBlock Text="LLM Enabled" />
           <CheckBox x:Name="CfgLlmEnabled" Grid.Column="1" />
 
@@ -216,21 +238,31 @@
           <TextBlock Grid.Row="6" Text="Allow Remote Endpoint" Margin="0,8,0,0" />
           <CheckBox x:Name="CfgLlmAllowRemote" Grid.Row="6" Grid.Column="1" Margin="0,8,0,0" />
 
-          <StackPanel Grid.Row="7" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="8" Margin="0,12,0,0">
+          <TextBlock Grid.Row="7" Text="Audio Backend" Margin="0,8,0,0" />
+          <ComboBox x:Name="CfgAudioBackend" Grid.Row="7" Grid.Column="1" Margin="0,8,0,0" SelectedIndex="0">
+            <ComboBoxItem Content="auto" />
+            <ComboBoxItem Content="wasapi" />
+            <ComboBoxItem Content="dshow" />
+          </ComboBox>
+
+          <TextBlock Grid.Row="8" Text="Audio Device (optional)" Margin="0,8,0,0" />
+          <TextBox x:Name="CfgAudioDevice" Grid.Row="8" Grid.Column="1" Margin="0,8,0,0" />
+
+          <StackPanel Grid.Row="9" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="8" Margin="0,12,0,0">
             <Button x:Name="CfgLoadButton" Content="Reload Config" MinWidth="120" />
             <Button x:Name="CfgSaveButton" Content="Save Config" MinWidth="120" />
             <Button x:Name="CfgTestLlmButton" Content="Test LLM" MinWidth="120" />
             <Button x:Name="CfgRunFirstSetupButton" Content="Run First Setup" MinWidth="130" />
           </StackPanel>
 
-          <StackPanel Grid.Row="8" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="8" Margin="0,10,0,0">
+          <StackPanel Grid.Row="10" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="8" Margin="0,10,0,0">
             <Button x:Name="CfgCheckUpdatesButton" Content="Check Updates Now" MinWidth="140" />
             <Button x:Name="CfgApplyUpdateButton" Content="Apply Downloaded Update" MinWidth="180" />
             <TextBlock x:Name="CfgUpdateStatusText" VerticalAlignment="Center" />
           </StackPanel>
 
           <TextBox x:Name="CfgStatusBox"
-                   Grid.Row="9"
+                   Grid.Row="11"
                    Grid.ColumnSpan="2"
                    Margin="0,12,0,0"
                    IsReadOnly="True"
@@ -347,6 +379,27 @@
           </StackPanel>
           <TextBox x:Name="AuditBox"
                    Grid.Row="1"
+                   Margin="0,10,0,0"
+                   IsReadOnly="True"
+                   AcceptsReturn="True"
+                   TextWrapping="Wrap"
+                   Background="#0F1520"
+                   BorderBrush="#2A3950"
+                   BorderThickness="1"
+                   FontFamily="Cascadia Mono, Consolas, monospace"
+                   FontSize="12" />
+        </Grid>
+      </TabItem>
+
+      <TabItem Header="Diagnostics">
+        <Grid RowDefinitions="Auto,Auto,*" Margin="8">
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <Button x:Name="DiagRefreshButton" Content="Run Environment Check" MinWidth="180" />
+            <Button x:Name="DiagCopyButton" Content="Copy" MinWidth="90" />
+          </StackPanel>
+          <TextBlock x:Name="DiagStatusText" Grid.Row="1" Margin="0,8,0,0" Opacity="0.8" />
+          <TextBox x:Name="DiagBox"
+                   Grid.Row="2"
                    Margin="0,10,0,0"
                    IsReadOnly="True"
                    AcceptsReturn="True"
