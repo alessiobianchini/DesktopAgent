@@ -166,7 +166,7 @@ public partial class App : Application
         _checkUpdatesItem = new NativeMenuItem("Check updates now");
         _checkUpdatesItem.Click += async (_, _) => await CheckForUpdatesAsync(manual: true, _shutdown.Token);
 
-        _applyUpdateItem = new NativeMenuItem("Apply downloaded update");
+        _applyUpdateItem = new NativeMenuItem("Apply downloaded update") { IsEnabled = false };
         _applyUpdateItem.Click += (_, _) => ApplyPendingUpdate();
 
         _exitItem = new NativeMenuItem("Exit");
@@ -220,6 +220,7 @@ public partial class App : Application
 
         _trayIcons = new TrayIcons { _trayIcon };
         TrayIcon.SetIcons(this, _trayIcons);
+        RefreshUpdateUi();
     }
 
     private async Task PollStatusAsync(CancellationToken cancellationToken)
@@ -310,15 +311,7 @@ public partial class App : Application
                 _disarmItem.IsEnabled = armed;
             }
 
-            if (_checkUpdatesItem != null)
-            {
-                _checkUpdatesItem.IsEnabled = _updatesEnabled;
-            }
-
-            if (_applyUpdateItem != null)
-            {
-                _applyUpdateItem.IsEnabled = _pendingUpdate != null;
-            }
+            RefreshUpdateUi();
 
             if (_trayIcon != null)
             {
@@ -375,6 +368,8 @@ public partial class App : Application
                 error = ex.Message
             });
         }
+
+        RefreshUpdateUi();
     }
 
     private async Task CheckForUpdatesAsync(bool manual, CancellationToken cancellationToken)
@@ -459,6 +454,7 @@ public partial class App : Application
         finally
         {
             _updateGate.Release();
+            RefreshUpdateUi();
         }
     }
 
@@ -488,7 +484,29 @@ public partial class App : Application
                 version = _pendingUpdate.Version.ToString(),
                 error = ex.Message
             });
+            RefreshUpdateUi();
         }
+    }
+
+    private void RefreshUpdateUi()
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (_updateStatusItem != null)
+            {
+                _updateStatusItem.Header = $"Updates: {_updateStatus}";
+            }
+
+            if (_checkUpdatesItem != null)
+            {
+                _checkUpdatesItem.IsEnabled = _updatesEnabled;
+            }
+
+            if (_applyUpdateItem != null)
+            {
+                _applyUpdateItem.IsEnabled = _pendingUpdate != null;
+            }
+        });
     }
 
     private async Task WriteUpdateAuditAsync(string eventType, string message, object? data)
@@ -588,15 +606,25 @@ public partial class App : Application
 
             if (choice.InstallOcr && !probeBefore.TesseractInstalled && probeBefore.WingetAvailable)
             {
+                WingetInstallResult? primaryAttempt = null;
                 if (probeBefore.TesseractPrimaryPackageAvailable)
                 {
-                    ocrResult = await InstallWingetPackageAsync("UB-Mannheim.TesseractOCR", cancellationToken);
+                    primaryAttempt = await InstallWingetPackageAsync("UB-Mannheim.TesseractOCR", cancellationToken);
+                    ocrResult = primaryAttempt;
                 }
-                else if (probeBefore.TesseractFallbackPackageAvailable)
+
+                if ((primaryAttempt == null || !primaryAttempt.Success) && probeBefore.TesseractFallbackPackageAvailable)
                 {
-                    ocrResult = await InstallWingetPackageAsync("tesseract-ocr.tesseract", cancellationToken);
+                    var fallbackAttempt = await InstallWingetPackageAsync("tesseract-ocr.tesseract", cancellationToken);
+                    ocrResult = fallbackAttempt.Success
+                        ? fallbackAttempt
+                        : WingetInstallResult.Failed(
+                            primaryAttempt == null
+                                ? fallbackAttempt.Message
+                                : $"{primaryAttempt.Message}; fallback: {fallbackAttempt.Message}");
                 }
-                else
+
+                if (primaryAttempt == null && !probeBefore.TesseractFallbackPackageAvailable)
                 {
                     ocrResult = WingetInstallResult.Failed("No OCR package available in winget.");
                 }
@@ -654,7 +682,7 @@ public partial class App : Application
                 StartInfo = new ProcessStartInfo
                 {
                     FileName = "cmd",
-                    Arguments = $"/C winget install -e --id {packageId} --accept-package-agreements --accept-source-agreements",
+                    Arguments = $"/C winget install -e --id {packageId} --accept-package-agreements --accept-source-agreements --disable-interactivity",
                     UseShellExecute = false,
                     CreateNoWindow = true,
                     WindowStyle = ProcessWindowStyle.Hidden
@@ -677,7 +705,7 @@ public partial class App : Application
             await waitTask;
             return process.ExitCode == 0
                 ? WingetInstallResult.Succeeded(packageId)
-                : WingetInstallResult.Failed($"winget exit code {process.ExitCode} for {packageId}");
+                : WingetInstallResult.Failed(FormatWingetExitMessage(process.ExitCode, packageId));
         }
         catch (OperationCanceledException)
         {
@@ -687,6 +715,17 @@ public partial class App : Application
         {
             return WingetInstallResult.Failed($"Failed to install {packageId}");
         }
+    }
+
+    private static string FormatWingetExitMessage(int exitCode, string packageId)
+    {
+        var hex = $"0x{unchecked((uint)exitCode):X8}";
+        if (unchecked((uint)exitCode) == 0x8A15002B)
+        {
+            return $"winget exit code {exitCode} ({hex}) for {packageId}. Source/package metadata issue. Run 'winget source reset --force' and retry.";
+        }
+
+        return $"winget exit code {exitCode} ({hex}) for {packageId}";
     }
 
     private async Task EnableOcrIfDisabledAsync(CancellationToken cancellationToken)

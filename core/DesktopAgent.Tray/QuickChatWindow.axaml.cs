@@ -140,9 +140,12 @@ internal partial class QuickChatWindow : Window
     private CancellationTokenSource? _persistSessionCts;
     private bool _busy;
     private bool _loadingSessionState;
+    private bool _suppressPaletteSelectionChanged;
     private bool _suppressGoalAutoEvents;
     private string _lastStatusLine = string.Empty;
     private int _unreadChatEvents;
+    private int _unreadErrorEvents;
+    private int _unreadInfoEvents;
     private const int MaxTimelineLines = 140;
     private const int MaxRecentCommands = 20;
     private readonly string _sessionStatePath = ResolveSessionStatePath();
@@ -357,7 +360,7 @@ internal partial class QuickChatWindow : Window
 
         if (_commandPaletteList != null)
         {
-            _commandPaletteList.SelectionChanged += (_, _) => ApplyCommandPaletteSelection();
+            _commandPaletteList.SelectionChanged += (_, _) => OnCommandPaletteSelectionChanged();
         }
 
         if (_useSuggestionButton != null)
@@ -1124,8 +1127,17 @@ internal partial class QuickChatWindow : Window
                 .Take(8)
                 .ToList();
 
-            _commandPaletteList.ItemsSource = entries;
-            _commandPaletteList.IsVisible = entries.Count > 0 && !_busy;
+            _suppressPaletteSelectionChanged = true;
+            try
+            {
+                _commandPaletteList.ItemsSource = entries;
+                _commandPaletteList.SelectedIndex = -1;
+                _commandPaletteList.IsVisible = entries.Count > 0 && !_busy;
+            }
+            finally
+            {
+                _suppressPaletteSelectionChanged = false;
+            }
         });
     }
 
@@ -1151,6 +1163,16 @@ internal partial class QuickChatWindow : Window
                 // ignored
             }
         }, CancellationToken.None);
+    }
+
+    private void OnCommandPaletteSelectionChanged()
+    {
+        if (_suppressPaletteSelectionChanged)
+        {
+            return;
+        }
+
+        ApplyCommandPaletteSelection();
     }
 
     private void ApplyCommandPaletteSelection()
@@ -1347,7 +1369,9 @@ internal partial class QuickChatWindow : Window
         try
         {
             AppendConfigStatus("Opening first setup wizard...");
-            await _runFirstSetup();
+            // Run setup flow off the UI thread because environment probes and
+            // package checks may perform blocking process waits.
+            await Task.Run(_runFirstSetup, CancellationToken.None);
             AppendConfigStatus("First setup completed.");
         }
         catch (Exception ex)
@@ -1408,6 +1432,11 @@ internal partial class QuickChatWindow : Window
 
         var text = _getUpdateStatus?.Invoke() ?? "Updates: unavailable";
         SetText(_cfgUpdateStatusText, text);
+        if (_cfgApplyUpdateButton != null)
+        {
+            var canApply = _getChatUpdateBadge?.Invoke().CanApply ?? false;
+            _cfgApplyUpdateButton.IsEnabled = canApply && !_busy;
+        }
     }
 
     private void RefreshChatUpdateBadge()
@@ -1849,6 +1878,7 @@ internal partial class QuickChatWindow : Window
         UpdateUseSuggestionButton();
         UpdateCommandPalette();
         RefreshChatUpdateBadge();
+        RefreshUpdateStatusInConfig();
     }
 
     private IEnumerable<Button> AllButtons()
@@ -1880,6 +1910,8 @@ internal partial class QuickChatWindow : Window
     private void ResetUnreadChatEvents()
     {
         _unreadChatEvents = 0;
+        _unreadErrorEvents = 0;
+        _unreadInfoEvents = 0;
         UpdateUnreadBadge();
     }
 
@@ -1896,10 +1928,22 @@ internal partial class QuickChatWindow : Window
             _chatTabBadgePanel.IsVisible = hasUnread;
             if (!hasUnread)
             {
+                ToolTip.SetTip(_chatTabBadgePanel, null);
                 return;
             }
 
             _chatTabBadgeText.Text = _unreadChatEvents > 99 ? "99+" : _unreadChatEvents.ToString(CultureInfo.InvariantCulture);
+
+            var hasErrors = _unreadErrorEvents > 0;
+            _chatTabBadgePanel.Background = new Avalonia.Media.SolidColorBrush(
+                Avalonia.Media.Color.Parse(hasErrors ? "#8A2C34" : "#2C4F8A"));
+            _chatTabBadgePanel.BorderBrush = new Avalonia.Media.SolidColorBrush(
+                Avalonia.Media.Color.Parse(hasErrors ? "#D96B73" : "#4F79BA"));
+            _chatTabBadgePanel.BorderThickness = new Thickness(1);
+            ToolTip.SetTip(_chatTabBadgePanel, $"Unread: {_unreadChatEvents} (errors: {_unreadErrorEvents}, info: {_unreadInfoEvents})");
+            _chatTabBadgeText.Text = hasErrors
+                ? $"! {_chatTabBadgeText.Text}"
+                : _chatTabBadgeText.Text;
         });
     }
 
@@ -1955,11 +1999,35 @@ internal partial class QuickChatWindow : Window
             if (!string.Equals(role, "YOU", StringComparison.OrdinalIgnoreCase) && !IsChatTabSelected())
             {
                 _unreadChatEvents = Math.Min(_unreadChatEvents + 1, 999);
+                if (IsErrorLine(cleanText))
+                {
+                    _unreadErrorEvents = Math.Min(_unreadErrorEvents + 1, 999);
+                }
+                else
+                {
+                    _unreadInfoEvents = Math.Min(_unreadInfoEvents + 1, 999);
+                }
+
                 UpdateUnreadBadge();
             }
 
             SchedulePersistSessionState();
         });
+    }
+
+    private static bool IsErrorLine(string line)
+    {
+        if (string.IsNullOrWhiteSpace(line))
+        {
+            return false;
+        }
+
+        return line.Contains("error", StringComparison.OrdinalIgnoreCase)
+            || line.Contains("failed", StringComparison.OrdinalIgnoreCase)
+            || line.Contains("blocked", StringComparison.OrdinalIgnoreCase)
+            || line.Contains("denied", StringComparison.OrdinalIgnoreCase)
+            || line.Contains("unavailable", StringComparison.OrdinalIgnoreCase)
+            || line.Contains("[FAIL]", StringComparison.OrdinalIgnoreCase);
     }
 
     private void AppendConfigStatus(string line)

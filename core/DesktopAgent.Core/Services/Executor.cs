@@ -5,6 +5,7 @@ using DesktopAgent.Proto;
 using Microsoft.Extensions.Logging;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Text.RegularExpressions;
 
 namespace DesktopAgent.Core.Services;
 
@@ -28,6 +29,7 @@ public sealed class Executor : IExecutor
     private string? _recordingOutputPath;
     private DateTimeOffset? _recordingStartedAtUtc;
     private bool _recordingAudio;
+    private string? _recordingAudioBackend;
 
     public Executor(
         IDesktopAdapterClient client,
@@ -594,32 +596,49 @@ public sealed class Executor : IExecutor
         var ffmpegPath = ResolveFfmpegPath();
 
         var timeout = TimeSpan.FromSeconds(seconds + 30);
+        var audioBackends = includeAudioRequested ? ResolveAvailableAudioInputs(ffmpegPath) : new List<FfmpegAudioInput>();
+        var audioErrors = new List<string>();
         if (includeAudioRequested)
         {
-            var withAudio = await RunProcessAsync(ffmpegPath, BuildRecordingArguments(outputPath, seconds, includeAudio: true), timeout, cancellationToken);
-            if (withAudio.Success)
+            if (audioBackends.Count == 0)
             {
-                return new StepResult
-                {
-                    Success = true,
-                    Message = $"Screen recording saved: {outputPath}",
-                    Data = new { outputPath, seconds, audio = true }
-                };
+                audioErrors.Add("No supported audio backend in ffmpeg (WASAPI/DirectShow missing).");
             }
+            else
+            {
+                foreach (var backend in audioBackends)
+                {
+                    var withAudio = await RunProcessAsync(ffmpegPath, BuildRecordingArguments(outputPath, seconds, backend.InputArguments), timeout, cancellationToken);
+                    if (withAudio.Success)
+                    {
+                        return new StepResult
+                        {
+                            Success = true,
+                            Message = $"Screen recording saved (audio {backend.DisplayName}): {outputPath}",
+                            Data = new { outputPath, seconds, audio = true, audioBackend = backend.DisplayName }
+                        };
+                    }
 
-            _logger.LogWarning("Screen recording with audio failed, retrying video-only. Error: {Error}", withAudio.Error);
+                    var failure = $"{backend.DisplayName}: {TrimForMessage(withAudio.Error)}";
+                    audioErrors.Add(failure);
+                    _logger.LogWarning("Screen recording with audio backend {Backend} failed. Error: {Error}", backend.DisplayName, withAudio.Error);
+                }
+            }
         }
 
-        var videoOnly = await RunProcessAsync(ffmpegPath, BuildRecordingArguments(outputPath, seconds, includeAudio: false), timeout, cancellationToken);
+        var videoOnly = await RunProcessAsync(ffmpegPath, BuildRecordingArguments(outputPath, seconds, audioInputArguments: null), timeout, cancellationToken);
         if (videoOnly.Success)
         {
+            var reason = includeAudioRequested
+                ? TrimForMessage(string.Join(" | ", audioErrors.Where(static s => !string.IsNullOrWhiteSpace(s))))
+                : null;
             return new StepResult
             {
                 Success = true,
                 Message = includeAudioRequested
-                    ? $"Screen recording saved (audio unavailable, recorded video-only): {outputPath}"
+                    ? $"Screen recording saved (audio unavailable, recorded video-only): {outputPath}{(string.IsNullOrWhiteSpace(reason) ? string.Empty : $" | reason: {reason}")}"
                     : $"Screen recording saved: {outputPath}",
-                Data = new { outputPath, seconds, audio = false }
+                Data = new { outputPath, seconds, audio = false, audioReason = reason, audioBackendsTried = audioBackends.Select(static x => x.DisplayName).ToArray() }
             };
         }
 
@@ -669,24 +688,26 @@ public sealed class Executor : IExecutor
                 _recordingOutputPath = null;
                 _recordingStartedAtUtc = null;
                 _recordingAudio = false;
+                _recordingAudioBackend = null;
             }
         }
 
         var ffmpegPath = ResolveFfmpegPath();
-        if (TryStartRecordingProcess(ffmpegPath, outputPath, includeAudioRequested, out var audioUsed, out var error))
+        if (TryStartRecordingProcess(ffmpegPath, outputPath, includeAudioRequested, out var audioUsed, out var audioBackend, out var error))
         {
             lock (_recordingSync)
             {
                 _recordingAudio = audioUsed;
+                _recordingAudioBackend = audioBackend;
             }
 
             return Task.FromResult(new StepResult
             {
                 Success = true,
                 Message = audioUsed
-                    ? $"Screen recording started (with audio): {outputPath}"
+                    ? $"Screen recording started (with audio {audioBackend ?? "unknown"}): {outputPath}"
                     : $"Screen recording started (video-only): {outputPath}",
-                Data = new { outputPath, audio = audioUsed }
+                Data = new { outputPath, audio = audioUsed, audioBackend, error }
             });
         }
 
@@ -704,6 +725,7 @@ public sealed class Executor : IExecutor
         string? outputPath;
         DateTimeOffset? startedAtUtc;
         bool audio;
+        string? audioBackend;
 
         lock (_recordingSync)
         {
@@ -711,10 +733,12 @@ public sealed class Executor : IExecutor
             outputPath = _recordingOutputPath;
             startedAtUtc = _recordingStartedAtUtc;
             audio = _recordingAudio;
+            audioBackend = _recordingAudioBackend;
             _recordingProcess = null;
             _recordingOutputPath = null;
             _recordingStartedAtUtc = null;
             _recordingAudio = false;
+            _recordingAudioBackend = null;
         }
 
         if (process == null || process.HasExited)
@@ -756,7 +780,7 @@ public sealed class Executor : IExecutor
             Message = string.IsNullOrWhiteSpace(outputPath)
                 ? "Screen recording stopped."
                 : $"Screen recording stopped: {outputPath}",
-            Data = new { outputPath, seconds = elapsedSeconds, audio, bytes }
+            Data = new { outputPath, seconds = elapsedSeconds, audio, audioBackend, bytes }
         });
     }
 
@@ -2477,55 +2501,90 @@ public sealed class Executor : IExecutor
         return string.IsNullOrWhiteSpace(ffmpegPath) ? "ffmpeg" : ffmpegPath;
     }
 
-    private static string BuildRecordingArguments(string outputPath, int seconds, bool includeAudio)
+    private static string BuildRecordingArguments(string outputPath, int seconds, string? audioInputArguments)
     {
         var fps = 12;
-        if (includeAudio)
+        if (!string.IsNullOrWhiteSpace(audioInputArguments))
         {
-            return $"-y -f gdigrab -framerate {fps} -i desktop -f wasapi -i default -t {seconds} -c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac \"{outputPath}\"";
+            return $"-y -f gdigrab -framerate {fps} -i desktop {audioInputArguments} -t {seconds} -c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac \"{outputPath}\"";
         }
 
         return $"-y -f gdigrab -framerate {fps} -i desktop -t {seconds} -c:v libx264 -preset veryfast -pix_fmt yuv420p \"{outputPath}\"";
     }
 
-    private string BuildLiveRecordingArguments(string outputPath, bool includeAudio)
+    private string BuildLiveRecordingArguments(string outputPath, string? audioInputArguments)
     {
         var fps = 12;
-        if (includeAudio)
+        if (!string.IsNullOrWhiteSpace(audioInputArguments))
         {
-            return $"-y -f gdigrab -framerate {fps} -i desktop -f wasapi -i default -c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac \"{outputPath}\"";
+            return $"-y -f gdigrab -framerate {fps} -i desktop {audioInputArguments} -c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac \"{outputPath}\"";
         }
 
         return $"-y -f gdigrab -framerate {fps} -i desktop -c:v libx264 -preset veryfast -pix_fmt yuv420p \"{outputPath}\"";
     }
 
-    private bool TryStartRecordingProcess(string ffmpegPath, string outputPath, bool includeAudioRequested, out bool audioUsed, out string? error)
+    private bool TryStartRecordingProcess(
+        string ffmpegPath,
+        string outputPath,
+        bool includeAudioRequested,
+        out bool audioUsed,
+        out string? audioBackend,
+        out string? error)
     {
         audioUsed = false;
+        audioBackend = null;
         error = null;
-
-        if (TryStartRecordingProcessCore(ffmpegPath, outputPath, includeAudioRequested, out error))
-        {
-            audioUsed = includeAudioRequested;
-            return true;
-        }
 
         if (!includeAudioRequested)
         {
+            if (TryStartRecordingProcessCore(ffmpegPath, outputPath, audioInputArguments: null, out error))
+            {
+                return true;
+            }
+
             return false;
         }
 
-        _logger.LogWarning("Live recording with audio failed, retrying video-only. Error: {Error}", error);
-        if (TryStartRecordingProcessCore(ffmpegPath, outputPath, includeAudio: false, out error))
+        var audioInputs = ResolveAvailableAudioInputs(ffmpegPath);
+        if (audioInputs.Count == 0)
+        {
+            error = "No supported audio backend in ffmpeg (WASAPI/DirectShow missing).";
+        }
+        else
+        {
+            var failures = new List<string>();
+            foreach (var input in audioInputs)
+            {
+                if (TryStartRecordingProcessCore(ffmpegPath, outputPath, input.InputArguments, out error))
+                {
+                    audioUsed = true;
+                    audioBackend = input.DisplayName;
+                    return true;
+                }
+
+                failures.Add($"{input.DisplayName}: {TrimForMessage(error)}");
+                _logger.LogWarning("Live recording with audio backend {Backend} failed. Error: {Error}", input.DisplayName, error);
+            }
+
+            error = string.Join(" | ", failures);
+        }
+
+        _logger.LogWarning("Live recording audio failed, retrying video-only. Error: {Error}", error);
+        if (TryStartRecordingProcessCore(ffmpegPath, outputPath, audioInputArguments: null, out var videoOnlyError))
         {
             audioUsed = false;
+            audioBackend = null;
+            error = string.IsNullOrWhiteSpace(error) ? null : error;
             return true;
         }
 
+        error = string.IsNullOrWhiteSpace(error)
+            ? videoOnlyError
+            : $"{error} | video-only: {videoOnlyError}";
         return false;
     }
 
-    private bool TryStartRecordingProcessCore(string ffmpegPath, string outputPath, bool includeAudio, out string? error)
+    private bool TryStartRecordingProcessCore(string ffmpegPath, string outputPath, string? audioInputArguments, out string? error)
     {
         error = null;
         try
@@ -2535,7 +2594,7 @@ public sealed class Executor : IExecutor
                 StartInfo = new ProcessStartInfo
                 {
                     FileName = ffmpegPath,
-                    Arguments = BuildLiveRecordingArguments(outputPath, includeAudio),
+                    Arguments = BuildLiveRecordingArguments(outputPath, audioInputArguments),
                     UseShellExecute = false,
                     CreateNoWindow = true
                 }
@@ -2556,7 +2615,7 @@ public sealed class Executor : IExecutor
                 _recordingProcess = process;
                 _recordingOutputPath = outputPath;
                 _recordingStartedAtUtc = DateTimeOffset.UtcNow;
-                _recordingAudio = includeAudio;
+                _recordingAudio = !string.IsNullOrWhiteSpace(audioInputArguments);
             }
 
             return true;
@@ -2567,6 +2626,112 @@ public sealed class Executor : IExecutor
             return false;
         }
     }
+
+    private List<FfmpegAudioInput> ResolveAvailableAudioInputs(string ffmpegPath)
+    {
+        var inputs = new List<FfmpegAudioInput>();
+        if (!FfmpegSupportsInput(ffmpegPath, "wasapi"))
+        {
+            _logger.LogInformation("ffmpeg input format wasapi not available.");
+        }
+        else
+        {
+            inputs.Add(new FfmpegAudioInput("WASAPI", "-f wasapi -i default"));
+        }
+
+        if (!FfmpegSupportsInput(ffmpegPath, "dshow"))
+        {
+            return inputs;
+        }
+
+        if (TryGetFirstDshowAudioDevice(ffmpegPath, out var deviceName))
+        {
+            var escaped = EscapeFfmpegDshowDevice(deviceName);
+            inputs.Add(new FfmpegAudioInput("DirectShow", $"-f dshow -i audio=\"{escaped}\""));
+        }
+        else
+        {
+            _logger.LogInformation("ffmpeg dshow detected but no audio device found.");
+        }
+
+        return inputs;
+    }
+
+    private static bool FfmpegSupportsInput(string ffmpegPath, string inputName)
+    {
+        if (!TryRunProcess(ffmpegPath, "-hide_banner -devices", out var output, out var error))
+        {
+            output = string.Join(Environment.NewLine, output, error);
+        }
+
+        return Regex.IsMatch(output ?? string.Empty, $@"\b{Regex.Escape(inputName)}\b", RegexOptions.IgnoreCase);
+    }
+
+    private static bool TryGetFirstDshowAudioDevice(string ffmpegPath, out string deviceName)
+    {
+        deviceName = string.Empty;
+        var audioDump = string.Empty;
+        TryRunProcess(ffmpegPath, "-hide_banner -f dshow -list_devices true -i dummy", out _, out var error);
+        if (!string.IsNullOrWhiteSpace(error))
+        {
+            audioDump = error!;
+        }
+
+        if (string.IsNullOrWhiteSpace(audioDump))
+        {
+            return false;
+        }
+
+        var inAudioSection = false;
+        foreach (var rawLine in audioDump.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var line = rawLine.Trim();
+            if (line.Contains("DirectShow audio devices", StringComparison.OrdinalIgnoreCase))
+            {
+                inAudioSection = true;
+                continue;
+            }
+
+            if (line.Contains("DirectShow video devices", StringComparison.OrdinalIgnoreCase))
+            {
+                inAudioSection = false;
+            }
+
+            if (!inAudioSection)
+            {
+                continue;
+            }
+
+            var match = Regex.Match(line, "\"([^\"]+)\"");
+            if (match.Success)
+            {
+                deviceName = match.Groups[1].Value.Trim();
+                return !string.IsNullOrWhiteSpace(deviceName);
+            }
+        }
+
+        return false;
+    }
+
+    private static string EscapeFfmpegDshowDevice(string value)
+        => value.Replace("\"", "\\\"", StringComparison.Ordinal);
+
+    private static string TrimForMessage(string? value)
+    {
+        var text = (value ?? string.Empty)
+            .Replace("\r", " ", StringComparison.Ordinal)
+            .Replace("\n", " ", StringComparison.Ordinal)
+            .Trim();
+
+        if (text.Length <= 180)
+        {
+            return text;
+        }
+
+        return text[..180] + "...";
+    }
+
+    private readonly record struct FfmpegAudioInput(string DisplayName, string InputArguments);
 
     private void AddClipboardHistory(string source, string? text)
     {

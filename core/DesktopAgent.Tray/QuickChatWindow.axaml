@@ -64,7 +64,7 @@
             </Border>
           </StackPanel>
         </TabItem.Header>
-        <Grid RowDefinitions="Auto,Auto,*,Auto,Auto,Auto,Auto,Auto" Margin="2">
+        <Grid RowDefinitions="Auto,Auto,*,Auto,Auto,Auto,Auto" Margin="2">
           <Border x:Name="ChatUpdateBadgePanel"
                   Grid.Row="0"
                   Margin="0,0,0,10"
@@ -112,36 +112,8 @@
                      FontSize="13" />
           </Border>
 
-          <Border Grid.Row="3"
-                  Margin="0,10,0,10"
-                  BorderBrush="#2A3950"
-                  BorderThickness="1"
-                  CornerRadius="8"
-                  Background="#0F1520"
-                  Padding="8">
-            <Grid RowDefinitions="Auto,Auto,*">
-              <TextBlock Text="Execution timeline" Opacity="0.85" />
-              <Grid Grid.Row="1" Margin="0,6,0,6" ColumnDefinitions="180,*">
-                <ComboBox x:Name="TimelineFilterCombo" SelectedIndex="0">
-                  <ComboBoxItem Content="All" />
-                  <ComboBoxItem Content="Success" />
-                  <ComboBoxItem Content="Failed" />
-                </ComboBox>
-                <TextBox x:Name="TimelineSearchBox"
-                         Grid.Column="1"
-                         Margin="8,0,0,0"
-                         Watermark="Search timeline..." />
-              </Grid>
-              <ListBox x:Name="TimelineList"
-                       Grid.Row="2"
-                       Margin="0,6,0,0"
-                       MinHeight="70"
-                       MaxHeight="130" />
-            </Grid>
-          </Border>
-
           <StackPanel x:Name="ConfirmPanel"
-                      Grid.Row="4"
+                      Grid.Row="3"
                       Orientation="Horizontal"
                       Spacing="8"
                       Margin="0,10,0,10"
@@ -152,7 +124,7 @@
           </StackPanel>
 
           <Border x:Name="BusyPanel"
-                  Grid.Row="5"
+                  Grid.Row="4"
                   Margin="0,0,0,10"
                   Padding="8"
                   IsVisible="False"
@@ -168,13 +140,13 @@
           </Border>
 
           <ListBox x:Name="CommandPaletteList"
-                   Grid.Row="6"
+                   Grid.Row="5"
                    Margin="0,0,0,10"
                    MinHeight="40"
                    MaxHeight="120"
                    IsVisible="False" />
 
-          <Grid Grid.Row="7" ColumnDefinitions="*,Auto,Auto">
+          <Grid Grid.Row="6" ColumnDefinitions="*,Auto,Auto">
             <TextBox x:Name="InputBox"
                      Watermark="Write command in natural language..."
                      TextWrapping="Wrap"
@@ -188,6 +160,33 @@
             <Button x:Name="SendButton" Grid.Column="2" Content="Send" MinWidth="110" Margin="10,0,0,0" />
           </Grid>
         </Grid>
+      </TabItem>
+
+      <TabItem Header="Timeline">
+        <Border Margin="8"
+                BorderBrush="#2A3950"
+                BorderThickness="1"
+                CornerRadius="8"
+                Background="#0F1520"
+                Padding="8">
+          <Grid RowDefinitions="Auto,Auto,*">
+            <TextBlock Text="Execution timeline" Opacity="0.85" />
+            <Grid Grid.Row="1" Margin="0,8,0,8" ColumnDefinitions="180,*">
+              <ComboBox x:Name="TimelineFilterCombo" SelectedIndex="0">
+                <ComboBoxItem Content="All" />
+                <ComboBoxItem Content="Success" />
+                <ComboBoxItem Content="Failed" />
+              </ComboBox>
+              <TextBox x:Name="TimelineSearchBox"
+                       Grid.Column="1"
+                       Margin="8,0,0,0"
+                       Watermark="Search timeline..." />
+            </Grid>
+            <ListBox x:Name="TimelineList"
+                     Grid.Row="2"
+                     Margin="0,6,0,0" />
+          </Grid>
+        </Border>
       </TabItem>
 
       <TabItem Header="Config">
