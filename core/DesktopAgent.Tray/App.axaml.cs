@@ -53,6 +53,7 @@ public partial class App : Application
     private Task? _pollingTask;
     private UpdateManager? _updateManager;
     private VelopackAsset? _pendingUpdate;
+    private bool _isVelopackInstalled;
     private readonly SemaphoreSlim _updateGate = new(1, 1);
     private DateTimeOffset _lastUpdateCheck = DateTimeOffset.MinValue;
     private string _updateStatus = "updates disabled";
@@ -339,13 +340,17 @@ public partial class App : Application
         try
         {
             _updateManager = new UpdateManager(_settings.AutoUpdateSource);
-            _updatesEnabled = true;
+            _isVelopackInstalled = _updateManager.IsInstalled;
+            _updatesEnabled = _isVelopackInstalled;
             _pendingUpdate = _updateManager.UpdatePendingRestart;
-            _updateStatus = _pendingUpdate == null ? "enabled" : $"ready {_pendingUpdate.Version}";
-
-            if (!_updateManager.IsInstalled)
+            if (!_isVelopackInstalled)
             {
-                _updateStatus = "dev mode";
+                _updateStatus = "disabled (not installed via Velopack)";
+                _pendingUpdate = null;
+            }
+            else
+            {
+                _updateStatus = _pendingUpdate == null ? "enabled" : $"ready {_pendingUpdate.Version}";
             }
 
             _ = WriteUpdateAuditAsync("update_init", "Updater initialized", new
@@ -466,13 +471,31 @@ public partial class App : Application
             return;
         }
 
+        if (!_isVelopackInstalled)
+        {
+            _updateStatus = "apply blocked: not a Velopack-installed app";
+            _ = WriteUpdateAuditAsync("update_apply_skipped", "Apply skipped because current app is not Velopack-installed", new
+            {
+                currentExe = Environment.ProcessPath
+            });
+            RefreshUpdateUi();
+            return;
+        }
+
         try
         {
             _ = WriteUpdateAuditAsync("update_apply_requested", "Applying downloaded update", new
             {
                 version = _pendingUpdate.Version.ToString(),
-                file = _pendingUpdate.FileName
+                file = _pendingUpdate.FileName,
+                currentExe = Environment.ProcessPath,
+                adapterPid = _managedAdapterProcess?.Id
             });
+
+            // Ensure sidecar processes don't keep files locked in the current app folder.
+            TryStopManagedProcess(_managedAdapterProcess);
+            _managedAdapterProcess = null;
+
             _shutdown.Cancel();
             _updateManager.ApplyUpdatesAndRestart(_pendingUpdate);
         }
@@ -1068,7 +1091,8 @@ public partial class App : Application
     private string GetUpdateStatusLine()
     {
         var pending = _pendingUpdate?.Version.ToString() ?? "none";
-        return $"Updates: {_updateStatus} | Pending: {pending}";
+        var mode = _isVelopackInstalled ? "velopack" : "portable";
+        return $"Updates: {_updateStatus} | Pending: {pending} | Mode: {mode}";
     }
 
     private ChatUpdateBadge GetChatUpdateBadge()
@@ -1110,7 +1134,7 @@ public partial class App : Application
         return new ChatUpdateDetails(
             HasUpdate: false,
             Title: "Updates",
-            Details: $"{_updateStatus}{Environment.NewLine}Source: {_settings.AutoUpdateSource}",
+            Details: $"{_updateStatus}{Environment.NewLine}Source: {_settings.AutoUpdateSource}{Environment.NewLine}Mode: {(_isVelopackInstalled ? "Velopack installed" : "Portable/non-Velopack")}{Environment.NewLine}Exe: {Environment.ProcessPath}",
             CanApply: false);
     }
 
