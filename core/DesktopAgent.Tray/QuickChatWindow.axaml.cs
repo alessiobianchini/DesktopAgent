@@ -12,6 +12,7 @@ namespace DesktopAgent.Tray;
 internal partial class QuickChatWindow : Window
 {
     private readonly WebApiClient _apiClient;
+    private readonly Func<Task>? _runFirstSetup;
     private readonly Queue<string> _historyLines = new();
     private readonly CancellationTokenSource _pollingCts = new();
     private readonly List<WebTaskItem> _taskItems = new();
@@ -63,6 +64,7 @@ internal partial class QuickChatWindow : Window
     private Button? _cfgLoadButton;
     private Button? _cfgSaveButton;
     private Button? _cfgTestLlmButton;
+    private Button? _cfgRunFirstSetupButton;
     private TextBox? _cfgStatusBox;
 
     private Button? _tasksRefreshButton;
@@ -124,9 +126,10 @@ internal partial class QuickChatWindow : Window
         "dry-run open calculator"
     };
 
-    public QuickChatWindow(WebApiClient apiClient)
+    public QuickChatWindow(WebApiClient apiClient, Func<Task>? runFirstSetup = null)
     {
         _apiClient = apiClient;
+        _runFirstSetup = runFirstSetup;
         InitializeComponent();
         WireControls();
     }
@@ -176,6 +179,7 @@ internal partial class QuickChatWindow : Window
         _cfgLoadButton = this.FindControl<Button>("CfgLoadButton");
         _cfgSaveButton = this.FindControl<Button>("CfgSaveButton");
         _cfgTestLlmButton = this.FindControl<Button>("CfgTestLlmButton");
+        _cfgRunFirstSetupButton = this.FindControl<Button>("CfgRunFirstSetupButton");
         _cfgStatusBox = this.FindControl<TextBox>("CfgStatusBox");
 
         _tasksRefreshButton = this.FindControl<Button>("TasksRefreshButton");
@@ -333,6 +337,10 @@ internal partial class QuickChatWindow : Window
         if (_cfgTestLlmButton != null)
         {
             _cfgTestLlmButton.Click += async (_, _) => await TestLlmAsync();
+        }
+        if (_cfgRunFirstSetupButton != null)
+        {
+            _cfgRunFirstSetupButton.Click += async (_, _) => await RunFirstSetupAsync();
         }
 
         if (_tasksRefreshButton != null)
@@ -924,6 +932,26 @@ internal partial class QuickChatWindow : Window
         }
     }
 
+    private async Task RunFirstSetupAsync()
+    {
+        if (_runFirstSetup == null)
+        {
+            AppendConfigStatus("First setup trigger is not available.");
+            return;
+        }
+
+        try
+        {
+            AppendConfigStatus("Opening first setup wizard...");
+            await _runFirstSetup();
+            AppendConfigStatus("First setup completed.");
+        }
+        catch (Exception ex)
+        {
+            AppendConfigStatus($"First setup failed: {ex.Message}");
+        }
+    }
+
     private async Task LoadTasksAsync()
     {
         try
@@ -1344,7 +1372,7 @@ internal partial class QuickChatWindow : Window
             _reqPresenceButton, _killButton, _resetKillButton, _restartAdapterButton, _restartServerButton,
             _lockWindowButton, _lockAppButton, _unlockButton, _profileSafeButton,
             _profileBalancedButton, _profilePowerButton, _openWebButton, _copyButton, _clearButton,
-            _cfgLoadButton, _cfgSaveButton, _cfgTestLlmButton, _tasksRefreshButton, _tasksRunButton,
+            _cfgLoadButton, _cfgSaveButton, _cfgTestLlmButton, _cfgRunFirstSetupButton, _tasksRefreshButton, _tasksRunButton,
             _tasksDeleteButton, _taskSaveButton, _schedulesRefreshButton, _schedulesRunButton, _schedulesDeleteButton,
             _scheduleSaveButton, _goalsRefreshButton, _goalsToggleAutoButton, _goalsDoneButton,
             _goalsRemoveButton, _goalAddButton, _auditRefreshButton, _auditCopyButton, _auditClearButton

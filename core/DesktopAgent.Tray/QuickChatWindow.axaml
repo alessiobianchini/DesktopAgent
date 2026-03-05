@@ -164,6 +164,7 @@
             <Button x:Name="CfgLoadButton" Content="Reload Config" MinWidth="120" />
             <Button x:Name="CfgSaveButton" Content="Save Config" MinWidth="120" />
             <Button x:Name="CfgTestLlmButton" Content="Test LLM" MinWidth="120" />
+            <Button x:Name="CfgRunFirstSetupButton" Content="Run First Setup" MinWidth="130" />
           </StackPanel>
 
           <TextBox x:Name="CfgStatusBox"

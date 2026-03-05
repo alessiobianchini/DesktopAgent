@@ -846,7 +846,7 @@ public partial class App : Application
         {
             if (_quickChatWindow == null)
             {
-                _quickChatWindow = new QuickChatWindow(_webApiClient);
+                _quickChatWindow = new QuickChatWindow(_webApiClient, () => RunPluginWizardIfNeededAsync(force: true, _shutdown.Token));
                 _quickChatWindow.Closed += (_, _) => _quickChatWindow = null;
             }
 

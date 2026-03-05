@@ -12,6 +12,8 @@ DesktopAgent is a local, safety-first desktop automation agent with a cross-plat
 - Automates desktop actions through accessibility/UI tree when available.
 - Falls back to vision/OCR flows when UI tree is unavailable.
 - Supports natural-language commands (rule-based + optional local LLM rewrite).
+- Tray Quick Chat includes command palette, AI command suggestions, loading state, and execution timeline.
+- Optional plugin setup flow for FFmpeg/OCR (first-run wizard + manual retrigger from tray/config).
 - Keeps full local audit logs and safety guardrails.
 
 ## Safety Guardrails
@@ -54,6 +56,10 @@ This starts the Windows adapter and tray app.
 - Windows Velopack package (auto-update capable):  
   `scripts/package-velopack-windows.ps1 -Version 0.5.4`
 
+Recommended distribution:
+- `Velopack` for production installs and auto-updates.
+- `Inno` only for custom installer scenarios.
+
 ## GitHub Actions
 
 - `Package Windows` (push + manual)
@@ -62,7 +68,7 @@ This starts the Windows adapter and tray app.
 - `Package Windows Velopack (Manual)`
 - `Release (GitHub)` (tag-based release flow)
 
-Artifacts are available in each workflow run under **Actions → Artifacts**.
+Artifacts are available in each workflow run under **Actions -> Artifacts**.
 
 ## Auto-Update Notes
 
@@ -79,6 +85,8 @@ Artifacts are available in each workflow run under **Actions → Artifacts**.
 - Agent config template: `core/DesktopAgent.Cli/appsettings.json`
 - Tray config: `core/DesktopAgent.Tray/appsettings.json`
 - Runtime writable config is stored under user profile (to avoid `Program Files` permission issues).
+- Tray first-run plugin wizard toggle: `ShowPluginWizardOnFirstRun` in `core/DesktopAgent.Tray/appsettings.json`.
+- Plugin setup state file: `%LocalAppData%\\DesktopAgent\\tray-plugin-state.json`.
 
 ## Documentation
 
