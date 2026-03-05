@@ -23,6 +23,8 @@ public partial class App : Application
     private DesktopGrpcClient? _client;
     private WebApiClient? _webApiClient;
     private QuickChatWindow? _quickChatWindow;
+    private readonly object _timelineSync = new();
+    private List<string> _timelineSession = new();
     private PluginSetupState _pluginSetupState = new();
     private string _pluginSetupStatePath = string.Empty;
 
@@ -543,81 +545,107 @@ public partial class App : Application
             return;
         }
 
-        var probe = ProbePluginEnvironment();
-        if (!force && !probe.HasMissingTools)
+        while (true)
         {
-            _pluginSetupState.Dismissed = true;
-            SavePluginSetupState(_pluginSetupStatePath, _pluginSetupState);
-            return;
-        }
-
-        PluginSetupChoice? choice = null;
-        await Dispatcher.UIThread.InvokeAsync(async () =>
-        {
-            var window = new PluginSetupWindow(probe);
-            var owner = ResolveDialogOwner();
-            if (owner != null)
+            var probeBefore = ProbePluginEnvironment();
+            if (!force && !probeBefore.HasMissingTools)
             {
-                choice = await window.ShowDialog<PluginSetupChoice?>(owner);
-            }
-            else
-            {
-                window.Show();
-            }
-        });
-
-        if (choice == null)
-        {
-            return;
-        }
-
-        if (choice.DontAskAgain || choice.InstallRequested)
-        {
-            _pluginSetupState.Dismissed = true;
-            SavePluginSetupState(_pluginSetupStatePath, _pluginSetupState);
-        }
-
-        if (!choice.InstallRequested)
-        {
-            return;
-        }
-
-        var ffmpegInstalled = false;
-        var ocrInstalled = false;
-
-        if (choice.InstallFfmpeg && !probe.FfmpegInstalled && probe.WingetAvailable)
-        {
-            ffmpegInstalled = await InstallWingetPackageAsync("Gyan.FFmpeg", cancellationToken);
-        }
-
-        if (choice.InstallOcr && !probe.TesseractInstalled && probe.WingetAvailable)
-        {
-            var installed = false;
-            if (probe.TesseractPrimaryPackageAvailable)
-            {
-                installed = await InstallWingetPackageAsync("UB-Mannheim.TesseractOCR", cancellationToken);
+                _pluginSetupState.Dismissed = true;
+                SavePluginSetupState(_pluginSetupStatePath, _pluginSetupState);
+                return;
             }
 
-            if (!installed && probe.TesseractFallbackPackageAvailable)
+            PluginSetupChoice? choice = null;
+            await Dispatcher.UIThread.InvokeAsync(async () =>
             {
-                installed = await InstallWingetPackageAsync("tesseract-ocr.tesseract", cancellationToken);
+                var window = new PluginSetupWindow(probeBefore);
+                choice = await ShowPluginSetupWindowAsync(window);
+            });
+
+            if (choice == null)
+            {
+                return;
             }
 
-            ocrInstalled = installed;
-            if (ocrInstalled)
+            if (choice.DontAskAgain || choice.InstallRequested)
+            {
+                _pluginSetupState.Dismissed = true;
+                SavePluginSetupState(_pluginSetupStatePath, _pluginSetupState);
+            }
+
+            if (!choice.InstallRequested)
+            {
+                return;
+            }
+
+            var ffmpegResult = WingetInstallResult.NotRequested("FFmpeg not selected.");
+            var ocrResult = WingetInstallResult.NotRequested("OCR not selected.");
+
+            if (choice.InstallFfmpeg && !probeBefore.FfmpegInstalled && probeBefore.WingetAvailable)
+            {
+                ffmpegResult = await InstallWingetPackageAsync("Gyan.FFmpeg", cancellationToken);
+            }
+
+            if (choice.InstallOcr && !probeBefore.TesseractInstalled && probeBefore.WingetAvailable)
+            {
+                if (probeBefore.TesseractPrimaryPackageAvailable)
+                {
+                    ocrResult = await InstallWingetPackageAsync("UB-Mannheim.TesseractOCR", cancellationToken);
+                }
+                else if (probeBefore.TesseractFallbackPackageAvailable)
+                {
+                    ocrResult = await InstallWingetPackageAsync("tesseract-ocr.tesseract", cancellationToken);
+                }
+                else
+                {
+                    ocrResult = WingetInstallResult.Failed("No OCR package available in winget.");
+                }
+            }
+
+            var probeAfter = ProbePluginEnvironment();
+            if (choice.InstallOcr && probeAfter.TesseractInstalled)
             {
                 await EnableOcrIfDisabledAsync(cancellationToken);
             }
-        }
 
-        await Dispatcher.UIThread.InvokeAsync(async () =>
-        {
-            var summary = BuildPluginInstallSummary(choice, ffmpegInstalled, ocrInstalled);
-            await PluginSetupWindow.ShowResultAsync(summary, ResolveDialogOwner());
-        });
+            var hasFailures = (choice.InstallFfmpeg && !probeAfter.FfmpegInstalled)
+                || (choice.InstallOcr && !probeAfter.TesseractInstalled);
+
+            var retry = false;
+            await Dispatcher.UIThread.InvokeAsync(async () =>
+            {
+                var summary = BuildPluginInstallSummary(choice, probeBefore, probeAfter, ffmpegResult, ocrResult);
+                retry = await PluginSetupWindow.ShowResultAsync(summary, ResolveDialogOwner(), hasFailures);
+            });
+
+            if (!retry)
+            {
+                return;
+            }
+
+            force = true;
+        }
     }
 
-    private async Task<bool> InstallWingetPackageAsync(string packageId, CancellationToken cancellationToken)
+    private async Task<PluginSetupChoice?> ShowPluginSetupWindowAsync(PluginSetupWindow window)
+    {
+        var owner = ResolveDialogOwner();
+        if (owner != null && owner.IsVisible)
+        {
+            await window.ShowDialog(owner);
+            return window.ResultChoice;
+        }
+
+        var tcs = new TaskCompletionSource<object?>();
+        void ClosedHandler(object? sender, EventArgs args) => tcs.TrySetResult(null);
+        window.Closed += ClosedHandler;
+        window.Show();
+        await tcs.Task;
+        window.Closed -= ClosedHandler;
+        return window.ResultChoice;
+    }
+
+    private async Task<WingetInstallResult> InstallWingetPackageAsync(string packageId, CancellationToken cancellationToken)
     {
         try
         {
@@ -634,12 +662,30 @@ public partial class App : Application
             };
 
             process.Start();
-            await process.WaitForExitAsync(cancellationToken);
-            return process.ExitCode == 0;
+            var timeout = TimeSpan.FromSeconds(Math.Clamp(_settings.PluginInstallTimeoutSeconds, 30, 1800));
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            var waitTask = process.WaitForExitAsync(timeoutCts.Token);
+            var delayTask = Task.Delay(timeout, cancellationToken);
+            var completed = await Task.WhenAny(waitTask, delayTask);
+
+            if (completed == delayTask)
+            {
+                TryStopManagedProcess(process);
+                return WingetInstallResult.Timeout(packageId, timeout);
+            }
+
+            await waitTask;
+            return process.ExitCode == 0
+                ? WingetInstallResult.Succeeded(packageId)
+                : WingetInstallResult.Failed($"winget exit code {process.ExitCode} for {packageId}");
+        }
+        catch (OperationCanceledException)
+        {
+            return WingetInstallResult.Failed($"Installation canceled for {packageId}");
         }
         catch
         {
-            return false;
+            return WingetInstallResult.Failed($"Failed to install {packageId}");
         }
     }
 
@@ -760,22 +806,28 @@ public partial class App : Application
         }
     }
 
-    private static string BuildPluginInstallSummary(PluginSetupChoice choice, bool ffmpegInstalled, bool ocrInstalled)
+    private static string BuildPluginInstallSummary(
+        PluginSetupChoice choice,
+        PluginSetupProbe before,
+        PluginSetupProbe after,
+        WingetInstallResult ffmpegResult,
+        WingetInstallResult ocrResult)
     {
         var lines = new List<string>();
 
+        lines.Add("Environment check:");
+        lines.Add($"- winget: {(before.WingetAvailable ? "available" : "missing")}");
+        lines.Add($"- FFmpeg: {(before.FfmpegInstalled ? "already installed" : "missing")} -> {(after.FfmpegInstalled ? "installed" : "missing")}");
+        lines.Add($"- OCR/Tesseract: {(before.TesseractInstalled ? "already installed" : "missing")} -> {(after.TesseractInstalled ? "installed" : "missing")}");
+
         if (choice.InstallFfmpeg)
         {
-            lines.Add(ffmpegInstalled
-                ? "FFmpeg plugin installed successfully."
-                : "FFmpeg plugin install failed (you can retry from tray menu).");
+            lines.Add($"FFmpeg install: {ffmpegResult.Message}");
         }
 
         if (choice.InstallOcr)
         {
-            lines.Add(ocrInstalled
-                ? "OCR plugin installed and OCR enabled."
-                : "OCR plugin install failed (you can retry from tray menu).");
+            lines.Add($"OCR install: {ocrResult.Message}");
         }
 
         if (lines.Count == 0)
@@ -783,14 +835,27 @@ public partial class App : Application
             lines.Add("No plugin selected.");
         }
 
+        if ((choice.InstallFfmpeg && !after.FfmpegInstalled) || (choice.InstallOcr && !after.TesseractInstalled))
+        {
+            lines.Add("Some tools are still missing. Click Retry to try again.");
+        }
+
         return string.Join(Environment.NewLine, lines);
     }
 
-    private static Window? ResolveDialogOwner()
+    private Window? ResolveDialogOwner()
     {
+        if (_quickChatWindow != null && _quickChatWindow.IsVisible)
+        {
+            return _quickChatWindow;
+        }
+
         if (Current?.ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
-            return desktop.MainWindow;
+            if (desktop.MainWindow != null && desktop.MainWindow.IsVisible)
+            {
+                return desktop.MainWindow;
+            }
         }
 
         return null;
@@ -846,7 +911,16 @@ public partial class App : Application
         {
             if (_quickChatWindow == null)
             {
-                _quickChatWindow = new QuickChatWindow(_webApiClient, () => RunPluginWizardIfNeededAsync(force: true, _shutdown.Token));
+                _quickChatWindow = new QuickChatWindow(
+                    _webApiClient,
+                    () => RunPluginWizardIfNeededAsync(force: true, _shutdown.Token),
+                    () => CheckForUpdatesAsync(manual: true, _shutdown.Token),
+                    ApplyPendingUpdate,
+                    GetUpdateStatusLine,
+                    GetChatUpdateBadge,
+                    GetChatUpdateDetails,
+                    LoadTimelineSession,
+                    SaveTimelineSession);
                 _quickChatWindow.Closed += (_, _) => _quickChatWindow = null;
             }
 
@@ -950,6 +1024,90 @@ public partial class App : Application
         }
 
         return value[..max] + "...";
+    }
+
+    private string GetUpdateStatusLine()
+    {
+        var pending = _pendingUpdate?.Version.ToString() ?? "none";
+        return $"Updates: {_updateStatus} | Pending: {pending}";
+    }
+
+    private ChatUpdateBadge GetChatUpdateBadge()
+    {
+        if (_pendingUpdate != null)
+        {
+            return new ChatUpdateBadge(true, true, $"Update available: v{_pendingUpdate.Version}");
+        }
+
+        if (_updatesEnabled && _updateStatus.StartsWith("downloading", StringComparison.OrdinalIgnoreCase))
+        {
+            return new ChatUpdateBadge(true, false, "Downloading update...");
+        }
+
+        if (_updatesEnabled && _updateStatus.StartsWith("checking", StringComparison.OrdinalIgnoreCase))
+        {
+            return new ChatUpdateBadge(true, false, "Checking for updates...");
+        }
+
+        return new ChatUpdateBadge(false, false, string.Empty);
+    }
+
+    private ChatUpdateDetails GetChatUpdateDetails()
+    {
+        if (_pendingUpdate != null)
+        {
+            var notes = TryReadStringProperty(_pendingUpdate, "ReleaseNotes", "Notes", "Description", "Summary");
+            var details = string.IsNullOrWhiteSpace(notes)
+                ? $"A downloaded update is ready to apply.{Environment.NewLine}Version: v{_pendingUpdate.Version}{Environment.NewLine}Source: {_settings.AutoUpdateSource}"
+                : $"Version: v{_pendingUpdate.Version}{Environment.NewLine}{Environment.NewLine}{notes}";
+
+            return new ChatUpdateDetails(
+                HasUpdate: true,
+                Title: $"Update v{_pendingUpdate.Version}",
+                Details: details,
+                CanApply: true);
+        }
+
+        return new ChatUpdateDetails(
+            HasUpdate: false,
+            Title: "Updates",
+            Details: $"{_updateStatus}{Environment.NewLine}Source: {_settings.AutoUpdateSource}",
+            CanApply: false);
+    }
+
+    private static string? TryReadStringProperty(object source, params string[] names)
+    {
+        var type = source.GetType();
+        foreach (var name in names)
+        {
+            var property = type.GetProperty(name);
+            var value = property?.GetValue(source) as string;
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return value.Trim();
+            }
+        }
+
+        return null;
+    }
+
+    private IReadOnlyList<string> LoadTimelineSession()
+    {
+        lock (_timelineSync)
+        {
+            return _timelineSession.ToList();
+        }
+    }
+
+    private void SaveTimelineSession(IReadOnlyList<string> lines)
+    {
+        lock (_timelineSync)
+        {
+            _timelineSession = lines
+                .Where(line => !string.IsNullOrWhiteSpace(line))
+                .TakeLast(140)
+                .ToList();
+        }
     }
 
     private void EnsureBackendProcesses()
@@ -1203,9 +1361,18 @@ internal sealed class TraySettings
     public bool AutoStartAdapter { get; set; } = true;
     public string AdapterStartCommand { get; set; } = "";
     public bool ShowPluginWizardOnFirstRun { get; set; } = true;
+    public int PluginInstallTimeoutSeconds { get; set; } = 420;
 }
 
 internal sealed class PluginSetupState
 {
     public bool Dismissed { get; set; }
+}
+
+internal sealed record WingetInstallResult(bool Success, bool TimedOut, string Message)
+{
+    public static WingetInstallResult NotRequested(string message) => new(false, false, message);
+    public static WingetInstallResult Succeeded(string packageId) => new(true, false, $"Installed {packageId} successfully.");
+    public static WingetInstallResult Failed(string message) => new(false, false, message);
+    public static WingetInstallResult Timeout(string packageId, TimeSpan timeout) => new(false, true, $"Timed out after {(int)timeout.TotalSeconds}s while installing {packageId}.");
 }

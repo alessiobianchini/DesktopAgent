@@ -25,6 +25,7 @@ internal sealed class PluginSetupWindow : Window
     private readonly CheckBox _ffmpeg;
     private readonly CheckBox _ocr;
     private readonly CheckBox _dontAskAgain;
+    public PluginSetupChoice? ResultChoice { get; private set; }
 
     public PluginSetupWindow(PluginSetupProbe probe)
     {
@@ -121,7 +122,11 @@ internal sealed class PluginSetupWindow : Window
             Content = "Skip",
             MinWidth = 90
         };
-        skip.Click += (_, _) => Close(new PluginSetupChoice(false, false, false, _dontAskAgain.IsChecked == true));
+        skip.Click += (_, _) =>
+        {
+            ResultChoice = new PluginSetupChoice(false, false, false, _dontAskAgain.IsChecked == true);
+            Close();
+        };
         buttonPanel.Children.Add(skip);
 
         var install = new Button
@@ -130,11 +135,15 @@ internal sealed class PluginSetupWindow : Window
             MinWidth = 130,
             IsEnabled = probe.WingetAvailable
         };
-        install.Click += (_, _) => Close(new PluginSetupChoice(
-            true,
-            _ffmpeg.IsEnabled && _ffmpeg.IsChecked == true,
-            _ocr.IsEnabled && _ocr.IsChecked == true,
-            true));
+        install.Click += (_, _) =>
+        {
+            ResultChoice = new PluginSetupChoice(
+                true,
+                _ffmpeg.IsEnabled && _ffmpeg.IsChecked == true,
+                _ocr.IsEnabled && _ocr.IsChecked == true,
+                true);
+            Close();
+        };
         buttonPanel.Children.Add(install);
 
         Grid.SetRow(buttonPanel, 4);
@@ -143,8 +152,9 @@ internal sealed class PluginSetupWindow : Window
         Content = root;
     }
 
-    public static async Task ShowResultAsync(string message, Window? owner)
+    public static async Task<bool> ShowResultAsync(string message, Window? owner, bool allowRetry)
     {
+        var retry = false;
         var window = new Window
         {
             Title = "Plugin Setup Result",
@@ -172,19 +182,51 @@ internal sealed class PluginSetupWindow : Window
         };
         ok.Click += (_, _) => window.Close();
 
+        var actions = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Spacing = 8,
+            Margin = new Thickness(0, 8, 16, 16)
+        };
+
+        if (allowRetry)
+        {
+            var retryButton = new Button
+            {
+                Content = "Retry",
+                MinWidth = 90
+            };
+            retryButton.Click += (_, _) =>
+            {
+                retry = true;
+                window.Close();
+            };
+            actions.Children.Add(retryButton);
+        }
+
+        actions.Children.Add(ok);
+
         var panel = new Grid { RowDefinitions = new RowDefinitions("*,Auto") };
         panel.Children.Add(text);
-        Grid.SetRow(ok, 1);
-        panel.Children.Add(ok);
+        Grid.SetRow(actions, 1);
+        panel.Children.Add(actions);
         window.Content = panel;
 
-        if (owner != null)
+        if (owner != null && owner.IsVisible)
         {
             await window.ShowDialog(owner);
         }
         else
         {
+            var tcs = new TaskCompletionSource<object?>();
+            void ClosedHandler(object? sender, EventArgs args) => tcs.TrySetResult(null);
+            window.Closed += ClosedHandler;
             window.Show();
+            await tcs.Task;
+            window.Closed -= ClosedHandler;
         }
+
+        return retry;
     }
 }

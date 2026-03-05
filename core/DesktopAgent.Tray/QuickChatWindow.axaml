@@ -46,9 +46,54 @@
     </Border>
 
     <TabControl Grid.Row="2" x:Name="MainTabs">
-      <TabItem Header="Chat">
-        <Grid RowDefinitions="*,Auto,Auto,Auto,Auto,Auto" Margin="2">
+      <TabItem x:Name="ChatTab">
+        <TabItem.Header>
+          <StackPanel Orientation="Horizontal" Spacing="6">
+            <TextBlock Text="Chat" />
+            <Border x:Name="ChatTabBadgePanel"
+                    IsVisible="False"
+                    Background="#2C4F8A"
+                    CornerRadius="10"
+                    Padding="6,1"
+                    MinWidth="20">
+              <TextBlock x:Name="ChatTabBadgeText"
+                         Text="0"
+                         HorizontalAlignment="Center"
+                         FontSize="11"
+                         FontWeight="SemiBold" />
+            </Border>
+          </StackPanel>
+        </TabItem.Header>
+        <Grid RowDefinitions="Auto,Auto,*,Auto,Auto,Auto,Auto,Auto" Margin="2">
+          <Border x:Name="ChatUpdateBadgePanel"
+                  Grid.Row="0"
+                  Margin="0,0,0,10"
+                  Padding="8"
+                  CornerRadius="6"
+                  Background="#1B2A14"
+                  BorderBrush="#446B35"
+                  BorderThickness="1"
+                  IsVisible="False">
+            <Grid ColumnDefinitions="*,Auto,Auto">
+              <TextBlock x:Name="ChatUpdateBadgeText" Text="Update available" VerticalAlignment="Center" />
+              <Button x:Name="ChatUpdateDetailsButton" Grid.Column="1" Content="Details" MinWidth="88" Margin="10,0,0,0" />
+              <Button x:Name="ChatApplyUpdateButton" Grid.Column="2" Content="Apply now" MinWidth="96" Margin="10,0,0,0" />
+            </Grid>
+          </Border>
+
+          <Border x:Name="HealthPanel"
+                  Grid.Row="1"
+                  Margin="0,0,0,10"
+                  Padding="8"
+                  CornerRadius="6"
+                  Background="#111A2A"
+                  BorderBrush="#2A3950"
+                  BorderThickness="1">
+            <TextBlock x:Name="HealthText" Text="Health: loading..." />
+          </Border>
+
           <Border BorderBrush="#2A3950"
+                  Grid.Row="2"
                   BorderThickness="1"
                   CornerRadius="8"
                   Background="#0F1520"
@@ -67,17 +112,28 @@
                      FontSize="13" />
           </Border>
 
-          <Border Grid.Row="1"
+          <Border Grid.Row="3"
                   Margin="0,10,0,10"
                   BorderBrush="#2A3950"
                   BorderThickness="1"
                   CornerRadius="8"
                   Background="#0F1520"
                   Padding="8">
-            <Grid RowDefinitions="Auto,*">
+            <Grid RowDefinitions="Auto,Auto,*">
               <TextBlock Text="Execution timeline" Opacity="0.85" />
+              <Grid Grid.Row="1" Margin="0,6,0,6" ColumnDefinitions="180,*">
+                <ComboBox x:Name="TimelineFilterCombo" SelectedIndex="0">
+                  <ComboBoxItem Content="All" />
+                  <ComboBoxItem Content="Success" />
+                  <ComboBoxItem Content="Failed" />
+                </ComboBox>
+                <TextBox x:Name="TimelineSearchBox"
+                         Grid.Column="1"
+                         Margin="8,0,0,0"
+                         Watermark="Search timeline..." />
+              </Grid>
               <ListBox x:Name="TimelineList"
-                       Grid.Row="1"
+                       Grid.Row="2"
                        Margin="0,6,0,0"
                        MinHeight="70"
                        MaxHeight="130" />
@@ -85,7 +141,7 @@
           </Border>
 
           <StackPanel x:Name="ConfirmPanel"
-                      Grid.Row="2"
+                      Grid.Row="4"
                       Orientation="Horizontal"
                       Spacing="8"
                       Margin="0,10,0,10"
@@ -96,7 +152,7 @@
           </StackPanel>
 
           <Border x:Name="BusyPanel"
-                  Grid.Row="3"
+                  Grid.Row="5"
                   Margin="0,0,0,10"
                   Padding="8"
                   IsVisible="False"
@@ -107,17 +163,18 @@
             <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
               <ProgressBar Width="110" Height="6" IsIndeterminate="True" />
               <TextBlock x:Name="BusyText" Text="Waiting for agent response..." VerticalAlignment="Center" />
+              <Button x:Name="CancelRequestButton" Content="Cancel" MinWidth="80" />
             </StackPanel>
           </Border>
 
           <ListBox x:Name="CommandPaletteList"
-                   Grid.Row="4"
+                   Grid.Row="6"
                    Margin="0,0,0,10"
                    MinHeight="40"
                    MaxHeight="120"
                    IsVisible="False" />
 
-          <Grid Grid.Row="5" ColumnDefinitions="*,Auto,Auto">
+          <Grid Grid.Row="7" ColumnDefinitions="*,Auto,Auto">
             <TextBox x:Name="InputBox"
                      Watermark="Write command in natural language..."
                      TextWrapping="Wrap"
@@ -134,7 +191,7 @@
       </TabItem>
 
       <TabItem Header="Config">
-        <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,*" ColumnDefinitions="220,*" Margin="8">
+        <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,*" ColumnDefinitions="220,*" Margin="8">
           <TextBlock Text="LLM Enabled" />
           <CheckBox x:Name="CfgLlmEnabled" Grid.Column="1" />
 
@@ -167,8 +224,14 @@
             <Button x:Name="CfgRunFirstSetupButton" Content="Run First Setup" MinWidth="130" />
           </StackPanel>
 
+          <StackPanel Grid.Row="8" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="8" Margin="0,10,0,0">
+            <Button x:Name="CfgCheckUpdatesButton" Content="Check Updates Now" MinWidth="140" />
+            <Button x:Name="CfgApplyUpdateButton" Content="Apply Downloaded Update" MinWidth="180" />
+            <TextBlock x:Name="CfgUpdateStatusText" VerticalAlignment="Center" />
+          </StackPanel>
+
           <TextBox x:Name="CfgStatusBox"
-                   Grid.Row="8"
+                   Grid.Row="9"
                    Grid.ColumnSpan="2"
                    Margin="0,12,0,0"
                    IsReadOnly="True"
