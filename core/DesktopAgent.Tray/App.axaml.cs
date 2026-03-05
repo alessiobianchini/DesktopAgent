@@ -484,12 +484,16 @@ public partial class App : Application
 
         try
         {
+            var installRoot = TryResolveInstallRoot();
+            var killed = installRoot == null ? Array.Empty<string>() : TryTerminateProcessesInInstallRoot(installRoot);
             _ = WriteUpdateAuditAsync("update_apply_requested", "Applying downloaded update", new
             {
                 version = _pendingUpdate.Version.ToString(),
                 file = _pendingUpdate.FileName,
                 currentExe = Environment.ProcessPath,
-                adapterPid = _managedAdapterProcess?.Id
+                adapterPid = _managedAdapterProcess?.Id,
+                installRoot,
+                killed
             });
 
             // Ensure sidecar processes don't keep files locked in the current app folder.
@@ -497,6 +501,7 @@ public partial class App : Application
             _managedAdapterProcess = null;
 
             _shutdown.Cancel();
+            Thread.Sleep(700);
             _updateManager.ApplyUpdatesAndRestart(_pendingUpdate);
         }
         catch (Exception ex)
@@ -1246,6 +1251,85 @@ public partial class App : Application
         {
             // ignored
         }
+    }
+
+    private static string? TryResolveInstallRoot()
+    {
+        try
+        {
+            var exe = Environment.ProcessPath;
+            if (string.IsNullOrWhiteSpace(exe))
+            {
+                return null;
+            }
+
+            var currentDir = Path.GetDirectoryName(exe);
+            if (string.IsNullOrWhiteSpace(currentDir))
+            {
+                return null;
+            }
+
+            return Directory.GetParent(currentDir)?.FullName;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static IReadOnlyList<string> TryTerminateProcessesInInstallRoot(string installRoot)
+    {
+        var killed = new List<string>();
+        var currentPid = Environment.ProcessId;
+        foreach (var process in Process.GetProcesses())
+        {
+            try
+            {
+                if (process.Id == currentPid)
+                {
+                    continue;
+                }
+
+                string? path;
+                try
+                {
+                    path = process.MainModule?.FileName;
+                }
+                catch
+                {
+                    continue;
+                }
+
+                if (string.IsNullOrWhiteSpace(path))
+                {
+                    continue;
+                }
+
+                if (!path.StartsWith(installRoot, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (string.Equals(Path.GetFileName(path), "Update.exe", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                process.Kill(entireProcessTree: true);
+                process.WaitForExit(4000);
+                killed.Add($"{process.ProcessName}:{process.Id}");
+            }
+            catch
+            {
+                // best effort
+            }
+            finally
+            {
+                process.Dispose();
+            }
+        }
+
+        return killed;
     }
 
     private static bool IsTcpPortOpen(string endpoint)
