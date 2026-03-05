@@ -72,9 +72,15 @@ Installer behavior:
 - Offers optional plugin-style install tasks:
   - **FFmpeg plugin** for screen recording.
   - **OCR plugin (Tesseract)** for vision fallback.
+- Installer now shows a dedicated **Optional Plugins** wizard page with descriptions and status (already installed / unavailable).
 - FFmpeg task uses `winget install -e --id Gyan.FFmpeg`.
 - OCR task tries `UB-Mannheim.TesseractOCR` and falls back to `tesseract-ocr.tesseract`.
 - Post-install, if tools are still missing, installer shows actionable manual install hints.
+
+Silent install plugin flags:
+```
+DesktopAgent-Setup-<version>.exe /VERYSILENT /installffmpeg=1 /installocr=1
+```
 
 Output:
 - `dist/installer/DesktopAgent-Setup-0.1.0.exe`
@@ -143,6 +149,7 @@ Notes:
   - tool detection for `ffmpeg` and `tesseract`
   - install buttons (Windows uses `winget`)
   - `Install OCR + Enable` / `Enable OCR only`
+- Tray app includes a first-run **Optional Plugins** wizard (can be reopened from tray menu: `Install Optional Plugins...`).
 
 Build a Windows Velopack package locally:
 ```powershell

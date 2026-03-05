@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
@@ -22,6 +23,8 @@ public partial class App : Application
     private DesktopGrpcClient? _client;
     private WebApiClient? _webApiClient;
     private QuickChatWindow? _quickChatWindow;
+    private PluginSetupState _pluginSetupState = new();
+    private string _pluginSetupStatePath = string.Empty;
 
     private TrayIcon? _trayIcon;
     private TrayIcons? _trayIcons;
@@ -38,6 +41,7 @@ public partial class App : Application
     private NativeMenuItem? _profilePowerItem;
     private NativeMenuItem? _refreshItem;
     private NativeMenuItem? _openQuickChatItem;
+    private NativeMenuItem? _pluginsSetupItem;
     private NativeMenuItem? _openWebUiItem;
     private NativeMenuItem? _updateStatusItem;
     private NativeMenuItem? _checkUpdatesItem;
@@ -61,6 +65,8 @@ public partial class App : Application
     public override void OnFrameworkInitializationCompleted()
     {
         _settings = LoadSettings();
+        _pluginSetupStatePath = ResolvePluginSetupStatePath();
+        _pluginSetupState = LoadPluginSetupState(_pluginSetupStatePath);
         EnsureBackendProcesses();
         _loggerFactory = LoggerFactory.Create(logging =>
         {
@@ -86,6 +92,7 @@ public partial class App : Application
         }
 
         _pollingTask = Task.Run(() => PollStatusAsync(_shutdown.Token));
+        _ = Task.Run(() => RunPluginWizardIfNeededAsync(force: false, _shutdown.Token));
 
         base.OnFrameworkInitializationCompleted();
     }
@@ -148,6 +155,9 @@ public partial class App : Application
         _openQuickChatItem = new NativeMenuItem("Open Quick Chat");
         _openQuickChatItem.Click += (_, _) => ShowQuickChat();
 
+        _pluginsSetupItem = new NativeMenuItem("Install Optional Plugins...");
+        _pluginsSetupItem.Click += async (_, _) => await RunPluginWizardIfNeededAsync(force: true, _shutdown.Token);
+
         _openWebUiItem = new NativeMenuItem("Open Data Folder");
         _openWebUiItem.Click += (_, _) => OpenWebUi();
 
@@ -191,6 +201,7 @@ public partial class App : Application
         menu.Add(_profilePowerItem);
         menu.Add(new NativeMenuItemSeparator());
         menu.Add(_openQuickChatItem);
+        menu.Add(_pluginsSetupItem);
         menu.Add(_openWebUiItem);
         menu.Add(new NativeMenuItemSeparator());
         menu.Add(_exitItem);
@@ -512,6 +523,315 @@ public partial class App : Application
         catch
         {
             // Ignore shell launch errors.
+        }
+    }
+
+    private async Task RunPluginWizardIfNeededAsync(bool force, CancellationToken cancellationToken)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        if (!_settings.ShowPluginWizardOnFirstRun && !force)
+        {
+            return;
+        }
+
+        if (!force && _pluginSetupState.Dismissed)
+        {
+            return;
+        }
+
+        var probe = ProbePluginEnvironment();
+        if (!force && !probe.HasMissingTools)
+        {
+            _pluginSetupState.Dismissed = true;
+            SavePluginSetupState(_pluginSetupStatePath, _pluginSetupState);
+            return;
+        }
+
+        PluginSetupChoice? choice = null;
+        await Dispatcher.UIThread.InvokeAsync(async () =>
+        {
+            var window = new PluginSetupWindow(probe);
+            var owner = ResolveDialogOwner();
+            if (owner != null)
+            {
+                choice = await window.ShowDialog<PluginSetupChoice?>(owner);
+            }
+            else
+            {
+                window.Show();
+            }
+        });
+
+        if (choice == null)
+        {
+            return;
+        }
+
+        if (choice.DontAskAgain || choice.InstallRequested)
+        {
+            _pluginSetupState.Dismissed = true;
+            SavePluginSetupState(_pluginSetupStatePath, _pluginSetupState);
+        }
+
+        if (!choice.InstallRequested)
+        {
+            return;
+        }
+
+        var ffmpegInstalled = false;
+        var ocrInstalled = false;
+
+        if (choice.InstallFfmpeg && !probe.FfmpegInstalled && probe.WingetAvailable)
+        {
+            ffmpegInstalled = await InstallWingetPackageAsync("Gyan.FFmpeg", cancellationToken);
+        }
+
+        if (choice.InstallOcr && !probe.TesseractInstalled && probe.WingetAvailable)
+        {
+            var installed = false;
+            if (probe.TesseractPrimaryPackageAvailable)
+            {
+                installed = await InstallWingetPackageAsync("UB-Mannheim.TesseractOCR", cancellationToken);
+            }
+
+            if (!installed && probe.TesseractFallbackPackageAvailable)
+            {
+                installed = await InstallWingetPackageAsync("tesseract-ocr.tesseract", cancellationToken);
+            }
+
+            ocrInstalled = installed;
+            if (ocrInstalled)
+            {
+                await EnableOcrIfDisabledAsync(cancellationToken);
+            }
+        }
+
+        await Dispatcher.UIThread.InvokeAsync(async () =>
+        {
+            var summary = BuildPluginInstallSummary(choice, ffmpegInstalled, ocrInstalled);
+            await PluginSetupWindow.ShowResultAsync(summary, ResolveDialogOwner());
+        });
+    }
+
+    private async Task<bool> InstallWingetPackageAsync(string packageId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var process = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = "cmd",
+                    Arguments = $"/C winget install -e --id {packageId} --accept-package-agreements --accept-source-agreements",
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    WindowStyle = ProcessWindowStyle.Hidden
+                }
+            };
+
+            process.Start();
+            await process.WaitForExitAsync(cancellationToken);
+            return process.ExitCode == 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private async Task EnableOcrIfDisabledAsync(CancellationToken cancellationToken)
+    {
+        if (_webApiClient == null)
+        {
+            return;
+        }
+
+        try
+        {
+            var config = await _webApiClient.GetConfigAsync(cancellationToken);
+            if (config?.OcrEnabled == false)
+            {
+                await _webApiClient.SaveConfigAsync(new WebConfigUpdate(
+                    Llm: null,
+                    ProfileModeEnabled: null,
+                    ActiveProfile: null,
+                    RequireConfirmation: null,
+                    MaxActionsPerSecond: null,
+                    QuizSafeModeEnabled: null,
+                    OcrEnabled: true,
+                    AdapterRestartCommand: null,
+                    AdapterRestartWorkingDir: null,
+                    FindRetryCount: null,
+                    FindRetryDelayMs: null,
+                    PostCheckTimeoutMs: null,
+                    PostCheckPollMs: null,
+                    ClipboardHistoryMaxItems: null,
+                    FilesystemAllowedRoots: null,
+                    AllowedApps: null,
+                    AppAliases: null,
+                    AuditLlmInteractions: null,
+                    AuditLlmIncludeRawText: null), cancellationToken);
+            }
+        }
+        catch
+        {
+            // Best effort.
+        }
+    }
+
+    private static PluginSetupProbe ProbePluginEnvironment()
+    {
+        var winget = CommandExists("winget");
+        var ffmpeg = CommandExists("ffmpeg");
+        var tesseract = CommandExists("tesseract");
+
+        var primary = false;
+        var fallback = false;
+        if (winget && !tesseract)
+        {
+            primary = WingetPackageExists("UB-Mannheim.TesseractOCR");
+            if (!primary)
+            {
+                fallback = WingetPackageExists("tesseract-ocr.tesseract");
+            }
+        }
+
+        return new PluginSetupProbe(
+            winget,
+            ffmpeg,
+            tesseract,
+            primary,
+            fallback);
+    }
+
+    private static bool CommandExists(string command)
+    {
+        try
+        {
+            using var process = Process.Start(new ProcessStartInfo
+            {
+                FileName = "cmd",
+                Arguments = $"/C where {command}",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WindowStyle = ProcessWindowStyle.Hidden
+            });
+            if (process == null)
+            {
+                return false;
+            }
+
+            process.WaitForExit(3000);
+            return process.HasExited && process.ExitCode == 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool WingetPackageExists(string packageId)
+    {
+        try
+        {
+            using var process = Process.Start(new ProcessStartInfo
+            {
+                FileName = "cmd",
+                Arguments = $"/C winget show -e --id {packageId}",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WindowStyle = ProcessWindowStyle.Hidden
+            });
+            if (process == null)
+            {
+                return false;
+            }
+
+            process.WaitForExit(8000);
+            return process.HasExited && process.ExitCode == 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string BuildPluginInstallSummary(PluginSetupChoice choice, bool ffmpegInstalled, bool ocrInstalled)
+    {
+        var lines = new List<string>();
+
+        if (choice.InstallFfmpeg)
+        {
+            lines.Add(ffmpegInstalled
+                ? "FFmpeg plugin installed successfully."
+                : "FFmpeg plugin install failed (you can retry from tray menu).");
+        }
+
+        if (choice.InstallOcr)
+        {
+            lines.Add(ocrInstalled
+                ? "OCR plugin installed and OCR enabled."
+                : "OCR plugin install failed (you can retry from tray menu).");
+        }
+
+        if (lines.Count == 0)
+        {
+            lines.Add("No plugin selected.");
+        }
+
+        return string.Join(Environment.NewLine, lines);
+    }
+
+    private static Window? ResolveDialogOwner()
+    {
+        if (Current?.ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
+        {
+            return desktop.MainWindow;
+        }
+
+        return null;
+    }
+
+    private static string ResolvePluginSetupStatePath()
+    {
+        var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DesktopAgent");
+        Directory.CreateDirectory(root);
+        return Path.Combine(root, "tray-plugin-state.json");
+    }
+
+    private static PluginSetupState LoadPluginSetupState(string path)
+    {
+        try
+        {
+            if (!File.Exists(path))
+            {
+                return new PluginSetupState();
+            }
+
+            var json = File.ReadAllText(path);
+            var state = JsonSerializer.Deserialize<PluginSetupState>(json);
+            return state ?? new PluginSetupState();
+        }
+        catch
+        {
+            return new PluginSetupState();
+        }
+    }
+
+    private static void SavePluginSetupState(string path, PluginSetupState state)
+    {
+        try
+        {
+            var json = JsonSerializer.Serialize(state, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(path, json);
+        }
+        catch
+        {
+            // Best effort.
         }
     }
 
@@ -882,4 +1202,10 @@ internal sealed class TraySettings
     public bool AutoUpdateAutoApply { get; set; } = false;
     public bool AutoStartAdapter { get; set; } = true;
     public string AdapterStartCommand { get; set; } = "";
+    public bool ShowPluginWizardOnFirstRun { get; set; } = true;
+}
+
+internal sealed class PluginSetupState
+{
+    public bool Dismissed { get; set; }
 }
