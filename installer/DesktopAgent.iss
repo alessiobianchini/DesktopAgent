@@ -37,7 +37,8 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional icons:"
 Name: "startonfinish"; Description: "Start DesktopAgent after setup"; GroupDescription: "Post-install:"
-Name: "installffmpeg"; Description: "Install FFmpeg (required for screen recording)"; GroupDescription: "Optional components:"; Check: IsWingetAvailable
+Name: "plugin_ffmpeg"; Description: "FFmpeg plugin (screen recording)"; GroupDescription: "Optional plugins:"; Check: CanOfferFfmpegInstall
+Name: "plugin_ocr"; Description: "OCR plugin - Tesseract (vision fallback)"; GroupDescription: "Optional plugins:"; Check: CanOfferOcrInstall
 
 [Files]
 Source: "{#DistDir}\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
@@ -50,7 +51,9 @@ Name: "{autodesktop}\DesktopAgent"; Filename: "{app}\tray\DesktopAgent.Tray.exe"
 
 [Run]
 Filename: "{app}\tray\DesktopAgent.Tray.exe"; Description: "Start DesktopAgent"; Flags: postinstall nowait skipifsilent; Tasks: startonfinish
-Filename: "{cmd}"; Parameters: "/C winget install -e --id Gyan.FFmpeg --accept-package-agreements --accept-source-agreements"; Flags: runhidden waituntilterminated skipifsilent; Tasks: installffmpeg
+Filename: "{cmd}"; Parameters: "/C winget install -e --id Gyan.FFmpeg --accept-package-agreements --accept-source-agreements"; Flags: runhidden waituntilterminated skipifsilent; Tasks: plugin_ffmpeg
+Filename: "{cmd}"; Parameters: "/C winget install -e --id UB-Mannheim.TesseractOCR --accept-package-agreements --accept-source-agreements"; Flags: runhidden waituntilterminated skipifsilent; Tasks: plugin_ocr; Check: IsTesseractPackagePrimaryAvailable
+Filename: "{cmd}"; Parameters: "/C winget install -e --id tesseract-ocr.tesseract --accept-package-agreements --accept-source-agreements"; Flags: runhidden waituntilterminated skipifsilent; Tasks: plugin_ocr; Check: IsTesseractPackageFallbackAvailable
 
 [UninstallRun]
 Filename: "{app}\stop-desktopagent.cmd"; Flags: runhidden
@@ -80,6 +83,47 @@ begin
   Result := CommandExists('ffmpeg');
 end;
 
+function IsTesseractAvailable: Boolean;
+begin
+  Result := CommandExists('tesseract');
+end;
+
+function CanOfferFfmpegInstall: Boolean;
+begin
+  Result := IsWingetAvailable and (not IsFFmpegAvailable);
+end;
+
+function CanOfferOcrInstall: Boolean;
+begin
+  Result := IsWingetAvailable and (not IsTesseractAvailable);
+end;
+
+function WingetPackageExists(const PackageId: string): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result :=
+    Exec(ExpandConstant('{cmd}'),
+         '/C winget show -e --id ' + PackageId,
+         '',
+         SW_HIDE,
+         ewWaitUntilTerminated,
+         ResultCode)
+    and (ResultCode = 0);
+end;
+
+function IsTesseractPackagePrimaryAvailable: Boolean;
+begin
+  Result := CanOfferOcrInstall and WingetPackageExists('UB-Mannheim.TesseractOCR');
+end;
+
+function IsTesseractPackageFallbackAvailable: Boolean;
+begin
+  Result := CanOfferOcrInstall
+    and (not WingetPackageExists('UB-Mannheim.TesseractOCR'))
+    and WingetPackageExists('tesseract-ocr.tesseract');
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
@@ -91,6 +135,18 @@ begin
         'Install manually with:'#13#10 +
         '  winget install -e --id Gyan.FFmpeg' #13#10#13#10 +
         'Then restart DesktopAgent.',
+        mbInformation,
+        MB_OK);
+    end;
+
+    if not IsTesseractAvailable then
+    begin
+      MsgBox(
+        'Tesseract OCR was not detected. Vision OCR fallback requires Tesseract.'#13#10#13#10 +
+        'Install manually with one of:'#13#10 +
+        '  winget install -e --id UB-Mannheim.TesseractOCR'#13#10 +
+        '  winget install -e --id tesseract-ocr.tesseract'#13#10#13#10 +
+        'Then enable OCR in DesktopAgent Configuration and restart.',
         mbInformation,
         MB_OK);
     end;

@@ -69,9 +69,12 @@ powershell -ExecutionPolicy Bypass -File scripts/build-installer.ps1 -Version 0.
 ```
 
 Installer behavior:
-- Checks whether `ffmpeg` is available on PATH after install.
-- Shows an informational message if missing.
-- Includes optional task **Install FFmpeg** (uses `winget install -e --id Gyan.FFmpeg`).
+- Offers optional plugin-style install tasks:
+  - **FFmpeg plugin** for screen recording.
+  - **OCR plugin (Tesseract)** for vision fallback.
+- FFmpeg task uses `winget install -e --id Gyan.FFmpeg`.
+- OCR task tries `UB-Mannheim.TesseractOCR` and falls back to `tesseract-ocr.tesseract`.
+- Post-install, if tools are still missing, installer shows actionable manual install hints.
 
 Output:
 - `dist/installer/DesktopAgent-Setup-0.1.0.exe`
