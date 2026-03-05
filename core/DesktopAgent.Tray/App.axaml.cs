@@ -866,6 +866,7 @@ public partial class App : Application
                     OcrEnabled: true,
                     ScreenRecordingAudioBackendPreference: null,
                     ScreenRecordingAudioDevice: null,
+                    ScreenRecordingPrimaryDisplayOnly: null,
                     AdapterRestartCommand: null,
                     AdapterRestartWorkingDir: null,
                     FindRetryCount: null,

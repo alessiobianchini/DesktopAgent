@@ -87,6 +87,9 @@ internal partial class QuickChatWindow : Window
     private ComboBox? _cfgLlmProvider;
     private ComboBox? _cfgAudioBackend;
     private TextBox? _cfgAudioDevice;
+    private ComboBox? _cfgAudioDeviceSelector;
+    private Button? _cfgAudioRefreshButton;
+    private CheckBox? _cfgPrimaryDisplayOnly;
     private TextBox? _cfgLlmEndpoint;
     private TextBox? _cfgLlmModel;
     private TextBox? _cfgLlmTimeout;
@@ -263,6 +266,9 @@ internal partial class QuickChatWindow : Window
         _cfgLlmProvider = this.FindControl<ComboBox>("CfgLlmProvider");
         _cfgAudioBackend = this.FindControl<ComboBox>("CfgAudioBackend");
         _cfgAudioDevice = this.FindControl<TextBox>("CfgAudioDevice");
+        _cfgAudioDeviceSelector = this.FindControl<ComboBox>("CfgAudioDeviceSelector");
+        _cfgAudioRefreshButton = this.FindControl<Button>("CfgAudioRefreshButton");
+        _cfgPrimaryDisplayOnly = this.FindControl<CheckBox>("CfgPrimaryDisplayOnly");
         _cfgLlmEndpoint = this.FindControl<TextBox>("CfgLlmEndpoint");
         _cfgLlmModel = this.FindControl<TextBox>("CfgLlmModel");
         _cfgLlmTimeout = this.FindControl<TextBox>("CfgLlmTimeout");
@@ -496,6 +502,22 @@ internal partial class QuickChatWindow : Window
         if (_cfgApplyUpdateButton != null)
         {
             _cfgApplyUpdateButton.Click += (_, _) => ApplyUpdateFromConfig();
+        }
+        if (_cfgAudioRefreshButton != null)
+        {
+            _cfgAudioRefreshButton.Click += async (_, _) => await RefreshAudioInputsAsync();
+        }
+        if (_cfgAudioDeviceSelector != null)
+        {
+            _cfgAudioDeviceSelector.SelectionChanged += (_, _) =>
+            {
+                if (_cfgAudioDeviceSelector.SelectedItem is string selected &&
+                    !string.IsNullOrWhiteSpace(selected) &&
+                    !string.Equals(selected, "<auto>", StringComparison.OrdinalIgnoreCase))
+                {
+                    SetText(_cfgAudioDevice, selected);
+                }
+            };
         }
 
         if (_tasksRefreshButton != null)
@@ -1343,8 +1365,13 @@ internal partial class QuickChatWindow : Window
             SetText(_cfgLlmMaxTokens, config.Llm.MaxTokens.ToString(CultureInfo.InvariantCulture));
             SelectAudioBackend(config.ScreenRecordingAudioBackendPreference ?? "auto");
             SetText(_cfgAudioDevice, config.ScreenRecordingAudioDevice ?? string.Empty);
+            if (_cfgPrimaryDisplayOnly != null)
+            {
+                _cfgPrimaryDisplayOnly.IsChecked = config.ScreenRecordingPrimaryDisplayOnly;
+            }
 
             SelectProvider(config.Llm.Provider ?? "ollama");
+            await RefreshAudioInputsAsync();
             AppendConfigStatus("Config loaded.");
             RefreshUpdateStatusInConfig();
         }
@@ -1375,6 +1402,7 @@ internal partial class QuickChatWindow : Window
                 OcrEnabled: null,
                 ScreenRecordingAudioBackendPreference: GetSelectedAudioBackend(),
                 ScreenRecordingAudioDevice: _cfgAudioDevice?.Text?.Trim(),
+                ScreenRecordingPrimaryDisplayOnly: _cfgPrimaryDisplayOnly?.IsChecked ?? false,
                 AdapterRestartCommand: null,
                 AdapterRestartWorkingDir: null,
                 FindRetryCount: null,
@@ -1401,6 +1429,55 @@ internal partial class QuickChatWindow : Window
         catch (Exception ex)
         {
             AppendConfigStatus($"Config save failed: {ex.Message}");
+        }
+    }
+
+    private async Task RefreshAudioInputsAsync()
+    {
+        if (_cfgAudioDeviceSelector == null)
+        {
+            return;
+        }
+
+        try
+        {
+            var ffmpegEnvPath = (Environment.GetEnvironmentVariable("DESKTOP_AGENT_FFMPEG_PATH") ?? string.Empty).Trim();
+            var ffmpegPath = string.IsNullOrWhiteSpace(ffmpegEnvPath)
+                ? await Task.Run(() => ResolveCommandPath("ffmpeg"), CancellationToken.None)
+                : ffmpegEnvPath;
+            if (string.IsNullOrWhiteSpace(ffmpegPath))
+            {
+                _cfgAudioDeviceSelector.ItemsSource = new[] { "<auto>" };
+                _cfgAudioDeviceSelector.SelectedIndex = 0;
+                AppendConfigStatus("Audio inputs: ffmpeg not found.");
+                return;
+            }
+
+            var dshowList = await Task.Run(() => RunProcessCapture(ffmpegPath, "-hide_banner -f dshow -list_devices true -i dummy", 9000), CancellationToken.None);
+            var devices = ParseDirectShowAudioDevices(dshowList.StdErr)
+                .Where(static x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var items = new List<string> { "<auto>" };
+            items.AddRange(devices);
+            _cfgAudioDeviceSelector.ItemsSource = items;
+
+            var current = (_cfgAudioDevice?.Text ?? string.Empty).Trim();
+            if (!string.IsNullOrWhiteSpace(current))
+            {
+                var match = items.FindIndex(x => string.Equals(x, current, StringComparison.OrdinalIgnoreCase));
+                _cfgAudioDeviceSelector.SelectedIndex = match >= 0 ? match : 0;
+            }
+            else
+            {
+                _cfgAudioDeviceSelector.SelectedIndex = 0;
+            }
+
+            AppendConfigStatus($"Audio inputs loaded: {devices.Count}");
+        }
+        catch (Exception ex)
+        {
+            AppendConfigStatus($"Audio inputs refresh failed: {ex.Message}");
         }
     }
 
@@ -1957,7 +2034,7 @@ internal partial class QuickChatWindow : Window
             _reqPresenceButton, _killButton, _resetKillButton, _restartAdapterButton, _restartServerButton,
             _lockWindowButton, _lockAppButton, _unlockButton, _profileSafeButton,
             _profileBalancedButton, _profilePowerButton, _openWebButton, _copyButton, _clearButton,
-            _cfgLoadButton, _cfgSaveButton, _cfgTestLlmButton, _cfgRunFirstSetupButton, _cfgCheckUpdatesButton, _cfgApplyUpdateButton, _tasksRefreshButton, _tasksRunButton,
+            _cfgLoadButton, _cfgSaveButton, _cfgTestLlmButton, _cfgRunFirstSetupButton, _cfgCheckUpdatesButton, _cfgApplyUpdateButton, _cfgAudioRefreshButton, _tasksRefreshButton, _tasksRunButton,
             _tasksDeleteButton, _taskSaveButton, _schedulesRefreshButton, _schedulesRunButton, _schedulesDeleteButton,
             _scheduleSaveButton, _goalsRefreshButton, _goalsToggleAutoButton, _goalsDoneButton,
             _goalsRemoveButton, _goalAddButton, _auditRefreshButton, _auditCopyButton, _auditClearButton

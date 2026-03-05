@@ -421,6 +421,7 @@ internal sealed class TrayLocalAgent : IDisposable
             OcrRestartRequired: _ocrRestartRequired,
             ScreenRecordingAudioBackendPreference: _config.ScreenRecordingAudioBackendPreference,
             ScreenRecordingAudioDevice: _config.ScreenRecordingAudioDevice,
+            ScreenRecordingPrimaryDisplayOnly: _config.ScreenRecordingPrimaryDisplayOnly,
             AdapterRestartCommand: _config.AdapterRestartCommand,
             AdapterRestartWorkingDir: _config.AdapterRestartWorkingDir,
             FindRetryCount: _config.FindRetryCount,
@@ -485,6 +486,11 @@ internal sealed class TrayLocalAgent : IDisposable
         if (payload.ScreenRecordingAudioDevice != null)
         {
             _config.ScreenRecordingAudioDevice = payload.ScreenRecordingAudioDevice.Trim();
+        }
+
+        if (payload.ScreenRecordingPrimaryDisplayOnly.HasValue)
+        {
+            _config.ScreenRecordingPrimaryDisplayOnly = payload.ScreenRecordingPrimaryDisplayOnly.Value;
         }
 
         if (payload.AdapterRestartCommand != null)

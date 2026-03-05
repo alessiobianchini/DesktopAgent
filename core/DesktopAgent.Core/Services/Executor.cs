@@ -2501,26 +2501,72 @@ public sealed class Executor : IExecutor
         return string.IsNullOrWhiteSpace(ffmpegPath) ? "ffmpeg" : ffmpegPath;
     }
 
-    private static string BuildRecordingArguments(string outputPath, int seconds, string? audioInputArguments)
+    private string BuildRecordingArguments(string outputPath, int seconds, string? audioInputArguments)
     {
         var fps = 12;
+        var videoInput = BuildVideoInputArguments(fps);
         if (!string.IsNullOrWhiteSpace(audioInputArguments))
         {
-            return $"-y -f gdigrab -framerate {fps} -i desktop {audioInputArguments} -t {seconds} -c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac \"{outputPath}\"";
+            return $"-y {videoInput} {audioInputArguments} -t {seconds} -c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac \"{outputPath}\"";
         }
 
-        return $"-y -f gdigrab -framerate {fps} -i desktop -t {seconds} -c:v libx264 -preset veryfast -pix_fmt yuv420p \"{outputPath}\"";
+        return $"-y {videoInput} -t {seconds} -c:v libx264 -preset veryfast -pix_fmt yuv420p \"{outputPath}\"";
     }
 
     private string BuildLiveRecordingArguments(string outputPath, string? audioInputArguments)
     {
         var fps = 12;
+        var videoInput = BuildVideoInputArguments(fps);
         if (!string.IsNullOrWhiteSpace(audioInputArguments))
         {
-            return $"-y -f gdigrab -framerate {fps} -i desktop {audioInputArguments} -c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac \"{outputPath}\"";
+            return $"-y {videoInput} {audioInputArguments} -c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac \"{outputPath}\"";
         }
 
-        return $"-y -f gdigrab -framerate {fps} -i desktop -c:v libx264 -preset veryfast -pix_fmt yuv420p \"{outputPath}\"";
+        return $"-y {videoInput} -c:v libx264 -preset veryfast -pix_fmt yuv420p \"{outputPath}\"";
+    }
+
+    private string BuildVideoInputArguments(int fps)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return $"-f gdigrab -framerate {fps} -i desktop";
+        }
+
+        if (!_config.ScreenRecordingPrimaryDisplayOnly)
+        {
+            return $"-f gdigrab -framerate {fps} -i desktop";
+        }
+
+        if (TryGetPrimaryDisplaySize(out var width, out var height))
+        {
+            return $"-f gdigrab -framerate {fps} -offset_x 0 -offset_y 0 -video_size {width}x{height} -i desktop";
+        }
+
+        _logger.LogInformation("Primary display capture requested but size detection failed. Falling back to full desktop capture.");
+        return $"-f gdigrab -framerate {fps} -i desktop";
+    }
+
+    private static bool TryGetPrimaryDisplaySize(out int width, out int height)
+    {
+        width = 0;
+        height = 0;
+        try
+        {
+            var w = GetSystemMetrics(SystemMetricCxScreen);
+            var h = GetSystemMetrics(SystemMetricCyScreen);
+            if (w > 0 && h > 0)
+            {
+                width = w;
+                height = h;
+                return true;
+            }
+        }
+        catch
+        {
+            // ignored
+        }
+
+        return false;
     }
 
     private bool TryStartRecordingProcess(
@@ -2636,12 +2682,19 @@ public sealed class Executor : IExecutor
         var dshowSupported = FfmpegSupportsInput(ffmpegPath, "dshow");
 
         FfmpegAudioInput? dshowInput = null;
+        FfmpegAudioInput? dshowAutoInput = null;
         if (dshowSupported)
         {
             if (!string.IsNullOrWhiteSpace(preferredDevice))
             {
                 var escapedPref = EscapeFfmpegDshowDevice(preferredDevice);
                 dshowInput = new FfmpegAudioInput($"DirectShow ({preferredDevice})", $"-f dshow -i audio=\"{escapedPref}\"");
+                if (TryGetFirstDshowAudioDevice(ffmpegPath, out var fallbackDetected)
+                    && !string.Equals(fallbackDetected, preferredDevice, StringComparison.OrdinalIgnoreCase))
+                {
+                    var escapedFallback = EscapeFfmpegDshowDevice(fallbackDetected);
+                    dshowAutoInput = new FfmpegAudioInput($"DirectShow ({fallbackDetected})", $"-f dshow -i audio=\"{escapedFallback}\"");
+                }
             }
             else if (TryGetFirstDshowAudioDevice(ffmpegPath, out var detected))
             {
@@ -2661,12 +2714,20 @@ public sealed class Executor : IExecutor
                 {
                     inputs.Add(dshowInput.Value);
                 }
+                if (dshowAutoInput != null)
+                {
+                    inputs.Add(dshowAutoInput.Value);
+                }
                 break;
 
             case "dshow":
                 if (dshowInput != null)
                 {
                     inputs.Add(dshowInput.Value);
+                }
+                if (dshowAutoInput != null)
+                {
+                    inputs.Add(dshowAutoInput.Value);
                 }
                 if (wasapiSupported)
                 {
@@ -2682,6 +2743,10 @@ public sealed class Executor : IExecutor
                 if (dshowInput != null)
                 {
                     inputs.Add(dshowInput.Value);
+                }
+                if (dshowAutoInput != null)
+                {
+                    inputs.Add(dshowAutoInput.Value);
                 }
                 break;
         }
@@ -2914,6 +2979,8 @@ public sealed class Executor : IExecutor
     private const byte VkVolumeMute = 0xAD;
     private const byte VkVolumeDown = 0xAE;
     private const byte VkVolumeUp = 0xAF;
+    private const int SystemMetricCxScreen = 0;
+    private const int SystemMetricCyScreen = 1;
 
     [DllImport("user32.dll")]
     private static extern bool GetCursorPos(out NativePoint lpPoint);
@@ -2926,4 +2993,7 @@ public sealed class Executor : IExecutor
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern void KeybdEvent(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
+
+    [DllImport("user32.dll")]
+    private static extern int GetSystemMetrics(int nIndex);
 }

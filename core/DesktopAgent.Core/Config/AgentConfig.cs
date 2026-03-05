@@ -46,6 +46,7 @@ public sealed class AgentConfig
     public string AdapterRestartWorkingDir { get; set; } = "";
     public string ScreenRecordingAudioBackendPreference { get; set; } = "auto";
     public string ScreenRecordingAudioDevice { get; set; } = "";
+    public bool ScreenRecordingPrimaryDisplayOnly { get; set; } = false;
     public int OpenAppSettleDelayMs { get; set; } = 700;
     public int FindRetryCount { get; set; } = 2;
     public int FindRetryDelayMs { get; set; } = 250;
