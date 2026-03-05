@@ -17,6 +17,7 @@ namespace DesktopAgent.Tray;
 
 internal sealed class TrayLocalAgent : IDisposable
 {
+    private const string SupportedCommandsHelp = "Available commands: status, kill, reset kill, lock status, lock on <current window|app>, unlock, profile <safe|balanced|power>, arm, disarm, simulate presence, require presence, list apps [query] [allowed], goals, goal add <text>, goal run <id>, goal done <id>, goal remove <id>, goal priority <id> <low|normal|high>, goal auto <id> <on|off>, goal scheduler on|off|every <sec>, continue goal, memory, run <intent>, dry-run <intent>, translate <text> to <language> (or 'translate to <language>: <text>'). Plugin intents: take screenshot, record screen [and audio] for <duration>, start recording [screen] [with/without audio], stop recording, jiggle mouse for <duration>.";
     private const int GoalPriorityLow = 0;
     private const int GoalPriorityNormal = 1;
     private const int GoalPriorityHigh = 2;
@@ -317,7 +318,7 @@ internal sealed class TrayLocalAgent : IDisposable
         if (normalized.StartsWith("run ", StringComparison.Ordinal))
         {
             var intent = text["run ".Length..].Trim();
-            return await BuildPlanConfirmationAsync(intent, dryRun: false);
+            return await BuildPlanConfirmationAsync(intent, dryRun: false, cancellationToken);
         }
 
         if (normalized.StartsWith("dry-run ", StringComparison.Ordinal) || normalized.StartsWith("dryrun ", StringComparison.Ordinal))
@@ -330,7 +331,7 @@ internal sealed class TrayLocalAgent : IDisposable
         if (normalized.StartsWith("intent ", StringComparison.Ordinal))
         {
             var intent = text["intent ".Length..].Trim();
-            return await BuildPlanConfirmationAsync(intent, dryRun: false);
+            return await BuildPlanConfirmationAsync(intent, dryRun: false, cancellationToken);
         }
 
         if (TryParseTranslationIntent(text, out var translationIntent))
@@ -340,13 +341,13 @@ internal sealed class TrayLocalAgent : IDisposable
 
         if (IsDirectIntent(normalized))
         {
-            return await BuildPlanConfirmationAsync(text, dryRun: false);
+            return await BuildPlanConfirmationAsync(text, dryRun: false, cancellationToken);
         }
 
         var plan = _planner.PlanFromIntent(text);
         if (IsUnrecognizedPlan(plan))
         {
-            return WebChatResponse.Simple("Available commands: status, kill, reset kill, lock status, lock on <current window|app>, unlock, profile <safe|balanced|power>, arm, disarm, simulate presence, require presence, list apps [query] [allowed], goals, goal add <text>, goal run <id>, goal done <id>, goal remove <id>, goal priority <id> <low|normal|high>, goal auto <id> <on|off>, goal scheduler on|off|every <sec>, continue goal, memory, run <intent>, dry-run <intent>, translate <text> to <language> (or 'translate to <language>: <text>'). Plugin intents: take screenshot, record screen [and audio] for <duration>, start recording [screen] [with/without audio], stop recording, jiggle mouse for <duration>.");
+            return await BuildUnknownCommandResponseAsync(text, cancellationToken);
         }
 
         var pendingToken = CreatePendingAction(PendingActionType.ExecutePlan, text, plan, dryRun: false);
@@ -943,12 +944,12 @@ internal sealed class TrayLocalAgent : IDisposable
         _loggerFactory.Dispose();
     }
 
-    private async Task<WebChatResponse> BuildPlanConfirmationAsync(string intent, bool dryRun)
+    private async Task<WebChatResponse> BuildPlanConfirmationAsync(string intent, bool dryRun, CancellationToken cancellationToken)
     {
         var plan = _planner.PlanFromIntent(intent ?? string.Empty);
         if (IsUnrecognizedPlan(plan))
         {
-            return WebChatResponse.Simple("I couldn't map that to a safe plan. Try a clearer command.");
+            return await BuildUnknownCommandResponseAsync(intent ?? string.Empty, cancellationToken);
         }
 
         if (dryRun)
@@ -963,6 +964,17 @@ internal sealed class TrayLocalAgent : IDisposable
             ? "I interpreted your request. Confirm execution?"
             : $"I interpreted your request. {notice}. Confirm execution?";
         return WebChatResponse.ConfirmWithSteps(prompt, token, PlanToLines(plan), PlanToJson(plan), GetModeLabel(plan));
+    }
+
+    private async Task<WebChatResponse> BuildUnknownCommandResponseAsync(string input, CancellationToken cancellationToken)
+    {
+        var suggestion = await SuggestSupportedCommandAsync(input, cancellationToken);
+        if (!string.IsNullOrWhiteSpace(suggestion))
+        {
+            return WebChatResponse.Simple($"I couldn't map that safely. AI suggestion: {suggestion}\nIf it's correct, send that command.");
+        }
+
+        return WebChatResponse.Simple(SupportedCommandsHelp);
     }
     private async Task<WebIntentResponse> ExecutePlanInternalAsync(string source, ActionPlan plan, bool dryRun, bool approvedByUser, CancellationToken cancellationToken)
     {
@@ -1027,7 +1039,7 @@ internal sealed class TrayLocalAgent : IDisposable
 
     private async Task<WebLlmStatus> GetLlmStatusAsync(CancellationToken cancellationToken)
     {
-        var provider = _config.LlmFallback.Provider;
+        var provider = (_config.LlmFallback.Provider ?? "ollama").Trim();
         var endpoint = _config.LlmFallback.Endpoint;
         if (!_config.LlmFallbackEnabled)
         {
@@ -1050,6 +1062,11 @@ internal sealed class TrayLocalAgent : IDisposable
             using var probeCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             probeCts.CancelAfter(_httpTimeout);
 
+            if (provider.Equals("ollama", StringComparison.OrdinalIgnoreCase))
+            {
+                return await ProbeOllamaStatusAsync(client, uri, provider, endpoint, probeCts.Token);
+            }
+
             var probeUri = BuildLlmProbeUri(uri, provider);
             using var response = await client.GetAsync(probeUri, probeCts.Token);
             if (response.IsSuccessStatusCode)
@@ -1062,6 +1079,78 @@ internal sealed class TrayLocalAgent : IDisposable
         catch (Exception ex)
         {
             return new WebLlmStatus(true, false, provider, Compact(ex.Message, 120), endpoint);
+        }
+    }
+
+    private async Task<WebLlmStatus> ProbeOllamaStatusAsync(HttpClient client, Uri endpointUri, string provider, string? endpoint, CancellationToken cancellationToken)
+    {
+        var baseUri = new Uri(endpointUri.GetLeftPart(UriPartial.Authority));
+        var tagsUri = new Uri(baseUri, "/api/tags");
+        using var response = await client.GetAsync(tagsUri, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            return new WebLlmStatus(true, false, provider, $"HTTP {(int)response.StatusCode}", endpoint);
+        }
+
+        var configuredModel = (_config.LlmFallback.Model ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(configuredModel))
+        {
+            return new WebLlmStatus(true, true, provider, "Reachable (model not configured)", endpoint);
+        }
+
+        var installedModels = await ReadOllamaModelNamesAsync(response, cancellationToken);
+        if (installedModels.Count == 0)
+        {
+            return new WebLlmStatus(true, false, provider, "Reachable but unable to read model list", endpoint);
+        }
+
+        var found = installedModels.Any(name => string.Equals(name, configuredModel, StringComparison.OrdinalIgnoreCase));
+        if (found)
+        {
+            return new WebLlmStatus(true, true, provider, $"Reachable; model '{configuredModel}' found", endpoint);
+        }
+
+        var preview = string.Join(", ", installedModels.Take(5));
+        if (installedModels.Count > 5)
+        {
+            preview += ", ...";
+        }
+
+        var message = string.IsNullOrWhiteSpace(preview)
+            ? $"Reachable but model '{configuredModel}' not found"
+            : $"Reachable but model '{configuredModel}' not found. Installed: {preview}";
+        return new WebLlmStatus(true, false, provider, Compact(message, 220), endpoint);
+    }
+
+    private static async Task<List<string>> ReadOllamaModelNamesAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+            if (!document.RootElement.TryGetProperty("models", out var models) || models.ValueKind != JsonValueKind.Array)
+            {
+                return new List<string>();
+            }
+
+            var names = new List<string>();
+            foreach (var item in models.EnumerateArray())
+            {
+                if (item.TryGetProperty("name", out var nameProp))
+                {
+                    var value = nameProp.GetString();
+                    if (!string.IsNullOrWhiteSpace(value))
+                    {
+                        names.Add(value.Trim());
+                    }
+                }
+            }
+
+            return names;
+        }
+        catch
+        {
+            return new List<string>();
         }
     }
 
@@ -1890,6 +1979,7 @@ internal sealed class TrayLocalAgent : IDisposable
         var provider = (_config.LlmFallback.Provider ?? "ollama").Trim().ToLowerInvariant();
         uri = NormalizeLlmEndpoint(uri, provider);
         var prompt = BuildTranslationPrompt(intent);
+        var maxTokens = ResolveTranslationMaxTokens(intent.Text, _config.LlmFallback.MaxTokens);
 
         try
         {
@@ -1907,9 +1997,9 @@ internal sealed class TrayLocalAgent : IDisposable
             using var client = new HttpClient { Timeout = _httpTimeout };
             var translated = provider switch
             {
-                "openai" => await CallOpenAiTranslationAsync(client, uri, prompt, cancellationToken),
-                "llama.cpp" => await CallLlamaCppTranslationAsync(client, uri, prompt, cancellationToken),
-                _ => await CallOllamaTranslationAsync(client, uri, prompt, cancellationToken)
+                "openai" => await CallOpenAiTranslationAsync(client, uri, prompt, maxTokens, cancellationToken),
+                "llama.cpp" => await CallLlamaCppTranslationAsync(client, uri, prompt, maxTokens, cancellationToken),
+                _ => await CallOllamaTranslationAsync(client, uri, prompt, maxTokens, cancellationToken)
             };
 
             translated = CleanTranslationOutput(translated);
@@ -1940,14 +2030,61 @@ internal sealed class TrayLocalAgent : IDisposable
         }
     }
 
-    private async Task<string?> CallOllamaTranslationAsync(HttpClient client, Uri endpoint, string prompt, CancellationToken cancellationToken)
+    private async Task<string?> SuggestSupportedCommandAsync(string userInput, CancellationToken cancellationToken)
+    {
+        if (!_config.LlmFallbackEnabled || string.IsNullOrWhiteSpace(userInput))
+        {
+            return null;
+        }
+
+        var endpoint = _config.LlmFallback.Endpoint?.Trim();
+        if (string.IsNullOrWhiteSpace(endpoint) || !Uri.TryCreate(endpoint, UriKind.Absolute, out var uri))
+        {
+            return null;
+        }
+
+        if (!uri.IsLoopback && !_config.AllowNonLoopbackLlmEndpoint)
+        {
+            return null;
+        }
+
+        var provider = (_config.LlmFallback.Provider ?? "ollama").Trim().ToLowerInvariant();
+        uri = NormalizeLlmEndpoint(uri, provider);
+        var prompt = BuildCommandSuggestionPrompt(userInput);
+        var maxTokens = ResolveSuggestionMaxTokens(_config.LlmFallback.MaxTokens);
+
+        try
+        {
+            using var client = new HttpClient { Timeout = _httpTimeout };
+            var raw = provider switch
+            {
+                "openai" => await CallOpenAiTranslationAsync(client, uri, prompt, maxTokens, cancellationToken),
+                "llama.cpp" => await CallLlamaCppTranslationAsync(client, uri, prompt, maxTokens, cancellationToken),
+                _ => await CallOllamaTranslationAsync(client, uri, prompt, maxTokens, cancellationToken)
+            };
+
+            return CleanSuggestedCommand(raw);
+        }
+        catch (Exception ex)
+        {
+            await WriteAuditAsync("llm_command_suggestion_error", "AI suggestion failed", cancellationToken, new
+            {
+                provider,
+                endpoint,
+                error = ex.Message
+            });
+            return null;
+        }
+    }
+
+    private async Task<string?> CallOllamaTranslationAsync(HttpClient client, Uri endpoint, string prompt, int maxTokens, CancellationToken cancellationToken)
     {
         var payload = new
         {
             model = _config.LlmFallback.Model,
             prompt,
             stream = false,
-            options = new { temperature = 0.1, num_predict = _config.LlmFallback.MaxTokens }
+            options = new { temperature = 0.1, num_predict = maxTokens }
         };
 
         using var response = await client.PostAsJsonAsync(endpoint, payload, JsonOptions, cancellationToken);
@@ -1961,7 +2098,7 @@ internal sealed class TrayLocalAgent : IDisposable
         return doc.RootElement.TryGetProperty("response", out var result) ? result.GetString() : null;
     }
 
-    private async Task<string?> CallOpenAiTranslationAsync(HttpClient client, Uri endpoint, string prompt, CancellationToken cancellationToken)
+    private async Task<string?> CallOpenAiTranslationAsync(HttpClient client, Uri endpoint, string prompt, int maxTokens, CancellationToken cancellationToken)
     {
         var payload = new
         {
@@ -1972,7 +2109,7 @@ internal sealed class TrayLocalAgent : IDisposable
                 new { role = "user", content = prompt }
             },
             temperature = 0.1,
-            max_tokens = _config.LlmFallback.MaxTokens
+            max_tokens = maxTokens
         };
 
         using var response = await client.PostAsJsonAsync(endpoint, payload, JsonOptions, cancellationToken);
@@ -1999,12 +2136,12 @@ internal sealed class TrayLocalAgent : IDisposable
         return first.TryGetProperty("text", out var text) ? text.GetString() : null;
     }
 
-    private async Task<string?> CallLlamaCppTranslationAsync(HttpClient client, Uri endpoint, string prompt, CancellationToken cancellationToken)
+    private async Task<string?> CallLlamaCppTranslationAsync(HttpClient client, Uri endpoint, string prompt, int maxTokens, CancellationToken cancellationToken)
     {
         var payload = new
         {
             prompt,
-            n_predict = _config.LlmFallback.MaxTokens,
+            n_predict = maxTokens,
             temperature = 0.1
         };
 
@@ -2045,6 +2182,19 @@ internal sealed class TrayLocalAgent : IDisposable
             "llama.cpp" => new Uri(uri, "/completion"),
             _ => new Uri(uri, "/api/generate")
         };
+    }
+
+    private static int ResolveTranslationMaxTokens(string input, int configuredMaxTokens)
+    {
+        var configured = Math.Clamp(configuredMaxTokens, 32, 4096);
+        var estimated = Math.Clamp((int)Math.Ceiling((input?.Length ?? 0) / 2.8), 128, 4096);
+        return Math.Max(configured, estimated);
+    }
+
+    private static int ResolveSuggestionMaxTokens(int configuredMaxTokens)
+    {
+        var configured = Math.Clamp(configuredMaxTokens, 32, 512);
+        return Math.Clamp(Math.Max(96, configured / 2), 96, 256);
     }
 
     private static async Task<Exception> BuildLlmHttpExceptionAsync(HttpResponseMessage response, CancellationToken cancellationToken)
@@ -2112,6 +2262,25 @@ internal sealed class TrayLocalAgent : IDisposable
             "\nTEXT END";
     }
 
+    private static string BuildCommandSuggestionPrompt(string userInput)
+    {
+        return
+            "You convert natural language into one safe DesktopAgent command.\n" +
+            "Return exactly one command, no explanation.\n" +
+            "If you cannot map safely, return UNKNOWN.\n" +
+            "Allowed command patterns include:\n" +
+            "- status | arm | disarm | simulate presence | require presence\n" +
+            "- run <intent> | dry-run <intent>\n" +
+            "- open <app>\n" +
+            "- search <query> on <chrome|edge|firefox>\n" +
+            "- translate <text> to <language>\n" +
+            "- take screenshot\n" +
+            "- record screen [and audio] for <duration>\n" +
+            "- jiggle mouse for <duration>\n" +
+            "User request:\n" +
+            userInput;
+    }
+
     private static string? CleanTranslationOutput(string? raw)
     {
         if (string.IsNullOrWhiteSpace(raw))
@@ -2131,6 +2300,35 @@ internal sealed class TrayLocalAgent : IDisposable
         }
 
         return string.IsNullOrWhiteSpace(text) ? null : text;
+    }
+
+    private static string? CleanSuggestedCommand(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return null;
+        }
+
+        var line = raw.Replace("\r", "\n")
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .FirstOrDefault() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(line))
+        {
+            return null;
+        }
+
+        line = line.Trim().Trim('`', '"', '\'');
+        if (line.StartsWith("command:", StringComparison.OrdinalIgnoreCase))
+        {
+            line = line["command:".Length..].Trim();
+        }
+
+        if (line.Equals("unknown", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        return line;
     }
 
     private static bool TryParseTranslationIntent(string message, out TranslationIntent intent)

@@ -2403,6 +2403,7 @@ internal static class LlmTranslationService
         var provider = (config.LlmFallback.Provider ?? "ollama").Trim().ToLowerInvariant();
         uri = NormalizeLlmEndpoint(uri, provider);
         var prompt = BuildPrompt(intent);
+        var maxTokens = ResolveTranslationMaxTokens(intent.Text, config.LlmFallback.MaxTokens);
         var includeRaw = config.AuditLlmIncludeRawText;
         var canAudit = config.AuditLlmInteractions;
         var sw = Stopwatch.StartNew();
@@ -2436,9 +2437,9 @@ internal static class LlmTranslationService
 
             string? translated = provider switch
             {
-                "openai" => await CallOpenAiCompatibleAsync(client, uri, prompt, config, cancellationToken),
-                "llama.cpp" => await CallLlamaCppAsync(client, uri, prompt, config, cancellationToken),
-                _ => await CallOllamaAsync(client, uri, prompt, config, cancellationToken)
+                "openai" => await CallOpenAiCompatibleAsync(client, uri, prompt, config, maxTokens, cancellationToken),
+                "llama.cpp" => await CallLlamaCppAsync(client, uri, prompt, config, maxTokens, cancellationToken),
+                _ => await CallOllamaAsync(client, uri, prompt, config, maxTokens, cancellationToken)
             };
 
             translated = CleanTranslationOutput(translated);
@@ -2493,14 +2494,14 @@ internal static class LlmTranslationService
         }
     }
 
-    private static async Task<string?> CallOllamaAsync(HttpClient client, Uri uri, string prompt, AgentConfig config, CancellationToken cancellationToken)
+    private static async Task<string?> CallOllamaAsync(HttpClient client, Uri uri, string prompt, AgentConfig config, int maxTokens, CancellationToken cancellationToken)
     {
         var payload = new
         {
             model = config.LlmFallback.Model,
             prompt,
             stream = false,
-            options = new { temperature = 0.1, num_predict = config.LlmFallback.MaxTokens }
+            options = new { temperature = 0.1, num_predict = maxTokens }
         };
 
         using var response = await client.PostAsJsonAsync(uri, payload, JsonOptions, cancellationToken);
@@ -2519,7 +2520,7 @@ internal static class LlmTranslationService
         return null;
     }
 
-    private static async Task<string?> CallOpenAiCompatibleAsync(HttpClient client, Uri uri, string prompt, AgentConfig config, CancellationToken cancellationToken)
+    private static async Task<string?> CallOpenAiCompatibleAsync(HttpClient client, Uri uri, string prompt, AgentConfig config, int maxTokens, CancellationToken cancellationToken)
     {
         var payload = new
         {
@@ -2530,7 +2531,7 @@ internal static class LlmTranslationService
                 new { role = "user", content = prompt }
             },
             temperature = 0.1,
-            max_tokens = config.LlmFallback.MaxTokens
+            max_tokens = maxTokens
         };
 
         using var response = await client.PostAsJsonAsync(uri, payload, JsonOptions, cancellationToken);
@@ -2557,12 +2558,12 @@ internal static class LlmTranslationService
         return null;
     }
 
-    private static async Task<string?> CallLlamaCppAsync(HttpClient client, Uri uri, string prompt, AgentConfig config, CancellationToken cancellationToken)
+    private static async Task<string?> CallLlamaCppAsync(HttpClient client, Uri uri, string prompt, AgentConfig config, int maxTokens, CancellationToken cancellationToken)
     {
         var payload = new
         {
             prompt,
-            n_predict = config.LlmFallback.MaxTokens,
+            n_predict = maxTokens,
             temperature = 0.1
         };
 
@@ -2603,6 +2604,13 @@ internal static class LlmTranslationService
             "llama.cpp" => new Uri(uri, "/completion"),
             _ => new Uri(uri, "/api/generate")
         };
+    }
+
+    private static int ResolveTranslationMaxTokens(string input, int configuredMaxTokens)
+    {
+        var configured = Math.Clamp(configuredMaxTokens, 32, 4096);
+        var estimated = Math.Clamp((int)Math.Ceiling((input?.Length ?? 0) / 2.8), 128, 4096);
+        return Math.Max(configured, estimated);
     }
 
     private static async Task<Exception> BuildLlmHttpExceptionAsync(HttpResponseMessage response, CancellationToken cancellationToken)
@@ -2648,6 +2656,17 @@ internal static class LlmTranslationService
         {
             return "unable to read response body";
         }
+    }
+
+    private static string Compact(string? value, int maxChars)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        var normalized = value.Replace("\r", " ").Replace("\n", " ").Trim();
+        return normalized.Length <= maxChars ? normalized : normalized[..maxChars] + "...";
     }
 
     private static string BuildPrompt(TranslationIntent intent)
@@ -4143,11 +4162,97 @@ internal sealed class LlmAvailabilityCache
             return new LlmStatus(true, false, provider, "Endpoint blocked by policy (local only)", endpoint);
         }
 
+        if (provider == "ollama")
+        {
+            return await ProbeOllamaStatusAsync(uri, endpoint, cancellationToken);
+        }
+
         var port = uri.Port > 0 ? uri.Port : (uri.Scheme == "https" ? 443 : 80);
         var available = await CanConnectAsync(uri.Host, port, cancellationToken);
         return available
             ? new LlmStatus(true, true, provider, "Available", endpoint)
             : new LlmStatus(true, false, provider, $"No listener on {uri.Host}:{port}", endpoint);
+    }
+
+    private async Task<LlmStatus> ProbeOllamaStatusAsync(Uri endpointUri, string? endpoint, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(Math.Max(2, _config.LlmFallback.TimeoutSeconds)) };
+            var baseUri = new Uri(endpointUri.GetLeftPart(UriPartial.Authority));
+            var tagsUri = new Uri(baseUri, "/api/tags");
+
+            using var response = await client.GetAsync(tagsUri, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                return new LlmStatus(true, false, "ollama", $"HTTP {(int)response.StatusCode}", endpoint);
+            }
+
+            var configuredModel = (_config.LlmFallback.Model ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(configuredModel))
+            {
+                return new LlmStatus(true, true, "ollama", "Available (model not configured)", endpoint);
+            }
+
+            var installedModels = await ReadOllamaModelNamesAsync(response, cancellationToken);
+            if (installedModels.Count == 0)
+            {
+                return new LlmStatus(true, false, "ollama", "Available but model list unreadable", endpoint);
+            }
+
+            var found = installedModels.Any(name => string.Equals(name, configuredModel, StringComparison.OrdinalIgnoreCase));
+            if (found)
+            {
+                return new LlmStatus(true, true, "ollama", $"Available; model '{configuredModel}' found", endpoint);
+            }
+
+            var preview = string.Join(", ", installedModels.Take(5));
+            if (installedModels.Count > 5)
+            {
+                preview += ", ...";
+            }
+
+            var message = string.IsNullOrWhiteSpace(preview)
+                ? $"Available but model '{configuredModel}' not found"
+                : $"Available but model '{configuredModel}' not found. Installed: {preview}";
+            return new LlmStatus(true, false, "ollama", Compact(message, 220), endpoint);
+        }
+        catch (Exception ex)
+        {
+            return new LlmStatus(true, false, "ollama", Compact(ex.Message, 140), endpoint);
+        }
+    }
+
+    private static async Task<List<string>> ReadOllamaModelNamesAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+            if (!document.RootElement.TryGetProperty("models", out var models) || models.ValueKind != JsonValueKind.Array)
+            {
+                return new List<string>();
+            }
+
+            var names = new List<string>();
+            foreach (var item in models.EnumerateArray())
+            {
+                if (item.TryGetProperty("name", out var nameProp))
+                {
+                    var value = nameProp.GetString();
+                    if (!string.IsNullOrWhiteSpace(value))
+                    {
+                        names.Add(value.Trim());
+                    }
+                }
+            }
+
+            return names;
+        }
+        catch
+        {
+            return new List<string>();
+        }
     }
 
     private static async Task<bool> CanConnectAsync(string host, int port, CancellationToken cancellationToken)
@@ -4174,6 +4279,17 @@ internal sealed class LlmAvailabilityCache
     private static string NormalizeProvider(string? provider)
     {
         return string.IsNullOrWhiteSpace(provider) ? "local" : provider.Trim().ToLowerInvariant();
+    }
+
+    private static string Compact(string? value, int maxChars)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        var normalized = value.Replace("\r", " ").Replace("\n", " ").Trim();
+        return normalized.Length <= maxChars ? normalized : normalized[..maxChars] + "...";
     }
 }
 
