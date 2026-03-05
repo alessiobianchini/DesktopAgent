@@ -2723,10 +2723,17 @@ public sealed class Executor : IExecutor
             return false;
         }
 
+        var directAudioCandidates = new List<string>();
+        var sectionAudioCandidates = new List<string>();
         var inAudioSection = false;
         foreach (var rawLine in audioDump.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
         {
             var line = rawLine.Trim();
+            if (line.Contains("Alternative name", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
             if (line.Contains("DirectShow audio devices", StringComparison.OrdinalIgnoreCase))
             {
                 inAudioSection = true;
@@ -2738,17 +2745,36 @@ public sealed class Executor : IExecutor
                 inAudioSection = false;
             }
 
-            if (!inAudioSection)
+            var match = Regex.Match(line, "\"([^\"]+)\"");
+            if (!match.Success)
             {
                 continue;
             }
 
-            var match = Regex.Match(line, "\"([^\"]+)\"");
-            if (match.Success)
+            var name = match.Groups[1].Value.Trim();
+            if (string.IsNullOrWhiteSpace(name))
             {
-                deviceName = match.Groups[1].Value.Trim();
-                return !string.IsNullOrWhiteSpace(deviceName);
+                continue;
             }
+
+            if (line.Contains("(audio)", StringComparison.OrdinalIgnoreCase))
+            {
+                directAudioCandidates.Add(name);
+            }
+            else if (inAudioSection)
+            {
+                sectionAudioCandidates.Add(name);
+            }
+        }
+
+        var candidate = directAudioCandidates
+            .Concat(sectionAudioCandidates)
+            .FirstOrDefault(static x => !string.IsNullOrWhiteSpace(x));
+
+        if (!string.IsNullOrWhiteSpace(candidate))
+        {
+            deviceName = candidate;
+            return true;
         }
 
         return false;

@@ -637,7 +637,7 @@ internal partial class QuickChatWindow : Window
         await LoadGoalsAsync();
         await LoadAuditAsync();
         await RefreshDiagnosticsAsync();
-        _ = Task.Run(() => PollStatusAsync(_pollingCts.Token));
+        _ = PollStatusAsync(_pollingCts.Token);
     }
 
     private async Task PollStatusAsync(CancellationToken cancellationToken)
@@ -2161,7 +2161,7 @@ internal partial class QuickChatWindow : Window
             }
             else if (hasDshow && dshowAudioDevices.Count == 0)
             {
-                issues.Add("No DirectShow audio devices found.");
+                issues.Add("No DirectShow audio devices found (check microphone privacy + default input device).");
             }
             if (status?.Adapter == null)
             {
@@ -2191,10 +2191,16 @@ internal partial class QuickChatWindow : Window
         }
 
         var devices = new List<string>();
+        var directAudioDevices = new List<string>();
         var inAudioSection = false;
         foreach (var rawLine in dump.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
         {
             var line = rawLine.Trim();
+            if (line.Contains("Alternative name", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
             if (line.Contains("DirectShow audio devices", StringComparison.OrdinalIgnoreCase))
             {
                 inAudioSection = true;
@@ -2206,23 +2212,31 @@ internal partial class QuickChatWindow : Window
                 inAudioSection = false;
             }
 
-            if (!inAudioSection)
+            var match = Regex.Match(line, "\"([^\"]+)\"");
+            if (!match.Success)
             {
                 continue;
             }
 
-            var match = Regex.Match(line, "\"([^\"]+)\"");
-            if (match.Success)
+            var name = match.Groups[1].Value.Trim();
+            if (string.IsNullOrWhiteSpace(name))
             {
-                var name = match.Groups[1].Value.Trim();
-                if (!string.IsNullOrWhiteSpace(name))
-                {
-                    devices.Add(name);
-                }
+                continue;
+            }
+
+            if (line.Contains("(audio)", StringComparison.OrdinalIgnoreCase))
+            {
+                directAudioDevices.Add(name);
+            }
+            else if (inAudioSection)
+            {
+                devices.Add(name);
             }
         }
 
-        return devices.Distinct(StringComparer.OrdinalIgnoreCase);
+        return directAudioDevices
+            .Concat(devices)
+            .Distinct(StringComparer.OrdinalIgnoreCase);
     }
 
     private static string? ResolveCommandPath(string command)
@@ -2416,7 +2430,23 @@ internal partial class QuickChatWindow : Window
             return;
         }
 
-        textBox.Text = value;
+        if (Dispatcher.UIThread.CheckAccess())
+        {
+            textBox.Text = value;
+            return;
+        }
+
+        Dispatcher.UIThread.Post(() =>
+        {
+            try
+            {
+                textBox.Text = value;
+            }
+            catch
+            {
+                // ignored
+            }
+        });
     }
 
     private static void SetText(TextBlock? textBlock, string value)
@@ -2426,7 +2456,23 @@ internal partial class QuickChatWindow : Window
             return;
         }
 
-        textBlock.Text = value;
+        if (Dispatcher.UIThread.CheckAccess())
+        {
+            textBlock.Text = value;
+            return;
+        }
+
+        Dispatcher.UIThread.Post(() =>
+        {
+            try
+            {
+                textBlock.Text = value;
+            }
+            catch
+            {
+                // ignored
+            }
+        });
     }
 
     private void SelectProvider(string provider)
@@ -2689,10 +2735,9 @@ internal partial class QuickChatWindow : Window
             return;
         }
 
-        _persistSessionCts?.Cancel();
-        _persistSessionCts?.Dispose();
         var cts = new CancellationTokenSource();
-        _persistSessionCts = cts;
+        var previous = Interlocked.Exchange(ref _persistSessionCts, cts);
+        previous?.Cancel();
 
         _ = Task.Run(async () =>
         {
@@ -2707,6 +2752,14 @@ internal partial class QuickChatWindow : Window
             catch (OperationCanceledException)
             {
                 // ignored
+            }
+            finally
+            {
+                var current = Interlocked.CompareExchange(ref _persistSessionCts, null, cts);
+                if (ReferenceEquals(current, cts))
+                {
+                    cts.Dispose();
+                }
             }
         }, CancellationToken.None);
     }
