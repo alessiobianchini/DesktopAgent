@@ -22,6 +22,11 @@ internal partial class QuickChatWindow : Window
 
     private TextBox? _historyBox;
     private TextBox? _inputBox;
+    private ListBox? _timelineList;
+    private ListBox? _commandPaletteList;
+    private Button? _useSuggestionButton;
+    private Border? _busyPanel;
+    private TextBlock? _busyText;
     private TextBlock? _statusText;
     private TextBlock? _versionText;
     private StackPanel? _confirmPanel;
@@ -97,9 +102,27 @@ internal partial class QuickChatWindow : Window
     private TextBox? _auditBox;
 
     private string? _pendingToken;
+    private string? _aiSuggestedCommand;
     private bool _busy;
     private bool _suppressGoalAutoEvents;
     private string _lastStatusLine = string.Empty;
+    private static readonly string[] BaseCommandPalette =
+    {
+        "status",
+        "arm",
+        "disarm",
+        "simulate presence",
+        "require presence",
+        "open notepad",
+        "open vscode",
+        "search weather gubbio on chrome",
+        "translate Ciao come va to english",
+        "take screenshot",
+        "record screen for 30 seconds",
+        "jiggle mouse for 2 minutes",
+        "run open edge and search meteo gubbio",
+        "dry-run open calculator"
+    };
 
     public QuickChatWindow(WebApiClient apiClient)
     {
@@ -112,6 +135,11 @@ internal partial class QuickChatWindow : Window
     {
         _historyBox = this.FindControl<TextBox>("HistoryBox");
         _inputBox = this.FindControl<TextBox>("InputBox");
+        _timelineList = this.FindControl<ListBox>("TimelineList");
+        _commandPaletteList = this.FindControl<ListBox>("CommandPaletteList");
+        _useSuggestionButton = this.FindControl<Button>("UseSuggestionButton");
+        _busyPanel = this.FindControl<Border>("BusyPanel");
+        _busyText = this.FindControl<TextBlock>("BusyText");
         _statusText = this.FindControl<TextBlock>("StatusText");
         _versionText = this.FindControl<TextBlock>("VersionText");
         _confirmPanel = this.FindControl<StackPanel>("ConfirmPanel");
@@ -195,12 +223,52 @@ internal partial class QuickChatWindow : Window
         {
             _inputBox.KeyDown += async (_, e) =>
             {
+                if (e.Key == Key.Up && MovePaletteSelection(-1))
+                {
+                    e.Handled = true;
+                    return;
+                }
+
+                if (e.Key == Key.Down && MovePaletteSelection(1))
+                {
+                    e.Handled = true;
+                    return;
+                }
+
+                if (e.Key == Key.Tab && ApplyPaletteSuggestion())
+                {
+                    e.Handled = true;
+                    return;
+                }
+
                 if (e.Key == Key.Enter)
                 {
+                    if (ApplyPaletteSuggestion())
+                    {
+                        e.Handled = true;
+                    }
+
                     e.Handled = true;
                     await SendFromInputAsync();
                 }
             };
+            _inputBox.PropertyChanged += (_, args) =>
+            {
+                if (args.Property.Name == nameof(TextBox.Text))
+                {
+                    UpdateCommandPalette();
+                }
+            };
+        }
+
+        if (_commandPaletteList != null)
+        {
+            _commandPaletteList.SelectionChanged += (_, _) => ApplyCommandPaletteSelection();
+        }
+
+        if (_useSuggestionButton != null)
+        {
+            _useSuggestionButton.Click += async (_, _) => await UseAiSuggestionAsync();
         }
 
         if (_confirmButton != null)
@@ -414,6 +482,7 @@ internal partial class QuickChatWindow : Window
 
         SetBusy(true);
         AppendUser(message);
+        SetTimeline(new[] { "[..] Waiting for response..." });
         try
         {
             // Run agent call off the UI thread because intent rewriting may perform
@@ -442,6 +511,7 @@ internal partial class QuickChatWindow : Window
         }
 
         SetBusy(true);
+        SetTimeline(new[] { "[..] Waiting for response..." });
         try
         {
             var response = await Task.Run(
@@ -466,6 +536,7 @@ internal partial class QuickChatWindow : Window
     {
         var reply = string.IsNullOrWhiteSpace(response.Reply) ? "<no reply>" : response.Reply;
         AppendAgent(reply);
+        UpdateAiSuggestionState(reply);
 
         if (!string.IsNullOrWhiteSpace(response.ModeLabel))
         {
@@ -474,10 +545,15 @@ internal partial class QuickChatWindow : Window
 
         if (response.Steps is { Count: > 0 })
         {
+            SetTimeline(response.Steps);
             foreach (var step in response.Steps)
             {
                 AppendSystem(step);
             }
+        }
+        else
+        {
+            SetTimeline(new[] { "[..] No step details." });
         }
 
         if (response.NeedsConfirmation && !string.IsNullOrWhiteSpace(response.Token))
@@ -557,6 +633,191 @@ internal partial class QuickChatWindow : Window
         {
             AppendSystem($"Server restart failed: {ex.Message}");
         }
+    }
+
+    private void SetTimeline(IEnumerable<string> lines)
+    {
+        var items = lines
+            .Where(line => !string.IsNullOrWhiteSpace(line))
+            .Select(FormatTimelineLine)
+            .ToList();
+        if (items.Count == 0)
+        {
+            items.Add("[..] No timeline.");
+        }
+
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (_timelineList != null)
+            {
+                _timelineList.ItemsSource = items;
+            }
+        });
+    }
+
+    private static string FormatTimelineLine(string line)
+    {
+        var normalized = line.Trim();
+        if (normalized.Contains("=> True", StringComparison.OrdinalIgnoreCase)
+            || normalized.Contains(":True", StringComparison.OrdinalIgnoreCase))
+        {
+            return $"[OK] {normalized}";
+        }
+
+        if (normalized.Contains("=> False", StringComparison.OrdinalIgnoreCase)
+            || normalized.Contains(":False", StringComparison.OrdinalIgnoreCase)
+            || normalized.StartsWith("Error", StringComparison.OrdinalIgnoreCase))
+        {
+            return $"[FAIL] {normalized}";
+        }
+
+        return $"[..] {normalized}";
+    }
+
+    private void UpdateAiSuggestionState(string reply)
+    {
+        _aiSuggestedCommand = ExtractAiSuggestion(reply);
+        UpdateUseSuggestionButton();
+        UpdateCommandPalette();
+    }
+
+    private void UpdateUseSuggestionButton()
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (_useSuggestionButton == null)
+            {
+                return;
+            }
+
+            var hasSuggestion = !string.IsNullOrWhiteSpace(_aiSuggestedCommand);
+            _useSuggestionButton.IsEnabled = !_busy && hasSuggestion;
+            _useSuggestionButton.Content = hasSuggestion ? "Use Suggestion" : "No Suggestion";
+        });
+    }
+
+    private static string? ExtractAiSuggestion(string reply)
+    {
+        if (string.IsNullOrWhiteSpace(reply))
+        {
+            return null;
+        }
+
+        var match = Regex.Match(reply, @"AI suggestion:\s*(.+)", RegexOptions.IgnoreCase);
+        if (!match.Success)
+        {
+            return null;
+        }
+
+        var value = match.Groups[1].Value
+            .Replace("\r", " ")
+            .Replace("\n", " ")
+            .Trim();
+        return string.IsNullOrWhiteSpace(value) ? null : value;
+    }
+
+    private void UpdateCommandPalette()
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (_commandPaletteList == null)
+            {
+                return;
+            }
+
+            var input = _inputBox?.Text?.Trim() ?? string.Empty;
+            var tokens = input.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            var entries = BaseCommandPalette
+                .Where(cmd => tokens.Length == 0 || tokens.All(token => cmd.Contains(token, StringComparison.OrdinalIgnoreCase)))
+                .Take(7)
+                .ToList();
+
+            if (!string.IsNullOrWhiteSpace(_aiSuggestedCommand) && !entries.Contains(_aiSuggestedCommand, StringComparer.OrdinalIgnoreCase))
+            {
+                entries.Insert(0, _aiSuggestedCommand!);
+            }
+
+            _commandPaletteList.ItemsSource = entries;
+            _commandPaletteList.IsVisible = entries.Count > 0 && !_busy;
+        });
+    }
+
+    private void ApplyCommandPaletteSelection()
+    {
+        if (_commandPaletteList?.SelectedItem is not string selected || string.IsNullOrWhiteSpace(selected))
+        {
+            return;
+        }
+
+        if (_inputBox != null)
+        {
+            _inputBox.Text = selected;
+            _inputBox.CaretIndex = _inputBox.Text?.Length ?? 0;
+        }
+    }
+
+    private bool MovePaletteSelection(int direction)
+    {
+        if (_commandPaletteList == null || !_commandPaletteList.IsVisible || direction == 0)
+        {
+            return false;
+        }
+
+        var items = (_commandPaletteList.ItemsSource as IEnumerable<string>)?.ToList() ?? new List<string>();
+        if (items.Count == 0)
+        {
+            return false;
+        }
+
+        var currentIndex = _commandPaletteList.SelectedIndex;
+        if (currentIndex < 0)
+        {
+            currentIndex = direction > 0 ? -1 : 0;
+        }
+
+        var nextIndex = Math.Clamp(currentIndex + direction, 0, items.Count - 1);
+        if (nextIndex == currentIndex && _commandPaletteList.SelectedIndex >= 0)
+        {
+            return true;
+        }
+
+        _commandPaletteList.SelectedIndex = nextIndex;
+        return true;
+    }
+
+    private bool ApplyPaletteSuggestion()
+    {
+        if (_commandPaletteList == null || !_commandPaletteList.IsVisible)
+        {
+            return false;
+        }
+
+        if (_commandPaletteList.SelectedItem is string selected && !string.IsNullOrWhiteSpace(selected))
+        {
+            ApplyCommandPaletteSelection();
+            return true;
+        }
+
+        var first = (_commandPaletteList.ItemsSource as IEnumerable<string>)?.FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(first))
+        {
+            return false;
+        }
+
+        _commandPaletteList.SelectedIndex = 0;
+        ApplyCommandPaletteSelection();
+        return true;
+    }
+
+    private async Task UseAiSuggestionAsync()
+    {
+        var suggestion = _aiSuggestedCommand?.Trim();
+        if (string.IsNullOrWhiteSpace(suggestion) || _busy)
+        {
+            return;
+        }
+
+        await SendMessageAsync(suggestion);
     }
 
     private async Task LoadConfigAsync()
@@ -1056,11 +1317,22 @@ internal partial class QuickChatWindow : Window
         _busy = busy;
         Dispatcher.UIThread.Post(() =>
         {
+            if (_busyPanel != null)
+            {
+                _busyPanel.IsVisible = busy;
+            }
+            if (_busyText != null)
+            {
+                _busyText.Text = busy ? "Waiting for agent response..." : string.Empty;
+            }
+
             foreach (var button in AllButtons())
             {
                 button.IsEnabled = !busy;
             }
         });
+        UpdateUseSuggestionButton();
+        UpdateCommandPalette();
     }
 
     private IEnumerable<Button> AllButtons()
@@ -1068,6 +1340,7 @@ internal partial class QuickChatWindow : Window
         return new[]
         {
             _sendButton, _confirmButton, _cancelButton, _statusButton, _armButton, _disarmButton, _simPresenceButton,
+            _useSuggestionButton,
             _reqPresenceButton, _killButton, _resetKillButton, _restartAdapterButton, _restartServerButton,
             _lockWindowButton, _lockAppButton, _unlockButton, _profileSafeButton,
             _profileBalancedButton, _profilePowerButton, _openWebButton, _copyButton, _clearButton,

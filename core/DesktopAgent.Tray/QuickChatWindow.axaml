@@ -47,7 +47,7 @@
 
     <TabControl Grid.Row="2" x:Name="MainTabs">
       <TabItem Header="Chat">
-        <Grid RowDefinitions="*,Auto,Auto" Margin="2">
+        <Grid RowDefinitions="*,Auto,Auto,Auto,Auto,Auto" Margin="2">
           <Border BorderBrush="#2A3950"
                   BorderThickness="1"
                   CornerRadius="8"
@@ -57,6 +57,8 @@
                      IsReadOnly="True"
                      AcceptsReturn="True"
                      TextWrapping="Wrap"
+                     ScrollViewer.VerticalScrollBarVisibility="Auto"
+                     ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                      VerticalContentAlignment="Top"
                      Background="#0F1520"
                      Foreground="#E6EDF7"
@@ -65,8 +67,25 @@
                      FontSize="13" />
           </Border>
 
+          <Border Grid.Row="1"
+                  Margin="0,10,0,10"
+                  BorderBrush="#2A3950"
+                  BorderThickness="1"
+                  CornerRadius="8"
+                  Background="#0F1520"
+                  Padding="8">
+            <Grid RowDefinitions="Auto,*">
+              <TextBlock Text="Execution timeline" Opacity="0.85" />
+              <ListBox x:Name="TimelineList"
+                       Grid.Row="1"
+                       Margin="0,6,0,0"
+                       MinHeight="70"
+                       MaxHeight="130" />
+            </Grid>
+          </Border>
+
           <StackPanel x:Name="ConfirmPanel"
-                      Grid.Row="1"
+                      Grid.Row="2"
                       Orientation="Horizontal"
                       Spacing="8"
                       Margin="0,10,0,10"
@@ -76,7 +95,29 @@
             <Button x:Name="CancelButton" Content="Cancel" MinWidth="100" />
           </StackPanel>
 
-          <Grid Grid.Row="2" ColumnDefinitions="*,Auto">
+          <Border x:Name="BusyPanel"
+                  Grid.Row="3"
+                  Margin="0,0,0,10"
+                  Padding="8"
+                  IsVisible="False"
+                  Background="#142033"
+                  BorderBrush="#2A3950"
+                  BorderThickness="1"
+                  CornerRadius="6">
+            <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+              <ProgressBar Width="110" Height="6" IsIndeterminate="True" />
+              <TextBlock x:Name="BusyText" Text="Waiting for agent response..." VerticalAlignment="Center" />
+            </StackPanel>
+          </Border>
+
+          <ListBox x:Name="CommandPaletteList"
+                   Grid.Row="4"
+                   Margin="0,0,0,10"
+                   MinHeight="40"
+                   MaxHeight="120"
+                   IsVisible="False" />
+
+          <Grid Grid.Row="5" ColumnDefinitions="*,Auto,Auto">
             <TextBox x:Name="InputBox"
                      Watermark="Write command in natural language..."
                      TextWrapping="Wrap"
@@ -86,7 +127,8 @@
                      BorderBrush="#2A3950"
                      BorderThickness="1"
                      Padding="10" />
-            <Button x:Name="SendButton" Grid.Column="1" Content="Send" MinWidth="110" Margin="10,0,0,0" />
+            <Button x:Name="UseSuggestionButton" Grid.Column="1" Content="Use Suggestion" MinWidth="130" Margin="10,0,0,0" IsEnabled="False" />
+            <Button x:Name="SendButton" Grid.Column="2" Content="Send" MinWidth="110" Margin="10,0,0,0" />
           </Grid>
         </Grid>
       </TabItem>
