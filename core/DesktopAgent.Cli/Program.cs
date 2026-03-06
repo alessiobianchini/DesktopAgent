@@ -414,6 +414,7 @@ static void PrintHelp()
     Console.WriteLine("  wait until <text> [for <seconds>]");
     Console.WriteLine("  minimize/maximize/restore/switch window, focus <app>, scroll up/down [n]");
     Console.WriteLine("  notify <text>");
+    Console.WriteLine("  take screenshot [for each screen]");
     Console.WriteLine("  clipboard history");
     Console.WriteLine("  volume up/down/mute [n], brightness up/down [n], lock screen");
     Console.WriteLine("  kill");

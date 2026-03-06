@@ -75,6 +75,34 @@ public sealed class RuleBasedIntentInterpreter : IIntentInterpreter
     private static readonly Regex NotifyRegex = BuildNotifyRegex();
     private static readonly Regex ClipboardHistoryRegex = BuildSimpleRegex("clipboard history", "show clipboard history", "cronologia clipboard");
     private static readonly Regex SnapshotRegex = BuildSnapshotRegex();
+    private static readonly string[] SnapshotIntentTokens =
+    {
+        "snapshot",
+        "screenshot",
+        "screen shot",
+        "capture screen",
+        "capture the screen",
+        "cattura schermo",
+        "foto"
+    };
+    private static readonly string[] PerScreenTokens =
+    {
+        "each screen",
+        "every screen",
+        "all screens",
+        "each monitor",
+        "every monitor",
+        "all monitors",
+        "per screen",
+        "per monitor",
+        "per schermo",
+        "per ogni schermo",
+        "per ogni monitor",
+        "ogni schermo",
+        "ogni monitor",
+        "tutti gli schermi",
+        "tutti i monitor"
+    };
     private static readonly Regex StartRecordingRegex = BuildStartRecordingRegex();
     private static readonly Regex StopRecordingRegex = BuildStopRecordingRegex();
     private static readonly Regex MouseDurationRegex = BuildMouseDurationRegex();
@@ -144,6 +172,16 @@ public sealed class RuleBasedIntentInterpreter : IIntentInterpreter
                 Type = ActionType.RecordScreen,
                 WaitFor = recordDuration,
                 Text = includeAudio ? "audio:on" : "audio:off"
+            });
+            return plan;
+        }
+
+        if (IsPerScreenSnapshotIntent(trimmed))
+        {
+            plan.Steps.Add(new PlanStep
+            {
+                Type = ActionType.CaptureScreen,
+                Text = "mode:per-screen"
             });
             return plan;
         }
@@ -440,6 +478,28 @@ public sealed class RuleBasedIntentInterpreter : IIntentInterpreter
         return new Regex(pattern, RegexOptions.IgnoreCase | RegexOptions.Compiled);
     }
 
+    private static bool IsPerScreenSnapshotIntent(string input)
+    {
+        if (string.IsNullOrWhiteSpace(input))
+        {
+            return false;
+        }
+
+        var normalized = Regex.Replace(input, "\\s+", " ").Trim().ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return false;
+        }
+
+        var hasSnapshotToken = SnapshotIntentTokens.Any(token => normalized.Contains(token, StringComparison.Ordinal));
+        if (!hasSnapshotToken)
+        {
+            return false;
+        }
+
+        return PerScreenTokens.Any(token => normalized.Contains(token, StringComparison.Ordinal));
+    }
+
     private static Regex BuildStartRecordingRegex()
     {
         var pattern = "^(?:start\\s+record(?:ing)?|begin\\s+record(?:ing)?|avvia\\s+registrazione|inizia\\s+registrazione)(?:\\s+(?:screen|desktop|schermo))?(?<audio>\\s+(?:with\\s+audio|and\\s+audio|con\\s+audio|without\\s+audio|no\\s+audio|senza\\s+audio))?$";
@@ -655,6 +715,18 @@ public sealed class RuleBasedIntentInterpreter : IIntentInterpreter
                     Type = ActionType.RecordScreen,
                     WaitFor = recordDuration,
                     Text = includeAudio ? "audio:on" : "audio:off"
+                }
+            }, true);
+        }
+
+        if (IsPerScreenSnapshotIntent(input))
+        {
+            return (new List<PlanStep>
+            {
+                new()
+                {
+                    Type = ActionType.CaptureScreen,
+                    Text = "mode:per-screen"
                 }
             }, true);
         }

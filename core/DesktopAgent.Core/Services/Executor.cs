@@ -30,6 +30,8 @@ public sealed class Executor : IExecutor
     private DateTimeOffset? _recordingStartedAtUtc;
     private bool _recordingAudio;
     private string? _recordingAudioBackend;
+    private const string CapturePerScreenMode = "mode:per-screen";
+    private const int MaxScreenCaptureCount = 16;
 
     public Executor(
         IDesktopAdapterClient client,
@@ -543,6 +545,16 @@ public sealed class Executor : IExecutor
 
     private async Task<StepResult> ExecuteCaptureAsync(PlanStep step, CancellationToken cancellationToken)
     {
+        if (IsPerScreenCapture(step))
+        {
+            return await ExecuteCapturePerScreenAsync(step, cancellationToken);
+        }
+
+        return await ExecuteSingleCaptureAsync(step, cancellationToken);
+    }
+
+    private async Task<StepResult> ExecuteSingleCaptureAsync(PlanStep step, CancellationToken cancellationToken)
+    {
         var screenshot = await _client.CaptureScreenAsync(new ScreenshotRequest(), cancellationToken);
         if (screenshot.Png.IsEmpty)
         {
@@ -565,6 +577,83 @@ public sealed class Executor : IExecutor
             _logger.LogWarning(ex, "Saving screenshot failed");
             return new StepResult { Success = false, Message = $"Screenshot save failed: {ex.Message}" };
         }
+    }
+
+    private async Task<StepResult> ExecuteCapturePerScreenAsync(PlanStep step, CancellationToken cancellationToken)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            var fallback = await ExecuteSingleCaptureAsync(step, cancellationToken);
+            if (fallback.Success)
+            {
+                fallback.Message += " (per-screen capture not supported on this OS yet)";
+            }
+
+            return fallback;
+        }
+
+        var supportsIndexedCapture = await SupportsIndexedScreenCaptureAsync(cancellationToken);
+        if (!supportsIndexedCapture)
+        {
+            var fallback = await ExecuteSingleCaptureAsync(step, cancellationToken);
+            if (fallback.Success)
+            {
+                fallback.Message += " (adapter does not support per-screen capture yet)";
+            }
+
+            return fallback;
+        }
+
+        var outputTemplate = BuildMediaOutputPath(step.Target, "snapshot", ".png");
+        var directory = Path.GetDirectoryName(outputTemplate) ?? AppContext.BaseDirectory;
+        var baseName = Path.GetFileNameWithoutExtension(outputTemplate);
+        var saved = new List<object>();
+
+        try
+        {
+            for (var index = 0; index < MaxScreenCaptureCount; index++)
+            {
+                var request = new ScreenshotRequest { WindowId = $"__screen:{index}" };
+                var screenshot = await _client.CaptureScreenAsync(request, cancellationToken);
+                if (screenshot.Png.IsEmpty)
+                {
+                    break;
+                }
+
+                var path = Path.Combine(directory, $"{baseName}-screen{index + 1}.png");
+                await File.WriteAllBytesAsync(path, screenshot.Png.ToByteArray(), cancellationToken);
+                saved.Add(new { screen = index + 1, path, screenshot.Width, screenshot.Height, bytes = screenshot.Png.Length });
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Saving per-screen screenshots failed");
+            return new StepResult { Success = false, Message = $"Screenshot save failed: {ex.Message}" };
+        }
+
+        if (saved.Count == 0)
+        {
+            return new StepResult { Success = false, Message = "Per-screen screenshot failed" };
+        }
+
+        return new StepResult
+        {
+            Success = true,
+            Message = $"Snapshots saved for {saved.Count} screen(s)",
+            Data = saved
+        };
+    }
+
+    private async Task<bool> SupportsIndexedScreenCaptureAsync(CancellationToken cancellationToken)
+    {
+        var probe = await _client.CaptureScreenAsync(new ScreenshotRequest { WindowId = "__screen:-1" }, cancellationToken);
+        return probe.Png.IsEmpty;
+    }
+
+    private static bool IsPerScreenCapture(PlanStep step)
+    {
+        return string.Equals(step.Text, CapturePerScreenMode, StringComparison.OrdinalIgnoreCase)
+               || string.Equals(step.Text, "per-screen", StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task<StepResult> ExecuteRecordScreenAsync(PlanStep step, CancellationToken cancellationToken)
@@ -1308,7 +1397,7 @@ public sealed class Executor : IExecutor
         return new StepResult { Success = false, Message = "Volume control not supported on this OS" };
     }
 
-    private async Task<StepResult> ExecuteBrightnessAsync(bool up, PlanStep step, CancellationToken cancellationToken)
+    private Task<StepResult> ExecuteBrightnessAsync(bool up, PlanStep step, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var amount = ParsePositiveInt(step.Text, 10, 1, 100);
@@ -1324,10 +1413,10 @@ public sealed class Executor : IExecutor
                 "$null=$method.WmiSetBrightness(1,$next);";
             if (!TryRunProcess("powershell", $"-NoProfile -Command \"{command}\"", out _, out var error))
             {
-                return new StepResult { Success = false, Message = error ?? "Brightness command failed" };
+                return Task.FromResult(new StepResult { Success = false, Message = error ?? "Brightness command failed" });
             }
 
-            return new StepResult { Success = true, Message = up ? $"Brightness up {amount}" : $"Brightness down {amount}" };
+            return Task.FromResult(new StepResult { Success = true, Message = up ? $"Brightness up {amount}" : $"Brightness down {amount}" });
         }
 
         if (OperatingSystem.IsLinux())
@@ -1335,13 +1424,13 @@ public sealed class Executor : IExecutor
             var delta = up ? $"+{amount}%" : $"{amount}%-";
             if (!TryRunProcess("brightnessctl", $"set {delta}", out _, out var error))
             {
-                return new StepResult { Success = false, Message = error ?? "Brightness control unavailable (install brightnessctl)" };
+                return Task.FromResult(new StepResult { Success = false, Message = error ?? "Brightness control unavailable (install brightnessctl)" });
             }
 
-            return new StepResult { Success = true, Message = up ? $"Brightness up {amount}" : $"Brightness down {amount}" };
+            return Task.FromResult(new StepResult { Success = true, Message = up ? $"Brightness up {amount}" : $"Brightness down {amount}" });
         }
 
-        return new StepResult { Success = false, Message = "Brightness control not supported on this OS" };
+        return Task.FromResult(new StepResult { Success = false, Message = "Brightness control not supported on this OS" });
     }
 
     private Task<StepResult> ExecuteLockScreenAsync(CancellationToken cancellationToken)

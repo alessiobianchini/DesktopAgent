@@ -226,6 +226,8 @@ public sealed class LocalLlmIntentRewriter : ILlmIntentRewriter
                "Command: stop recording\n" +
                "User: take a snapshot\n" +
                "Command: take screenshot\n" +
+               "User: take a screenshot for each screen\n" +
+               "Command: take screenshot for each screen\n" +
                $"User: {input}\n" +
                "Command:";
     }
@@ -235,7 +237,7 @@ public sealed class LocalLlmIntentRewriter : ILlmIntentRewriter
         return "You are a typo-tolerant command normalizer for desktop automation. " +
                "Translate user requests into executable commands. " +
                "Correct obvious typos (examples: pen->open, munutes->minutes, notepadplusplus->notepad plus plus). " +
-               "Use only these verbs/actions: open, find, click, double click, right click, drag <source> to <target>, type, press, save, save as <name> [in <folder>], new tab, close tab, close window, minimize window, maximize window, restore window, switch window, focus <app>, scroll up/down [n], page up, page down, home, end, wait until <text> [for <seconds>], copy, paste, undo, redo, select all, open url <url>, search <query> [on <browser>], browser back/forward/refresh/find in page, notify <text>, clipboard history, volume up/down/mute [n], brightness up/down [n], lock screen, create new file, move mouse for <duration>, jiggle mouse for <duration>, record screen [and audio] for <duration>, start recording [screen] [with/without audio], stop recording, take screenshot. " +
+               "Use only these verbs/actions: open, find, click, double click, right click, drag <source> to <target>, type, press, save, save as <name> [in <folder>], new tab, close tab, close window, minimize window, maximize window, restore window, switch window, focus <app>, scroll up/down [n], page up, page down, home, end, wait until <text> [for <seconds>], copy, paste, undo, redo, select all, open url <url>, search <query> [on <browser>], browser back/forward/refresh/find in page, notify <text>, clipboard history, volume up/down/mute [n], brightness up/down [n], lock screen, create new file, move mouse for <duration>, jiggle mouse for <duration>, record screen [and audio] for <duration>, start recording [screen] [with/without audio], stop recording, take screenshot [for each screen]. " +
                "If there are multiple actions, output them in sequence using ' and then ' as separator. " +
                "When app is implied, infer the most likely app token (examples: teams, chrome, edge, vscode). " +
                "Preserve numeric values and duration from user text exactly when present. " +

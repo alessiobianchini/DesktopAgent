@@ -169,6 +169,16 @@ public sealed class ProfileAndPluginTests
         Assert.Single(snapshot.Steps);
         Assert.Equal(ActionType.CaptureScreen, snapshot.Steps[0].Type);
 
+        var perScreen = interpreter.Interpret("take screenshot for each screen");
+        Assert.Single(perScreen.Steps);
+        Assert.Equal(ActionType.CaptureScreen, perScreen.Steps[0].Type);
+        Assert.Equal("mode:per-screen", perScreen.Steps[0].Text);
+
+        var italianPerScreen = interpreter.Interpret("fai una foto per schermo");
+        Assert.Single(italianPerScreen.Steps);
+        Assert.Equal(ActionType.CaptureScreen, italianPerScreen.Steps[0].Type);
+        Assert.Equal("mode:per-screen", italianPerScreen.Steps[0].Text);
+
         var recordWithAudio = interpreter.Interpret("record screen and audio for 2 minutes");
         Assert.Single(recordWithAudio.Steps);
         Assert.Equal(ActionType.RecordScreen, recordWithAudio.Steps[0].Type);

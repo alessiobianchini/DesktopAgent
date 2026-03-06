@@ -12,6 +12,7 @@ using Status = DesktopAgent.Proto.Status;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using System.Diagnostics;
+using System.Windows.Forms;
 
 namespace DesktopAgent.Adapter.Windows;
 
@@ -498,9 +499,23 @@ public sealed class DesktopAdapterService : DesktopAdapter.DesktopAdapterBase
             {
                 bounds = new Rectangle(request.Region.X, request.Region.Y, request.Region.Width, request.Region.Height);
             }
+            else if (TryParseScreenIndexHint(request.WindowId, out var screenIndex))
+            {
+                var allScreens = Screen.AllScreens;
+                if (screenIndex < 0 || screenIndex >= allScreens.Length)
+                {
+                    return Task.FromResult(new ScreenshotResponse());
+                }
+
+                bounds = allScreens[screenIndex].Bounds;
+            }
+            else if (!string.IsNullOrWhiteSpace(request.WindowId) && TryGetWindowBounds(request.WindowId, out var windowBounds))
+            {
+                bounds = windowBounds;
+            }
             else
             {
-                bounds = System.Windows.Forms.Screen.PrimaryScreen?.Bounds ?? new Rectangle(0, 0, 1024, 768);
+                bounds = Screen.PrimaryScreen?.Bounds ?? new Rectangle(0, 0, 1024, 768);
             }
 
             using var bitmap = new Bitmap(bounds.Width, bounds.Height);
@@ -514,6 +529,48 @@ public sealed class DesktopAdapterService : DesktopAdapter.DesktopAdapterBase
         {
             return Task.FromResult(new ScreenshotResponse());
         }
+    }
+
+    private static bool TryParseScreenIndexHint(string? windowId, out int screenIndex)
+    {
+        screenIndex = -1;
+        if (string.IsNullOrWhiteSpace(windowId))
+        {
+            return false;
+        }
+
+        const string prefix = "__screen:";
+        if (!windowId.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var raw = windowId[prefix.Length..].Trim();
+        if (!int.TryParse(raw, out screenIndex))
+        {
+            screenIndex = -1;
+        }
+
+        return true;
+    }
+
+    private bool TryGetWindowBounds(string windowId, out Rectangle bounds)
+    {
+        bounds = default;
+        var window = ResolveWindow(windowId);
+        if (window == null)
+        {
+            return false;
+        }
+
+        var rect = window.BoundingRectangle;
+        if (rect.Width <= 0 || rect.Height <= 0)
+        {
+            return false;
+        }
+
+        bounds = new Rectangle(rect.Left, rect.Top, rect.Width, rect.Height);
+        return true;
     }
 
     public override async Task<ClipboardResponse> GetClipboard(Empty request, ServerCallContext context)
