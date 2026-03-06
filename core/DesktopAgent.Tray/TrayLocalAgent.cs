@@ -982,12 +982,49 @@ internal sealed class TrayLocalAgent : IDisposable
             return ToChatResponse(result);
         }
 
+        var safety = await EvaluatePlanSafetyAsync(plan, cancellationToken);
+        if (!safety.Allowed)
+        {
+            return WebChatResponse.Simple($"Blocked: {safety.Reason}");
+        }
+
+        if (safety.AutoExecute)
+        {
+            var result = await ExecutePlanInternalAsync(intent ?? string.Empty, plan, dryRun: false, approvedByUser: false, cancellationToken);
+            return ToChatResponse(result);
+        }
+
         var token = CreatePendingAction(PendingActionType.ExecutePlan, intent ?? string.Empty, plan, dryRun: false);
         var notice = GetRewriteNotice(plan);
         var prompt = string.IsNullOrWhiteSpace(notice)
             ? "I interpreted your request. Confirm execution?"
             : $"I interpreted your request. {notice}. Confirm execution?";
         return WebChatResponse.ConfirmWithSteps(prompt, token, PlanToLines(plan), PlanToJson(plan), GetModeLabel(plan));
+    }
+
+    private async Task<PlanSafetyResult> EvaluatePlanSafetyAsync(ActionPlan plan, CancellationToken cancellationToken)
+    {
+        var activeWindow = await _desktopClient.GetActiveWindowAsync(cancellationToken);
+        foreach (var step in plan.Steps)
+        {
+            var decision = _policyEngine.Evaluate(step, activeWindow);
+            if (!decision.Allowed)
+            {
+                return new PlanSafetyResult(false, false, string.IsNullOrWhiteSpace(decision.Reason) ? "Blocked by policy" : decision.Reason);
+            }
+
+            if (decision.RequiresConfirmation)
+            {
+                return new PlanSafetyResult(true, false, decision.Reason);
+            }
+
+            if (!IsSafeAutoExecuteAction(step.Type))
+            {
+                return new PlanSafetyResult(true, false, "Manual confirmation required for interactive actions");
+            }
+        }
+
+        return new PlanSafetyResult(true, true, string.Empty);
     }
 
     private async Task<WebChatResponse> BuildUnknownCommandResponseAsync(string input, CancellationToken cancellationToken)
@@ -2643,6 +2680,19 @@ internal sealed class TrayLocalAgent : IDisposable
             || normalized.Contains(" then ", StringComparison.Ordinal);
     }
 
+    private static bool IsSafeAutoExecuteAction(ActionType type)
+    {
+        return type is ActionType.Find
+            or ActionType.ReadText
+            or ActionType.WaitFor
+            or ActionType.WaitForText
+            or ActionType.CaptureScreen
+            or ActionType.OpenApp
+            or ActionType.GetClipboard
+            or ActionType.FileRead
+            or ActionType.FileList;
+    }
+
     private static bool IsUnrecognizedPlan(ActionPlan plan)
     {
         if (plan.Steps.Count == 0)
@@ -3587,6 +3637,8 @@ internal sealed class TrayLocalAgent : IDisposable
     {
         public static RecoveryAttemptOutcome None { get; } = new(null, string.Empty);
     }
+
+    private readonly record struct PlanSafetyResult(bool Allowed, bool AutoExecute, string Reason);
 
     private sealed record ScheduleState(
         string Id,
