@@ -904,6 +904,7 @@ public partial class App : Application
                     MaxActionsPerSecond: null,
                     QuizSafeModeEnabled: null,
                     OcrEnabled: true,
+                    MediaOutputDirectory: null,
                     ScreenRecordingAudioBackendPreference: null,
                     ScreenRecordingAudioDevice: null,
                     ScreenRecordingPrimaryDisplayOnly: null,

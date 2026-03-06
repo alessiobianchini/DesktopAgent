@@ -10,7 +10,7 @@
         Background="#0A0E14"
         Foreground="#E6EDF7">
   <Grid RowDefinitions="Auto,Auto,*" Margin="12">
-    <Grid ColumnDefinitions="*,Auto,Auto" RowDefinitions="Auto,Auto">
+    <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto">
       <TextBlock Text="DesktopAgent Control Center" FontSize="20" FontWeight="SemiBold" />
       <TextBlock x:Name="VersionText" Grid.Row="1" Text="Version: -" FontSize="12" Opacity="0.8" Margin="0,2,0,0" />
       <StackPanel Grid.Column="1" Grid.RowSpan="2" Margin="12,0,0,0" Spacing="4" VerticalAlignment="Center">
@@ -42,7 +42,6 @@
         </WrapPanel>
         <TextBlock x:Name="StatusText" FontSize="11" Opacity="0.78" Text="Status: loading..." />
       </StackPanel>
-      <Button x:Name="OpenWebButton" Grid.Column="2" Grid.RowSpan="2" Content="Open Data Folder" MinWidth="140" Margin="12,0,0,0" />
     </Grid>
 
     <Border Grid.Row="1"
@@ -229,7 +228,7 @@
       </TabItem>
 
       <TabItem Header="Config">
-        <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,*" ColumnDefinitions="220,*" Margin="8">
+        <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,*" ColumnDefinitions="220,*" Margin="8">
           <TextBlock Text="LLM Enabled" />
           <CheckBox x:Name="CfgLlmEnabled" Grid.Column="1" />
 
@@ -274,21 +273,27 @@
           <TextBlock Grid.Row="10" Text="Capture Primary Display Only" Margin="0,8,0,0" />
           <CheckBox x:Name="CfgPrimaryDisplayOnly" Grid.Row="10" Grid.Column="1" Margin="0,8,0,0" />
 
-          <StackPanel Grid.Row="11" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="8" Margin="0,12,0,0">
+          <TextBlock Grid.Row="11" Text="Media Folder" Margin="0,8,0,0" />
+          <StackPanel Grid.Row="11" Grid.Column="1" Orientation="Horizontal" Spacing="8" Margin="0,8,0,0">
+            <TextBox x:Name="CfgMediaOutputDirectory" MinWidth="320" />
+            <Button x:Name="CfgOpenDataFolderButton" Content="Open Data Folder" MinWidth="140" />
+          </StackPanel>
+
+          <StackPanel Grid.Row="12" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="8" Margin="0,12,0,0">
             <Button x:Name="CfgLoadButton" Content="Reload Config" MinWidth="120" />
             <Button x:Name="CfgSaveButton" Content="Save Config" MinWidth="120" />
             <Button x:Name="CfgTestLlmButton" Content="Test LLM" MinWidth="120" />
             <Button x:Name="CfgRunFirstSetupButton" Content="Run First Setup" MinWidth="130" />
           </StackPanel>
 
-          <StackPanel Grid.Row="12" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="8" Margin="0,10,0,0">
+          <StackPanel Grid.Row="13" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="8" Margin="0,10,0,0">
             <Button x:Name="CfgCheckUpdatesButton" Content="Check Updates Now" MinWidth="140" />
             <Button x:Name="CfgApplyUpdateButton" Content="Apply Downloaded Update" MinWidth="180" />
             <TextBlock x:Name="CfgUpdateStatusText" VerticalAlignment="Center" />
           </StackPanel>
 
           <TextBox x:Name="CfgStatusBox"
-                   Grid.Row="13"
+                   Grid.Row="14"
                    Grid.ColumnSpan="2"
                    Margin="0,12,0,0"
                    IsReadOnly="True"

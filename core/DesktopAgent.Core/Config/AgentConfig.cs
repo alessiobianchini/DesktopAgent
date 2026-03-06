@@ -32,6 +32,7 @@ public sealed class AgentConfig
     public bool OcrEnabled { get; set; } = false;
     public bool QuizSafeModeEnabled { get; set; } = true;
     public string AuditLogPath { get; set; } = "audit.log.jsonl";
+    public string MediaOutputDirectory { get; set; } = "media";
     public bool PostCheckStrict { get; set; } = true;
     public PostCheckRules PostCheckRules { get; set; } = new();
     public int PostCheckTimeoutMs { get; set; } = 900;

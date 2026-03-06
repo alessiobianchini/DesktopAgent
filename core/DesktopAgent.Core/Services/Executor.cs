@@ -2553,12 +2553,9 @@ public sealed class Executor : IExecutor
         }
     }
 
-    private static string BuildMediaOutputPath(string? requested, string prefix, string extension)
+    private string BuildMediaOutputPath(string? requested, string prefix, string extension)
     {
-        var root = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "DesktopAgent",
-            "media");
+        var root = ResolveMediaRoot();
         Directory.CreateDirectory(root);
 
         var fileName = Path.GetFileName((requested ?? string.Empty).Trim().Trim('"', '\''));
@@ -2582,6 +2579,26 @@ public sealed class Executor : IExecutor
         }
 
         return Path.Combine(root, safeName);
+    }
+
+    private string ResolveMediaRoot()
+    {
+        var storageRoot = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "DesktopAgent");
+        Directory.CreateDirectory(storageRoot);
+
+        var configured = (_config.MediaOutputDirectory ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(configured))
+        {
+            configured = "media";
+        }
+
+        var root = Path.IsPathRooted(configured)
+            ? configured
+            : Path.Combine(storageRoot, configured);
+
+        return Path.GetFullPath(root);
     }
 
     private static string ResolveFfmpegPath()

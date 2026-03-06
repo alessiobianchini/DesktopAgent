@@ -24,6 +24,9 @@ public static class AgentConfigSanitizer
         config.PostCheckPollMs = Math.Clamp(config.PostCheckPollMs, 20, 1000);
         config.ScreenRecordingAudioBackendPreference = NormalizeAudioBackendPreference(config.ScreenRecordingAudioBackendPreference);
         config.ScreenRecordingAudioDevice = (config.ScreenRecordingAudioDevice ?? string.Empty).Trim();
+        config.MediaOutputDirectory = string.IsNullOrWhiteSpace(config.MediaOutputDirectory)
+            ? "media"
+            : config.MediaOutputDirectory.Trim();
         config.ActiveProfile = AgentProfileService.NormalizeProfile(config.ActiveProfile);
         config.Profiles ??= ProfilePresets.CreateDefault();
 

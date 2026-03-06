@@ -93,7 +93,6 @@ internal partial class QuickChatWindow : Window
     private Button? _profileSafeButton;
     private Button? _profileBalancedButton;
     private Button? _profilePowerButton;
-    private Button? _openWebButton;
     private Button? _copyButton;
     private Button? _clearButton;
 
@@ -109,6 +108,8 @@ internal partial class QuickChatWindow : Window
     private TextBox? _cfgLlmTimeout;
     private TextBox? _cfgLlmMaxTokens;
     private CheckBox? _cfgLlmAllowRemote;
+    private TextBox? _cfgMediaOutputDirectory;
+    private Button? _cfgOpenDataFolderButton;
     private Button? _cfgLoadButton;
     private Button? _cfgSaveButton;
     private Button? _cfgTestLlmButton;
@@ -198,6 +199,7 @@ internal partial class QuickChatWindow : Window
     private bool _loadingSessionState;
     private bool _suppressPaletteSelectionChanged;
     private bool _suppressGoalAutoEvents;
+    private string _configuredMediaOutputDirectory = "media";
     private string _lastStatusLine = string.Empty;
     private int _unreadChatEvents;
     private int _unreadErrorEvents;
@@ -205,6 +207,7 @@ internal partial class QuickChatWindow : Window
     private int _unreadTimelineEvents;
     private const int MaxTimelineLines = 140;
     private const int MaxRecentCommands = 20;
+    private const int MinPaletteInputChars = 3;
     private readonly string _sessionStatePath = ResolveSessionStatePath();
     private readonly List<MacroStep> _macroSteps = new();
     private readonly List<MediaFileItem> _mediaItems = new();
@@ -313,7 +316,6 @@ internal partial class QuickChatWindow : Window
         _profileSafeButton = this.FindControl<Button>("ProfileSafeButton");
         _profileBalancedButton = this.FindControl<Button>("ProfileBalancedButton");
         _profilePowerButton = this.FindControl<Button>("ProfilePowerButton");
-        _openWebButton = this.FindControl<Button>("OpenWebButton");
         _copyButton = this.FindControl<Button>("CopyButton");
         _clearButton = this.FindControl<Button>("ClearButton");
 
@@ -329,6 +331,8 @@ internal partial class QuickChatWindow : Window
         _cfgLlmTimeout = this.FindControl<TextBox>("CfgLlmTimeout");
         _cfgLlmMaxTokens = this.FindControl<TextBox>("CfgLlmMaxTokens");
         _cfgLlmAllowRemote = this.FindControl<CheckBox>("CfgLlmAllowRemote");
+        _cfgMediaOutputDirectory = this.FindControl<TextBox>("CfgMediaOutputDirectory");
+        _cfgOpenDataFolderButton = this.FindControl<Button>("CfgOpenDataFolderButton");
         _cfgLoadButton = this.FindControl<Button>("CfgLoadButton");
         _cfgSaveButton = this.FindControl<Button>("CfgSaveButton");
         _cfgTestLlmButton = this.FindControl<Button>("CfgTestLlmButton");
@@ -540,11 +544,6 @@ internal partial class QuickChatWindow : Window
         HookCommandButton(_profileBalancedButton, "profile balanced");
         HookCommandButton(_profilePowerButton, "profile power");
 
-        if (_openWebButton != null)
-        {
-            _openWebButton.Click += (_, _) => OpenWebUi();
-        }
-
         if (_copyButton != null)
         {
             _copyButton.Click += async (_, _) => await CopyTextAsync(_historyBox?.Text, "Conversation copied.");
@@ -586,6 +585,10 @@ internal partial class QuickChatWindow : Window
         if (_cfgAudioRefreshButton != null)
         {
             _cfgAudioRefreshButton.Click += async (_, _) => await RefreshAudioInputsAsync();
+        }
+        if (_cfgOpenDataFolderButton != null)
+        {
+            _cfgOpenDataFolderButton.Click += (_, _) => OpenDataFolder();
         }
         if (_cfgAudioDeviceSelector != null)
         {
@@ -1360,6 +1363,24 @@ internal partial class QuickChatWindow : Window
             }
 
             var input = _inputBox?.Text?.Trim() ?? string.Empty;
+            var inputLength = input.Count(ch => !char.IsWhiteSpace(ch));
+            if (inputLength < MinPaletteInputChars)
+            {
+                _suppressPaletteSelectionChanged = true;
+                try
+                {
+                    _commandPaletteList.ItemsSource = Array.Empty<string>();
+                    _commandPaletteList.SelectedIndex = -1;
+                    _commandPaletteList.IsVisible = false;
+                }
+                finally
+                {
+                    _suppressPaletteSelectionChanged = false;
+                }
+
+                return;
+            }
+
             var tokens = input.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
             var candidates = new List<string>();
             if (!string.IsNullOrWhiteSpace(_aiSuggestedCommand))
@@ -1528,6 +1549,10 @@ internal partial class QuickChatWindow : Window
             SetText(_cfgLlmModel, config.Llm.Model ?? string.Empty);
             SetText(_cfgLlmTimeout, config.Llm.TimeoutSeconds.ToString(CultureInfo.InvariantCulture));
             SetText(_cfgLlmMaxTokens, config.Llm.MaxTokens.ToString(CultureInfo.InvariantCulture));
+            _configuredMediaOutputDirectory = string.IsNullOrWhiteSpace(config.MediaOutputDirectory)
+                ? "media"
+                : config.MediaOutputDirectory.Trim();
+            SetText(_cfgMediaOutputDirectory, _configuredMediaOutputDirectory);
             SelectAudioBackend(config.ScreenRecordingAudioBackendPreference ?? "auto");
             SetText(_cfgAudioDevice, config.ScreenRecordingAudioDevice ?? string.Empty);
             if (_cfgPrimaryDisplayOnly != null)
@@ -1565,6 +1590,7 @@ internal partial class QuickChatWindow : Window
                 MaxActionsPerSecond: null,
                 QuizSafeModeEnabled: null,
                 OcrEnabled: null,
+                MediaOutputDirectory: _cfgMediaOutputDirectory?.Text?.Trim(),
                 ScreenRecordingAudioBackendPreference: GetSelectedAudioBackend(),
                 ScreenRecordingAudioDevice: _cfgAudioDevice?.Text?.Trim(),
                 ScreenRecordingPrimaryDisplayOnly: _cfgPrimaryDisplayOnly?.IsChecked ?? false,
@@ -1586,6 +1612,15 @@ internal partial class QuickChatWindow : Window
             {
                 AppendConfigStatus("Config save failed.");
                 return;
+            }
+
+            if (response.MediaOutputDirectory != null)
+            {
+                _configuredMediaOutputDirectory = string.IsNullOrWhiteSpace(response.MediaOutputDirectory)
+                    ? "media"
+                    : response.MediaOutputDirectory.Trim();
+                SetText(_cfgMediaOutputDirectory, _configuredMediaOutputDirectory);
+                await LoadMediaAsync();
             }
 
             AppendConfigStatus("Config saved.");
@@ -2180,12 +2215,19 @@ internal partial class QuickChatWindow : Window
         return Task.CompletedTask;
     }
 
-    private static string ResolveMediaRoot()
+    private string ResolveMediaRoot()
     {
-        return Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "DesktopAgent",
-            "media");
+        var root = ResolveDataRoot();
+        var configured = (_configuredMediaOutputDirectory ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(configured))
+        {
+            configured = "media";
+        }
+
+        var mediaPath = Path.IsPathRooted(configured)
+            ? configured
+            : Path.Combine(root, configured);
+        return Path.GetFullPath(mediaPath);
     }
 
     private void OpenMediaFolder()
@@ -2657,8 +2699,8 @@ internal partial class QuickChatWindow : Window
             _useSuggestionButton, _chatUpdateDetailsButton, _chatApplyUpdateButton, _cancelRequestButton,
             _reqPresenceButton, _killButton, _resetKillButton, _restartAdapterButton, _restartServerButton,
             _lockWindowButton, _lockAppButton, _unlockButton, _profileSafeButton,
-            _profileBalancedButton, _profilePowerButton, _openWebButton, _copyButton, _clearButton,
-            _cfgLoadButton, _cfgSaveButton, _cfgTestLlmButton, _cfgRunFirstSetupButton, _cfgCheckUpdatesButton, _cfgApplyUpdateButton, _cfgAudioRefreshButton, _tasksRefreshButton, _tasksRunButton,
+            _profileBalancedButton, _profilePowerButton, _copyButton, _clearButton,
+            _cfgLoadButton, _cfgSaveButton, _cfgTestLlmButton, _cfgRunFirstSetupButton, _cfgCheckUpdatesButton, _cfgApplyUpdateButton, _cfgAudioRefreshButton, _cfgOpenDataFolderButton, _tasksRefreshButton, _tasksRunButton,
             _tasksDeleteButton, _taskSaveButton, _macroRecordToggleButton, _macroClearButton, _macroApplyEditButton, _macroRemoveStepButton,
             _macroMoveUpButton, _macroMoveDownButton, _macroAddWaitButton, _macroSaveTaskButton, _schedulesRefreshButton, _schedulesRunButton, _schedulesDeleteButton,
             _scheduleSaveButton, _goalsRefreshButton, _goalsToggleAutoButton, _goalsDoneButton,
@@ -3623,13 +3665,11 @@ internal partial class QuickChatWindow : Window
         return value;
     }
 
-    private void OpenWebUi()
+    private void OpenDataFolder()
     {
         try
         {
-            var dataRoot = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "DesktopAgent");
+            var dataRoot = ResolveDataRoot();
             Directory.CreateDirectory(dataRoot);
             Process.Start(new ProcessStartInfo
             {
@@ -3641,6 +3681,13 @@ internal partial class QuickChatWindow : Window
         {
             // Ignore shell launch errors.
         }
+    }
+
+    private static string ResolveDataRoot()
+    {
+        return Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "DesktopAgent");
     }
 
     private sealed class GoalRow
