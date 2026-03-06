@@ -301,7 +301,7 @@
       </TabItem>
 
       <TabItem Header="Tasks">
-        <Grid RowDefinitions="Auto,*,Auto,Auto" Margin="8">
+        <Grid RowDefinitions="Auto,220,Auto,Auto,*" Margin="8">
           <StackPanel Orientation="Horizontal" Spacing="8">
             <Button x:Name="TasksRefreshButton" Content="Refresh Tasks" MinWidth="120" />
             <Button x:Name="TasksRunButton" Content="Run Selected" MinWidth="120" />
@@ -323,6 +323,51 @@
             <Button x:Name="TaskSaveButton" Content="Save Task" MinWidth="120" />
             <TextBlock x:Name="TasksStatusText" VerticalAlignment="Center" />
           </StackPanel>
+
+          <Border Grid.Row="4"
+                  Margin="0,12,0,0"
+                  Padding="10"
+                  CornerRadius="8"
+                  Background="#101723"
+                  BorderBrush="#2A3950"
+                  BorderThickness="1">
+            <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto">
+              <Grid ColumnDefinitions="Auto,Auto,*" VerticalAlignment="Center">
+                <TextBlock Text="Macro Recorder" FontWeight="SemiBold" VerticalAlignment="Center" />
+                <Button x:Name="MacroRecordToggleButton" Grid.Column="1" Content="Start Recording" MinWidth="130" Margin="10,0,0,0" />
+                <Button x:Name="MacroClearButton" Grid.Column="2" Content="Clear" MinWidth="90" HorizontalAlignment="Left" Margin="10,0,0,0" />
+              </Grid>
+
+              <ListBox x:Name="MacroList"
+                       Grid.Row="1"
+                       Margin="0,10,0,0"
+                       MinHeight="110"
+                       MaxHeight="180" />
+
+              <Grid Grid.Row="2" Margin="0,10,0,0" ColumnDefinitions="*,Auto,Auto,Auto,Auto">
+                <TextBox x:Name="MacroStepEditorInput" Watermark="Selected step command..." />
+                <Button x:Name="MacroApplyEditButton" Grid.Column="1" Content="Apply" MinWidth="80" Margin="8,0,0,0" />
+                <Button x:Name="MacroRemoveStepButton" Grid.Column="2" Content="Remove" MinWidth="86" Margin="8,0,0,0" />
+                <Button x:Name="MacroMoveUpButton" Grid.Column="3" Content="Up" MinWidth="64" Margin="8,0,0,0" />
+                <Button x:Name="MacroMoveDownButton" Grid.Column="4" Content="Down" MinWidth="70" Margin="8,0,0,0" />
+              </Grid>
+
+              <Grid Grid.Row="3" Margin="0,10,0,0" ColumnDefinitions="130,90,Auto,*">
+                <TextBlock Text="Add Wait (sec)" VerticalAlignment="Center" />
+                <TextBox x:Name="MacroAddWaitSecondsInput" Grid.Column="1" Text="1" />
+                <Button x:Name="MacroAddWaitButton" Grid.Column="2" Content="Add Wait Step" MinWidth="120" Margin="8,0,0,0" />
+                <TextBlock x:Name="MacroStatusText" Grid.Column="3" VerticalAlignment="Center" Margin="10,0,0,0" Opacity="0.85" />
+              </Grid>
+
+              <Grid Grid.Row="4" Margin="0,10,0,0" ColumnDefinitions="120,*,120,*,Auto">
+                <TextBlock Text="Macro Name" VerticalAlignment="Center" />
+                <TextBox x:Name="MacroNameInput" Grid.Column="1" Margin="8,0,0,0" Watermark="e.g. open-vscode-file" />
+                <TextBlock Grid.Column="2" Text="Description" VerticalAlignment="Center" Margin="12,0,0,0" />
+                <TextBox x:Name="MacroDescriptionInput" Grid.Column="3" Margin="8,0,0,0" Watermark="Recorded macro task" />
+                <Button x:Name="MacroSaveTaskButton" Grid.Column="4" Content="Save as Task" MinWidth="120" Margin="10,0,0,0" />
+              </Grid>
+            </Grid>
+          </Border>
         </Grid>
       </TabItem>
 
@@ -393,6 +438,57 @@
             <Button x:Name="GoalAddButton" Content="Add Goal" MinWidth="120" />
             <TextBlock x:Name="GoalsStatusText" VerticalAlignment="Center" />
           </StackPanel>
+        </Grid>
+      </TabItem>
+
+      <TabItem Header="Media">
+        <Grid RowDefinitions="Auto,*" ColumnDefinitions="360,*" Margin="8">
+          <StackPanel Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="8">
+            <Button x:Name="MediaRefreshButton" Content="Refresh Media" MinWidth="120" />
+            <Button x:Name="MediaOpenFolderButton" Content="Open Folder" MinWidth="110" />
+            <Button x:Name="MediaOpenButton" Content="Open Selected" MinWidth="120" />
+            <Button x:Name="MediaCopyPathButton" Content="Copy Path" MinWidth="100" />
+            <Button x:Name="MediaDeleteButton" Content="Delete Selected" MinWidth="130" />
+            <TextBlock x:Name="MediaStatusText" VerticalAlignment="Center" Opacity="0.8" Margin="8,0,0,0" />
+          </StackPanel>
+
+          <Border Grid.Row="1"
+                  Margin="0,10,10,0"
+                  Padding="8"
+                  BorderBrush="#2A3950"
+                  BorderThickness="1"
+                  CornerRadius="8"
+                  Background="#0F1520">
+            <ListBox x:Name="MediaList" />
+          </Border>
+
+          <Border Grid.Row="1"
+                  Grid.Column="1"
+                  Margin="0,10,0,0"
+                  Padding="10"
+                  BorderBrush="#2A3950"
+                  BorderThickness="1"
+                  CornerRadius="8"
+                  Background="#0F1520">
+            <Grid RowDefinitions="Auto,Auto,*">
+              <TextBlock x:Name="MediaPreviewTitleText" Text="No media selected" FontWeight="SemiBold" />
+              <TextBox x:Name="MediaPreviewInfoText"
+                       Grid.Row="1"
+                       Margin="0,8,0,8"
+                       IsReadOnly="True"
+                       AcceptsReturn="True"
+                       TextWrapping="Wrap"
+                       BorderThickness="0"
+                       Background="#0F1520" />
+              <Border Grid.Row="2"
+                      BorderBrush="#2A3950"
+                      BorderThickness="1"
+                      CornerRadius="6"
+                      Background="#111A2A">
+                <Image x:Name="MediaPreviewImage" Stretch="Uniform" />
+              </Border>
+            </Grid>
+          </Border>
         </Grid>
       </TabItem>
 

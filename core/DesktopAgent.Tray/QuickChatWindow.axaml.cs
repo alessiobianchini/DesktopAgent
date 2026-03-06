@@ -8,6 +8,7 @@ using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Media;
+using Avalonia.Media.Imaging;
 using Avalonia.Threading;
 
 namespace DesktopAgent.Tray;
@@ -126,6 +127,20 @@ internal partial class QuickChatWindow : Window
     private TextBox? _taskDescriptionInput;
     private Button? _taskSaveButton;
     private TextBlock? _tasksStatusText;
+    private Button? _macroRecordToggleButton;
+    private Button? _macroClearButton;
+    private ListBox? _macroList;
+    private TextBox? _macroStepEditorInput;
+    private Button? _macroApplyEditButton;
+    private Button? _macroRemoveStepButton;
+    private Button? _macroMoveUpButton;
+    private Button? _macroMoveDownButton;
+    private TextBox? _macroAddWaitSecondsInput;
+    private Button? _macroAddWaitButton;
+    private TextBox? _macroNameInput;
+    private TextBox? _macroDescriptionInput;
+    private Button? _macroSaveTaskButton;
+    private TextBlock? _macroStatusText;
 
     private Button? _schedulesRefreshButton;
     private Button? _schedulesRunButton;
@@ -148,6 +163,17 @@ internal partial class QuickChatWindow : Window
     private Button? _goalAddButton;
     private TextBlock? _goalsStatusText;
 
+    private Button? _mediaRefreshButton;
+    private Button? _mediaOpenFolderButton;
+    private Button? _mediaOpenButton;
+    private Button? _mediaCopyPathButton;
+    private Button? _mediaDeleteButton;
+    private ListBox? _mediaList;
+    private TextBlock? _mediaStatusText;
+    private TextBlock? _mediaPreviewTitleText;
+    private TextBox? _mediaPreviewInfoText;
+    private Image? _mediaPreviewImage;
+
     private Button? _auditRefreshButton;
     private Button? _auditCopyButton;
     private Button? _auditClearButton;
@@ -168,6 +194,7 @@ internal partial class QuickChatWindow : Window
     private CancellationTokenSource? _paletteDebounceCts;
     private CancellationTokenSource? _persistSessionCts;
     private bool _busy;
+    private bool _macroRecording;
     private bool _loadingSessionState;
     private bool _suppressPaletteSelectionChanged;
     private bool _suppressGoalAutoEvents;
@@ -179,6 +206,9 @@ internal partial class QuickChatWindow : Window
     private const int MaxTimelineLines = 140;
     private const int MaxRecentCommands = 20;
     private readonly string _sessionStatePath = ResolveSessionStatePath();
+    private readonly List<MacroStep> _macroSteps = new();
+    private readonly List<MediaFileItem> _mediaItems = new();
+    private Bitmap? _mediaPreviewBitmap;
     private bool? _lastOcrEnabled;
     private static readonly string[] BaseCommandPalette =
     {
@@ -317,6 +347,20 @@ internal partial class QuickChatWindow : Window
         _taskDescriptionInput = this.FindControl<TextBox>("TaskDescriptionInput");
         _taskSaveButton = this.FindControl<Button>("TaskSaveButton");
         _tasksStatusText = this.FindControl<TextBlock>("TasksStatusText");
+        _macroRecordToggleButton = this.FindControl<Button>("MacroRecordToggleButton");
+        _macroClearButton = this.FindControl<Button>("MacroClearButton");
+        _macroList = this.FindControl<ListBox>("MacroList");
+        _macroStepEditorInput = this.FindControl<TextBox>("MacroStepEditorInput");
+        _macroApplyEditButton = this.FindControl<Button>("MacroApplyEditButton");
+        _macroRemoveStepButton = this.FindControl<Button>("MacroRemoveStepButton");
+        _macroMoveUpButton = this.FindControl<Button>("MacroMoveUpButton");
+        _macroMoveDownButton = this.FindControl<Button>("MacroMoveDownButton");
+        _macroAddWaitSecondsInput = this.FindControl<TextBox>("MacroAddWaitSecondsInput");
+        _macroAddWaitButton = this.FindControl<Button>("MacroAddWaitButton");
+        _macroNameInput = this.FindControl<TextBox>("MacroNameInput");
+        _macroDescriptionInput = this.FindControl<TextBox>("MacroDescriptionInput");
+        _macroSaveTaskButton = this.FindControl<Button>("MacroSaveTaskButton");
+        _macroStatusText = this.FindControl<TextBlock>("MacroStatusText");
 
         _schedulesRefreshButton = this.FindControl<Button>("SchedulesRefreshButton");
         _schedulesRunButton = this.FindControl<Button>("SchedulesRunButton");
@@ -338,6 +382,17 @@ internal partial class QuickChatWindow : Window
         _goalTextInput = this.FindControl<TextBox>("GoalTextInput");
         _goalAddButton = this.FindControl<Button>("GoalAddButton");
         _goalsStatusText = this.FindControl<TextBlock>("GoalsStatusText");
+
+        _mediaRefreshButton = this.FindControl<Button>("MediaRefreshButton");
+        _mediaOpenFolderButton = this.FindControl<Button>("MediaOpenFolderButton");
+        _mediaOpenButton = this.FindControl<Button>("MediaOpenButton");
+        _mediaCopyPathButton = this.FindControl<Button>("MediaCopyPathButton");
+        _mediaDeleteButton = this.FindControl<Button>("MediaDeleteButton");
+        _mediaList = this.FindControl<ListBox>("MediaList");
+        _mediaStatusText = this.FindControl<TextBlock>("MediaStatusText");
+        _mediaPreviewTitleText = this.FindControl<TextBlock>("MediaPreviewTitleText");
+        _mediaPreviewInfoText = this.FindControl<TextBox>("MediaPreviewInfoText");
+        _mediaPreviewImage = this.FindControl<Image>("MediaPreviewImage");
 
         _auditRefreshButton = this.FindControl<Button>("AuditRefreshButton");
         _auditCopyButton = this.FindControl<Button>("AuditCopyButton");
@@ -561,6 +616,42 @@ internal partial class QuickChatWindow : Window
         {
             _tasksDeleteButton.Click += async (_, _) => await DeleteSelectedTaskAsync();
         }
+        if (_macroRecordToggleButton != null)
+        {
+            _macroRecordToggleButton.Click += (_, _) => ToggleMacroRecording();
+        }
+        if (_macroClearButton != null)
+        {
+            _macroClearButton.Click += (_, _) => ClearMacroSteps();
+        }
+        if (_macroList != null)
+        {
+            _macroList.SelectionChanged += (_, _) => OnMacroSelectionChanged();
+        }
+        if (_macroApplyEditButton != null)
+        {
+            _macroApplyEditButton.Click += (_, _) => ApplyMacroStepEdit();
+        }
+        if (_macroRemoveStepButton != null)
+        {
+            _macroRemoveStepButton.Click += (_, _) => RemoveSelectedMacroStep();
+        }
+        if (_macroMoveUpButton != null)
+        {
+            _macroMoveUpButton.Click += (_, _) => MoveSelectedMacroStep(-1);
+        }
+        if (_macroMoveDownButton != null)
+        {
+            _macroMoveDownButton.Click += (_, _) => MoveSelectedMacroStep(1);
+        }
+        if (_macroAddWaitButton != null)
+        {
+            _macroAddWaitButton.Click += (_, _) => AddMacroWaitStep();
+        }
+        if (_macroSaveTaskButton != null)
+        {
+            _macroSaveTaskButton.Click += async (_, _) => await SaveMacroAsTaskAsync();
+        }
 
         if (_schedulesRefreshButton != null)
         {
@@ -598,6 +689,30 @@ internal partial class QuickChatWindow : Window
         if (_goalAddButton != null)
         {
             _goalAddButton.Click += async (_, _) => await AddGoalAsync();
+        }
+        if (_mediaRefreshButton != null)
+        {
+            _mediaRefreshButton.Click += async (_, _) => await LoadMediaAsync();
+        }
+        if (_mediaOpenFolderButton != null)
+        {
+            _mediaOpenFolderButton.Click += (_, _) => OpenMediaFolder();
+        }
+        if (_mediaOpenButton != null)
+        {
+            _mediaOpenButton.Click += (_, _) => OpenSelectedMedia();
+        }
+        if (_mediaCopyPathButton != null)
+        {
+            _mediaCopyPathButton.Click += async (_, _) => await CopySelectedMediaPathAsync();
+        }
+        if (_mediaDeleteButton != null)
+        {
+            _mediaDeleteButton.Click += async (_, _) => await DeleteSelectedMediaAsync();
+        }
+        if (_mediaList != null)
+        {
+            _mediaList.SelectionChanged += (_, _) => RefreshSelectedMediaPreview();
         }
 
         if (_auditRefreshButton != null)
@@ -655,6 +770,7 @@ internal partial class QuickChatWindow : Window
             _persistSessionCts?.Dispose();
             _persistSessionCts = null;
             PersistSessionState();
+            DisposeMediaPreview();
         };
     }
 
@@ -682,8 +798,10 @@ internal partial class QuickChatWindow : Window
         await LoadTasksAsync();
         await LoadSchedulesAsync();
         await LoadGoalsAsync();
+        await LoadMediaAsync();
         await LoadAuditAsync();
         await RefreshDiagnosticsAsync();
+        RefreshMacroRecorderUi();
         _ = PollStatusAsync(_pollingCts.Token);
     }
 
@@ -757,6 +875,7 @@ internal partial class QuickChatWindow : Window
         _lastSentMessage = normalized;
         _lastSentAtUtc = DateTimeOffset.UtcNow;
         AddRecentCommand(normalized);
+        MaybeRecordMacroCommand(normalized);
 
         _activeRequestCts = CancellationTokenSource.CreateLinkedTokenSource(_pollingCts.Token);
         var requestToken = _activeRequestCts.Token;
@@ -1753,6 +1872,454 @@ internal partial class QuickChatWindow : Window
         }
     }
 
+    private void ToggleMacroRecording()
+    {
+        _macroRecording = !_macroRecording;
+        RefreshMacroRecorderUi();
+        var message = _macroRecording ? "Macro recording started." : "Macro recording stopped.";
+        SetText(_macroStatusText, message);
+        AppendSystem(message);
+    }
+
+    private void ClearMacroSteps()
+    {
+        _macroSteps.Clear();
+        if (_macroList != null)
+        {
+            _macroList.SelectedIndex = -1;
+        }
+
+        RefreshMacroRecorderUi();
+        SetText(_macroStatusText, "Macro cleared.");
+    }
+
+    private void OnMacroSelectionChanged()
+    {
+        var index = _macroList?.SelectedIndex ?? -1;
+        if (index < 0 || index >= _macroSteps.Count)
+        {
+            SetText(_macroStepEditorInput, string.Empty);
+            return;
+        }
+
+        var step = _macroSteps[index];
+        SetText(_macroStepEditorInput, step.Value);
+    }
+
+    private void ApplyMacroStepEdit()
+    {
+        var index = _macroList?.SelectedIndex ?? -1;
+        if (index < 0 || index >= _macroSteps.Count)
+        {
+            SetText(_macroStatusText, "Select a macro step.");
+            return;
+        }
+
+        var edited = (_macroStepEditorInput?.Text ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(edited))
+        {
+            SetText(_macroStatusText, "Step cannot be empty.");
+            return;
+        }
+
+        var current = _macroSteps[index];
+        if (string.Equals(current.Kind, "wait", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!int.TryParse(edited, NumberStyles.Integer, CultureInfo.InvariantCulture, out var seconds) || seconds <= 0)
+            {
+                SetText(_macroStatusText, "Wait step must be a positive number (seconds).");
+                return;
+            }
+
+            _macroSteps[index] = new MacroStep("wait", seconds.ToString(CultureInfo.InvariantCulture));
+        }
+        else
+        {
+            _macroSteps[index] = new MacroStep("command", edited);
+        }
+
+        RefreshMacroRecorderUi(index);
+        SetText(_macroStatusText, "Step updated.");
+    }
+
+    private void RemoveSelectedMacroStep()
+    {
+        var index = _macroList?.SelectedIndex ?? -1;
+        if (index < 0 || index >= _macroSteps.Count)
+        {
+            SetText(_macroStatusText, "Select a macro step.");
+            return;
+        }
+
+        _macroSteps.RemoveAt(index);
+        RefreshMacroRecorderUi(Math.Clamp(index - 1, 0, _macroSteps.Count - 1));
+        SetText(_macroStatusText, "Step removed.");
+    }
+
+    private void MoveSelectedMacroStep(int delta)
+    {
+        var index = _macroList?.SelectedIndex ?? -1;
+        if (index < 0 || index >= _macroSteps.Count)
+        {
+            SetText(_macroStatusText, "Select a macro step.");
+            return;
+        }
+
+        var target = index + delta;
+        if (target < 0 || target >= _macroSteps.Count)
+        {
+            return;
+        }
+
+        (_macroSteps[index], _macroSteps[target]) = (_macroSteps[target], _macroSteps[index]);
+        RefreshMacroRecorderUi(target);
+    }
+
+    private void AddMacroWaitStep()
+    {
+        var raw = (_macroAddWaitSecondsInput?.Text ?? string.Empty).Trim();
+        if (!int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var seconds) || seconds <= 0)
+        {
+            SetText(_macroStatusText, "Wait seconds must be a positive integer.");
+            return;
+        }
+
+        _macroSteps.Add(new MacroStep("wait", seconds.ToString(CultureInfo.InvariantCulture)));
+        RefreshMacroRecorderUi(_macroSteps.Count - 1);
+        SetText(_macroStatusText, $"Wait step added ({seconds}s).");
+    }
+
+    private async Task SaveMacroAsTaskAsync()
+    {
+        var name = (_macroNameInput?.Text ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            SetText(_macroStatusText, "Macro name is required.");
+            return;
+        }
+
+        if (!TryBuildMacroIntent(out var intent))
+        {
+            SetText(_macroStatusText, "Macro has no steps.");
+            return;
+        }
+
+        var description = (_macroDescriptionInput?.Text ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(description))
+        {
+            description = "Recorded macro";
+        }
+
+        try
+        {
+            var response = await _apiClient.SaveTaskAsync(
+                new WebTaskUpsertRequest(name, intent, description, null),
+                CancellationToken.None);
+
+            SetText(_macroStatusText, response?.Message ?? "Macro saved as task.");
+            SetText(_tasksStatusText, response?.Message ?? "Task saved.");
+            SetText(_taskNameInput, name);
+            SetText(_taskIntentInput, intent);
+            SetText(_taskDescriptionInput, description);
+            await LoadTasksAsync();
+        }
+        catch (Exception ex)
+        {
+            SetText(_macroStatusText, $"Macro save failed: {ex.Message}");
+        }
+    }
+
+    private void MaybeRecordMacroCommand(string command)
+    {
+        if (!_macroRecording)
+        {
+            return;
+        }
+
+        var normalized = command.Trim();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return;
+        }
+
+        _macroSteps.Add(new MacroStep("command", normalized));
+        RefreshMacroRecorderUi(_macroSteps.Count - 1);
+    }
+
+    private bool TryBuildMacroIntent(out string intent)
+    {
+        intent = string.Empty;
+        if (_macroSteps.Count == 0)
+        {
+            return false;
+        }
+
+        var parts = new List<string>();
+        foreach (var step in _macroSteps)
+        {
+            if (string.Equals(step.Kind, "wait", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!int.TryParse(step.Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var seconds) || seconds <= 0)
+                {
+                    continue;
+                }
+
+                parts.Add($"wait for {seconds} seconds");
+                continue;
+            }
+
+            if (!string.IsNullOrWhiteSpace(step.Value))
+            {
+                parts.Add(step.Value.Trim());
+            }
+        }
+
+        if (parts.Count == 0)
+        {
+            return false;
+        }
+
+        intent = string.Join(" and then ", parts);
+        return true;
+    }
+
+    private void RefreshMacroRecorderUi(int selectedIndex = -1)
+    {
+        if (_macroRecordToggleButton != null)
+        {
+            _macroRecordToggleButton.Content = _macroRecording ? "Stop Recording" : "Start Recording";
+        }
+
+        if (_macroList != null)
+        {
+            _macroList.ItemsSource = _macroSteps
+                .Select((step, index) => FormatMacroStep(index, step))
+                .ToList();
+
+            if (_macroSteps.Count == 0)
+            {
+                _macroList.SelectedIndex = -1;
+            }
+            else if (selectedIndex >= 0 && selectedIndex < _macroSteps.Count)
+            {
+                _macroList.SelectedIndex = selectedIndex;
+            }
+        }
+
+        if (_macroNameInput != null && string.IsNullOrWhiteSpace(_macroNameInput.Text))
+        {
+            _macroNameInput.Text = $"macro-{DateTime.Now:HHmmss}";
+        }
+    }
+
+    private Task LoadMediaAsync()
+    {
+        try
+        {
+            var root = ResolveMediaRoot();
+            Directory.CreateDirectory(root);
+
+            var supported = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp",
+                ".mp4", ".mkv", ".mov", ".avi", ".webm"
+            };
+
+            _mediaItems.Clear();
+            foreach (var file in Directory.EnumerateFiles(root))
+            {
+                var ext = Path.GetExtension(file);
+                if (string.IsNullOrWhiteSpace(ext) || !supported.Contains(ext))
+                {
+                    continue;
+                }
+
+                FileInfo info;
+                try
+                {
+                    info = new FileInfo(file);
+                }
+                catch
+                {
+                    continue;
+                }
+
+                var isImage = IsImageExtension(ext);
+                var isVideo = IsVideoExtension(ext);
+                _mediaItems.Add(new MediaFileItem(info.FullName, info.Name, info.Length, info.LastWriteTimeUtc, ext, isImage, isVideo));
+            }
+
+            _mediaItems.Sort((a, b) => b.LastWriteUtc.CompareTo(a.LastWriteUtc));
+
+            if (_mediaList != null)
+            {
+                _mediaList.ItemsSource = _mediaItems.Select(FormatMedia).ToList();
+            }
+
+            SetText(_mediaStatusText, $"Media: {_mediaItems.Count} files");
+            if (_mediaItems.Count == 0)
+            {
+                DisposeMediaPreview();
+                SetText(_mediaPreviewTitleText, "No media found");
+                SetText(_mediaPreviewInfoText, $"Folder: {root}");
+            }
+            else
+            {
+                if (_mediaList != null)
+                {
+                    _mediaList.SelectedIndex = 0;
+                }
+                RefreshSelectedMediaPreview();
+            }
+        }
+        catch (Exception ex)
+        {
+            SetText(_mediaStatusText, $"Media load failed: {ex.Message}");
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private static string ResolveMediaRoot()
+    {
+        return Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "DesktopAgent",
+            "media");
+    }
+
+    private void OpenMediaFolder()
+    {
+        try
+        {
+            var root = ResolveMediaRoot();
+            Directory.CreateDirectory(root);
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = root,
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex)
+        {
+            SetText(_mediaStatusText, $"Open folder failed: {ex.Message}");
+        }
+    }
+
+    private void OpenSelectedMedia()
+    {
+        var selected = SelectedMedia();
+        if (selected == null)
+        {
+            SetText(_mediaStatusText, "Select a media file.");
+            return;
+        }
+
+        try
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = selected.Path,
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex)
+        {
+            SetText(_mediaStatusText, $"Open media failed: {ex.Message}");
+        }
+    }
+
+    private async Task CopySelectedMediaPathAsync()
+    {
+        var selected = SelectedMedia();
+        if (selected == null)
+        {
+            SetText(_mediaStatusText, "Select a media file.");
+            return;
+        }
+
+        await CopyTextAsync(selected.Path, "Media path copied.");
+    }
+
+    private async Task DeleteSelectedMediaAsync()
+    {
+        var selected = SelectedMedia();
+        if (selected == null)
+        {
+            SetText(_mediaStatusText, "Select a media file.");
+            return;
+        }
+
+        try
+        {
+            File.Delete(selected.Path);
+            SetText(_mediaStatusText, $"Deleted: {selected.Name}");
+            await LoadMediaAsync();
+        }
+        catch (Exception ex)
+        {
+            SetText(_mediaStatusText, $"Delete failed: {ex.Message}");
+        }
+    }
+
+    private void RefreshSelectedMediaPreview()
+    {
+        var selected = SelectedMedia();
+        if (selected == null)
+        {
+            DisposeMediaPreview();
+            SetText(_mediaPreviewTitleText, "No media selected");
+            SetText(_mediaPreviewInfoText, string.Empty);
+            return;
+        }
+
+        SetText(_mediaPreviewTitleText, selected.Name);
+        var kind = selected.IsImage ? "image" : selected.IsVideo ? "video" : "file";
+        var info = $"{kind.ToUpperInvariant()}{Environment.NewLine}" +
+                   $"Size: {FormatBytes(selected.SizeBytes)}{Environment.NewLine}" +
+                   $"Modified: {selected.LastWriteUtc.ToLocalTime():yyyy-MM-dd HH:mm:ss}{Environment.NewLine}" +
+                   $"Path: {selected.Path}";
+        SetText(_mediaPreviewInfoText, info);
+
+        if (!selected.IsImage || !File.Exists(selected.Path))
+        {
+            DisposeMediaPreview();
+            return;
+        }
+
+        try
+        {
+            DisposeMediaPreview();
+            _mediaPreviewBitmap = new Bitmap(selected.Path);
+            if (_mediaPreviewImage != null)
+            {
+                _mediaPreviewImage.Source = _mediaPreviewBitmap;
+            }
+        }
+        catch
+        {
+            DisposeMediaPreview();
+        }
+    }
+
+    private void DisposeMediaPreview()
+    {
+        try
+        {
+            if (_mediaPreviewImage != null)
+            {
+                _mediaPreviewImage.Source = null;
+            }
+
+            _mediaPreviewBitmap?.Dispose();
+            _mediaPreviewBitmap = null;
+        }
+        catch
+        {
+            // ignored
+        }
+    }
+
     private async Task LoadSchedulesAsync()
     {
         try
@@ -2002,6 +2569,17 @@ internal partial class QuickChatWindow : Window
         return _taskItems[index];
     }
 
+    private MediaFileItem? SelectedMedia()
+    {
+        var index = _mediaList?.SelectedIndex ?? -1;
+        if (index < 0 || index >= _mediaItems.Count)
+        {
+            return null;
+        }
+
+        return _mediaItems[index];
+    }
+
     private WebScheduleItem? SelectedSchedule()
     {
         var index = _schedulesList?.SelectedIndex ?? -1;
@@ -2081,9 +2659,11 @@ internal partial class QuickChatWindow : Window
             _lockWindowButton, _lockAppButton, _unlockButton, _profileSafeButton,
             _profileBalancedButton, _profilePowerButton, _openWebButton, _copyButton, _clearButton,
             _cfgLoadButton, _cfgSaveButton, _cfgTestLlmButton, _cfgRunFirstSetupButton, _cfgCheckUpdatesButton, _cfgApplyUpdateButton, _cfgAudioRefreshButton, _tasksRefreshButton, _tasksRunButton,
-            _tasksDeleteButton, _taskSaveButton, _schedulesRefreshButton, _schedulesRunButton, _schedulesDeleteButton,
+            _tasksDeleteButton, _taskSaveButton, _macroRecordToggleButton, _macroClearButton, _macroApplyEditButton, _macroRemoveStepButton,
+            _macroMoveUpButton, _macroMoveDownButton, _macroAddWaitButton, _macroSaveTaskButton, _schedulesRefreshButton, _schedulesRunButton, _schedulesDeleteButton,
             _scheduleSaveButton, _goalsRefreshButton, _goalsToggleAutoButton, _goalsDoneButton,
-            _goalsRemoveButton, _goalAddButton, _auditRefreshButton, _auditCopyButton, _auditClearButton
+            _goalsRemoveButton, _goalAddButton, _mediaRefreshButton, _mediaOpenFolderButton, _mediaOpenButton, _mediaCopyPathButton, _mediaDeleteButton,
+            _auditRefreshButton, _auditCopyButton, _auditClearButton
         }.Where(button => button != null).Cast<Button>();
     }
 
@@ -2676,6 +3256,62 @@ internal partial class QuickChatWindow : Window
         return $"{task.Name} | {description} | {task.UpdatedAt:yyyy-MM-dd HH:mm}";
     }
 
+    private static string FormatMacroStep(int index, MacroStep step)
+    {
+        var label = string.Equals(step.Kind, "wait", StringComparison.OrdinalIgnoreCase)
+            ? $"wait {step.Value}s"
+            : step.Value;
+        return $"{index + 1}. {label}";
+    }
+
+    private static string FormatMedia(MediaFileItem item)
+    {
+        var kind = item.IsImage ? "IMG" : item.IsVideo ? "VID" : "FILE";
+        var size = FormatBytes(item.SizeBytes);
+        var stamp = item.LastWriteUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
+        return $"[{kind}] {item.Name} | {size} | {stamp}";
+    }
+
+    private static bool IsImageExtension(string extension)
+    {
+        return extension.Equals(".png", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".jpg", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".jpeg", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".bmp", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".gif", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".webp", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsVideoExtension(string extension)
+    {
+        return extension.Equals(".mp4", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".mkv", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".mov", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".avi", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".webm", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        const double k = 1024d;
+        if (bytes < k)
+        {
+            return $"{bytes} B";
+        }
+
+        if (bytes < k * k)
+        {
+            return $"{bytes / k:0.0} KB";
+        }
+
+        if (bytes < k * k * k)
+        {
+            return $"{bytes / (k * k):0.0} MB";
+        }
+
+        return $"{bytes / (k * k * k):0.0} GB";
+    }
+
     private static string FormatSchedule(WebScheduleItem schedule)
     {
         var start = schedule.StartAtUtc?.ToString("yyyy-MM-dd HH:mm 'UTC'", CultureInfo.InvariantCulture) ?? "immediate";
@@ -3021,5 +3657,7 @@ internal sealed record ChatSessionState(
     List<string> RecentCommands,
     string InputText);
 
+internal sealed record MacroStep(string Kind, string Value);
+internal sealed record MediaFileItem(string Path, string Name, long SizeBytes, DateTime LastWriteUtc, string Extension, bool IsImage, bool IsVideo);
 internal sealed record ChatUpdateBadge(bool Visible, bool CanApply, string Text);
 internal sealed record ChatUpdateDetails(bool HasUpdate, string Title, string Details, bool CanApply, bool HasBlockers, string Blockers);
