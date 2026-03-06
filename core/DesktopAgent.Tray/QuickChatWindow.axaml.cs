@@ -7,6 +7,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
+using Avalonia.Media;
 using Avalonia.Threading;
 
 namespace DesktopAgent.Tray;
@@ -41,6 +42,18 @@ internal partial class QuickChatWindow : Window
     private TextBlock? _chatTabBadgeText;
     private Border? _timelineTabBadgePanel;
     private TextBlock? _timelineTabBadgeText;
+    private Border? _armedStateBadge;
+    private TextBlock? _armedStateText;
+    private TextBlock? _armedStateIcon;
+    private Border? _presenceStateBadge;
+    private TextBlock? _presenceStateText;
+    private TextBlock? _presenceStateIcon;
+    private Border? _llmStateBadge;
+    private TextBlock? _llmStateText;
+    private TextBlock? _llmStateIcon;
+    private Border? _killStateBadge;
+    private TextBlock? _killStateText;
+    private TextBlock? _killStateIcon;
     private TextBlock? _healthText;
     private ComboBox? _timelineFilterCombo;
     private TextBox? _timelineSearchBox;
@@ -220,6 +233,18 @@ internal partial class QuickChatWindow : Window
         _chatTabBadgeText = this.FindControl<TextBlock>("ChatTabBadgeText");
         _timelineTabBadgePanel = this.FindControl<Border>("TimelineTabBadgePanel");
         _timelineTabBadgeText = this.FindControl<TextBlock>("TimelineTabBadgeText");
+        _armedStateBadge = this.FindControl<Border>("ArmedStateBadge");
+        _armedStateText = this.FindControl<TextBlock>("ArmedStateText");
+        _armedStateIcon = this.FindControl<TextBlock>("ArmedStateIcon");
+        _presenceStateBadge = this.FindControl<Border>("PresenceStateBadge");
+        _presenceStateText = this.FindControl<TextBlock>("PresenceStateText");
+        _presenceStateIcon = this.FindControl<TextBlock>("PresenceStateIcon");
+        _llmStateBadge = this.FindControl<Border>("LlmStateBadge");
+        _llmStateText = this.FindControl<TextBlock>("LlmStateText");
+        _llmStateIcon = this.FindControl<TextBlock>("LlmStateIcon");
+        _killStateBadge = this.FindControl<Border>("KillStateBadge");
+        _killStateText = this.FindControl<TextBlock>("KillStateText");
+        _killStateIcon = this.FindControl<TextBlock>("KillStateIcon");
         _healthText = this.FindControl<TextBlock>("HealthText");
         _timelineFilterCombo = this.FindControl<ComboBox>("TimelineFilterCombo");
         _timelineSearchBox = this.FindControl<TextBox>("TimelineSearchBox");
@@ -847,17 +872,17 @@ internal partial class QuickChatWindow : Window
             var snapshot = await _apiClient.GetStatusAsync(CancellationToken.None);
             if (snapshot?.Adapter == null)
             {
-                SetText(_statusText, "Status unavailable");
+                SetText(_statusText, "Adapter unavailable");
+                SetConnectionBadgesUnknown();
                 return;
             }
 
-            var llmLabel = snapshot.Llm == null
-                ? "LLM:unknown"
-                : snapshot.Llm.Enabled && snapshot.Llm.Available ? "LLM:on" : "LLM:off";
-            var killLabel = snapshot.KillSwitch?.Tripped == true ? "KILL:on" : "KILL:off";
-            var armedLabel = snapshot.Adapter.Armed ? "ARMED:on" : "ARMED:off";
-            var presenceLabel = snapshot.Adapter.RequireUserPresence ? "PRESENCE:req" : "PRESENCE:off";
-            var statusLine = $"{armedLabel} | {presenceLabel} | {llmLabel} | {killLabel}";
+            var llmEnabled = snapshot.Llm?.Enabled == true;
+            var llmAvailable = llmEnabled && snapshot.Llm?.Available == true;
+            var killTripped = snapshot.KillSwitch?.Tripped == true;
+            UpdateConnectionBadges(snapshot.Adapter.Armed, snapshot.Adapter.RequireUserPresence, llmEnabled, llmAvailable, killTripped);
+
+            var statusLine = $"Adapter online · {DateTime.Now:HH:mm:ss}";
             if (!string.Equals(statusLine, _lastStatusLine, StringComparison.Ordinal))
             {
                 _lastStatusLine = statusLine;
@@ -875,6 +900,7 @@ internal partial class QuickChatWindow : Window
         catch
         {
             SetText(_statusText, "Status unavailable");
+            SetConnectionBadgesUnknown();
             SetText(_healthText, "Health: adapter down | grpc down | llm ? | ocr ? | ffmpeg ?");
         }
     }
@@ -2765,6 +2791,52 @@ internal partial class QuickChatWindow : Window
         var llmLabel = !llmEnabled ? "[-]" : llmOk ? "[+]" : "[!]";
         var text = $"Health: adapter {(adapterUp ? "[+]" : "[-]")} | grpc {(grpcUp ? "[+]" : "[-]")} | llm {llmLabel} | ocr {ocrLabel} | ffmpeg {ffmpegLabel}";
         SetText(_healthText, text);
+    }
+
+    private void UpdateConnectionBadges(bool armed, bool requirePresence, bool llmEnabled, bool llmAvailable, bool killTripped)
+    {
+        SetBadgeState(_armedStateBadge, _armedStateText, _armedStateIcon, "🛡", armed ? "ARMED ON" : "ARMED OFF", armed ? "#173526" : "#2A3344", armed ? "#2F6D4A" : "#3C4A63");
+        SetBadgeState(_presenceStateBadge, _presenceStateText, _presenceStateIcon, "🔐", requirePresence ? "PRESENCE REQ" : "PRESENCE OFF", requirePresence ? "#3D2E15" : "#2A3344", requirePresence ? "#7D5B2D" : "#3C4A63");
+
+        if (!llmEnabled)
+        {
+            SetBadgeState(_llmStateBadge, _llmStateText, _llmStateIcon, "🧠", "LLM OFF", "#2A3344", "#3C4A63");
+        }
+        else if (llmAvailable)
+        {
+            SetBadgeState(_llmStateBadge, _llmStateText, _llmStateIcon, "🧠", "LLM READY", "#163827", "#2F6D4A");
+        }
+        else
+        {
+            SetBadgeState(_llmStateBadge, _llmStateText, _llmStateIcon, "🧠", "LLM DOWN", "#3B1F1F", "#7E3D3D");
+        }
+
+        SetBadgeState(_killStateBadge, _killStateText, _killStateIcon, killTripped ? "⛔" : "✅", killTripped ? "KILL ON" : "KILL OFF", killTripped ? "#4A1818" : "#173526", killTripped ? "#8A3A3A" : "#2F6D4A");
+    }
+
+    private void SetConnectionBadgesUnknown()
+    {
+        SetBadgeState(_armedStateBadge, _armedStateText, _armedStateIcon, "🛡", "ARMED ?", "#2A3344", "#3C4A63");
+        SetBadgeState(_presenceStateBadge, _presenceStateText, _presenceStateIcon, "🔐", "PRESENCE ?", "#2A3344", "#3C4A63");
+        SetBadgeState(_llmStateBadge, _llmStateText, _llmStateIcon, "🧠", "LLM ?", "#2A3344", "#3C4A63");
+        SetBadgeState(_killStateBadge, _killStateText, _killStateIcon, "⛔", "KILL ?", "#2A3344", "#3C4A63");
+    }
+
+    private static void SetBadgeState(Border? border, TextBlock? textBlock, TextBlock? iconBlock, string icon, string text, string background, string borderColor)
+    {
+        if (border == null || textBlock == null || iconBlock == null)
+        {
+            return;
+        }
+
+        Dispatcher.UIThread.Post(() =>
+        {
+            iconBlock.Text = icon;
+            textBlock.Text = text;
+            border.Background = new SolidColorBrush(Color.Parse(background));
+            border.BorderBrush = new SolidColorBrush(Color.Parse(borderColor));
+            iconBlock.Foreground = new SolidColorBrush(Color.Parse(borderColor));
+        });
     }
 
     private static bool CommandExists(string command)

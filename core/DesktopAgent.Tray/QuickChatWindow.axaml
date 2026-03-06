@@ -13,7 +13,35 @@
     <Grid ColumnDefinitions="*,Auto,Auto" RowDefinitions="Auto,Auto">
       <TextBlock Text="DesktopAgent Control Center" FontSize="20" FontWeight="SemiBold" />
       <TextBlock x:Name="VersionText" Grid.Row="1" Text="Version: -" FontSize="12" Opacity="0.8" Margin="0,2,0,0" />
-      <TextBlock x:Name="StatusText" Grid.Column="1" Grid.RowSpan="2" VerticalAlignment="Center" Margin="12,0,0,0" />
+      <StackPanel Grid.Column="1" Grid.RowSpan="2" Margin="12,0,0,0" Spacing="4" VerticalAlignment="Center">
+        <WrapPanel ItemHeight="24">
+          <Border x:Name="ArmedStateBadge" Background="#2A3344" BorderBrush="#3C4A63" BorderThickness="1" CornerRadius="12" Padding="8,2" Margin="0,0,6,0">
+            <StackPanel Orientation="Horizontal" Spacing="6">
+              <TextBlock x:Name="ArmedStateIcon" Text="🛡" FontSize="12" VerticalAlignment="Center" />
+              <TextBlock x:Name="ArmedStateText" Text="ARMED ?" FontSize="11" FontWeight="SemiBold" />
+            </StackPanel>
+          </Border>
+          <Border x:Name="PresenceStateBadge" Background="#2A3344" BorderBrush="#3C4A63" BorderThickness="1" CornerRadius="12" Padding="8,2" Margin="0,0,6,0">
+            <StackPanel Orientation="Horizontal" Spacing="6">
+              <TextBlock x:Name="PresenceStateIcon" Text="🔐" FontSize="12" VerticalAlignment="Center" />
+              <TextBlock x:Name="PresenceStateText" Text="PRESENCE ?" FontSize="11" FontWeight="SemiBold" />
+            </StackPanel>
+          </Border>
+          <Border x:Name="LlmStateBadge" Background="#2A3344" BorderBrush="#3C4A63" BorderThickness="1" CornerRadius="12" Padding="8,2" Margin="0,0,6,0">
+            <StackPanel Orientation="Horizontal" Spacing="6">
+              <TextBlock x:Name="LlmStateIcon" Text="🧠" FontSize="12" VerticalAlignment="Center" />
+              <TextBlock x:Name="LlmStateText" Text="LLM ?" FontSize="11" FontWeight="SemiBold" />
+            </StackPanel>
+          </Border>
+          <Border x:Name="KillStateBadge" Background="#2A3344" BorderBrush="#3C4A63" BorderThickness="1" CornerRadius="12" Padding="8,2">
+            <StackPanel Orientation="Horizontal" Spacing="6">
+              <TextBlock x:Name="KillStateIcon" Text="⛔" FontSize="12" VerticalAlignment="Center" />
+              <TextBlock x:Name="KillStateText" Text="KILL ?" FontSize="11" FontWeight="SemiBold" />
+            </StackPanel>
+          </Border>
+        </WrapPanel>
+        <TextBlock x:Name="StatusText" FontSize="11" Opacity="0.78" Text="Status: loading..." />
+      </StackPanel>
       <Button x:Name="OpenWebButton" Grid.Column="2" Grid.RowSpan="2" Content="Open Data Folder" MinWidth="140" Margin="12,0,0,0" />
     </Grid>
 
@@ -64,7 +92,7 @@
             </Border>
           </StackPanel>
         </TabItem.Header>
-        <Grid RowDefinitions="Auto,Auto,*,Auto,Auto,Auto,Auto" Margin="2">
+        <Grid RowDefinitions="Auto,*,Auto,Auto,Auto,Auto" Margin="2">
           <Border x:Name="ChatUpdateBadgePanel"
                   Grid.Row="0"
                   Margin="0,0,0,10"
@@ -81,19 +109,8 @@
             </Grid>
           </Border>
 
-          <Border x:Name="HealthPanel"
-                  Grid.Row="1"
-                  Margin="0,0,0,10"
-                  Padding="8"
-                  CornerRadius="6"
-                  Background="#111A2A"
-                  BorderBrush="#2A3950"
-                  BorderThickness="1">
-            <TextBlock x:Name="HealthText" Text="Health: loading..." />
-          </Border>
-
           <Border BorderBrush="#2A3950"
-                  Grid.Row="2"
+                  Grid.Row="1"
                   BorderThickness="1"
                   CornerRadius="8"
                   Background="#0F1520"
@@ -113,7 +130,7 @@
           </Border>
 
           <StackPanel x:Name="ConfirmPanel"
-                      Grid.Row="3"
+                      Grid.Row="2"
                       Orientation="Horizontal"
                       Spacing="8"
                       Margin="0,10,0,10"
@@ -124,7 +141,7 @@
           </StackPanel>
 
           <Border x:Name="BusyPanel"
-                  Grid.Row="4"
+                  Grid.Row="3"
                   Margin="0,0,0,10"
                   Padding="8"
                   IsVisible="False"
@@ -140,13 +157,13 @@
           </Border>
 
           <ListBox x:Name="CommandPaletteList"
-                   Grid.Row="5"
+                   Grid.Row="4"
                    Margin="0,0,0,10"
                    MinHeight="40"
                    MaxHeight="120"
                    IsVisible="False" />
 
-          <Grid Grid.Row="6" ColumnDefinitions="*,Auto,Auto">
+          <Grid Grid.Row="5" ColumnDefinitions="*,Auto,Auto">
             <TextBox x:Name="InputBox"
                      Watermark="Write command in natural language..."
                      TextWrapping="Wrap"
@@ -401,14 +418,23 @@
       </TabItem>
 
       <TabItem Header="Diagnostics">
-        <Grid RowDefinitions="Auto,Auto,*" Margin="8">
+        <Grid RowDefinitions="Auto,Auto,Auto,*" Margin="8">
           <StackPanel Orientation="Horizontal" Spacing="8">
             <Button x:Name="DiagRefreshButton" Content="Run Environment Check" MinWidth="180" />
             <Button x:Name="DiagCopyButton" Content="Copy" MinWidth="90" />
           </StackPanel>
-          <TextBlock x:Name="DiagStatusText" Grid.Row="1" Margin="0,8,0,0" Opacity="0.8" />
+          <Border Grid.Row="1"
+                  Margin="0,8,0,0"
+                  Padding="8"
+                  CornerRadius="6"
+                  Background="#111A2A"
+                  BorderBrush="#2A3950"
+                  BorderThickness="1">
+            <TextBlock x:Name="HealthText" Text="Health: loading..." />
+          </Border>
+          <TextBlock x:Name="DiagStatusText" Grid.Row="2" Margin="0,8,0,0" Opacity="0.8" />
           <TextBox x:Name="DiagBox"
-                   Grid.Row="2"
+                   Grid.Row="3"
                    Margin="0,10,0,0"
                    IsReadOnly="True"
                    AcceptsReturn="True"
