@@ -79,6 +79,19 @@ public sealed class FallbackIntentInterpreterTests
         Assert.Equal("teams", plan.Steps[0].AppIdOrPath);
     }
 
+    [Fact]
+    public void Interpret_PreservesSnapshotPlan_WhenLlmRewriteChangesIntent()
+    {
+        var config = new AgentConfig { LlmFallbackEnabled = true };
+        var ruleBased = new RuleBasedIntentInterpreter(new StubAppResolver(), config);
+        var interpreter = new FallbackIntentInterpreter(ruleBased, new StubRewriter("find snapshot"), new StubAuditLog(), config);
+
+        var plan = interpreter.Interpret("take snapshot");
+
+        Assert.Single(plan.Steps);
+        Assert.Equal(ActionType.CaptureScreen, plan.Steps[0].Type);
+    }
+
     private sealed class StubRewriter : ILlmIntentRewriter
     {
         private readonly string? _value;

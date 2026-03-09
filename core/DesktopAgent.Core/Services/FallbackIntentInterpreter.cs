@@ -21,9 +21,16 @@ public sealed class FallbackIntentInterpreter : IIntentInterpreter
 
     public ActionPlan Interpret(string intent)
     {
+        var ruleBasedPlan = _ruleBased.Interpret(intent);
         if (!_config.LlmFallbackEnabled)
         {
-            return _ruleBased.Interpret(intent);
+            return ruleBasedPlan;
+        }
+
+        // Keep deterministic, safe parser behavior for explicit snapshot commands.
+        if (IsSnapshotOnlyPlan(ruleBasedPlan))
+        {
+            return ruleBasedPlan;
         }
 
         var rewritten = _rewriter.Rewrite(intent);
@@ -54,14 +61,14 @@ public sealed class FallbackIntentInterpreter : IIntentInterpreter
                 input = ToAuditText(intent),
                 rewritten = ToAuditText(rewritten)
             });
-            return _ruleBased.Interpret(intent);
+            return ruleBasedPlan;
         }
 
         WriteAudit("llm_fallback_rule_based", "LLM rewrite unavailable; using rule-based plan", new
         {
             input = ToAuditText(intent)
         });
-        return _ruleBased.Interpret(intent);
+        return ruleBasedPlan;
     }
 
     private static bool ShouldFallback(ActionPlan plan)
@@ -78,6 +85,12 @@ public sealed class FallbackIntentInterpreter : IIntentInterpreter
         }
 
         return false;
+    }
+
+    private static bool IsSnapshotOnlyPlan(ActionPlan plan)
+    {
+        return plan.Steps.Count == 1
+               && plan.Steps[0].Type == ActionType.CaptureScreen;
     }
 
     private static ActionPlan PruneNonActionableNoise(ActionPlan plan)
