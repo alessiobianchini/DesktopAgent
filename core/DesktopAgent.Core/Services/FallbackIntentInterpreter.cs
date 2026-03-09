@@ -51,6 +51,7 @@ public sealed class FallbackIntentInterpreter : IIntentInterpreter
                 {
                     input = ToAuditText(intent),
                     rewritten = ToAuditText(rewritten),
+                    translatedCommand = rewritten,
                     stepCount = rewrittenPlan.Steps.Count
                 });
                 return rewrittenPlan;

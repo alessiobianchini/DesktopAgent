@@ -86,6 +86,7 @@ public sealed class LocalLlmIntentRewriter : ILlmIntentRewriter
                 latencyMs = stopwatch.ElapsedMilliseconds,
                 success = !string.IsNullOrWhiteSpace(rewritten),
                 output = ToAuditText(rewritten),
+                translatedCommand = rewritten ?? string.Empty,
                 outputLength = rewritten?.Length ?? 0
             });
             return rewritten;
