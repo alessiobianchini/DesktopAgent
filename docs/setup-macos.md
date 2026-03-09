@@ -5,6 +5,7 @@
 - Homebrew (recommended)
 - Accessibility permission for the adapter binary
 - Screen recording permission for screenshots
+- Optional: FFmpeg for `record screen` / `start recording` commands (uses AVFoundation)
 
 ## Build (Adapter)
 The macOS adapter is a Swift package. Generate gRPC Swift code from `proto/desktop_adapter.proto` and then build.
@@ -67,3 +68,5 @@ Output:
 ## Notes
 - The adapter starts disarmed; arm it from tray/CLI before actions.
 - Wayland-style restrictions do not apply on macOS, but permissions are enforced by the OS.
+- `take screenshot for each screen` is supported (one PNG per display).
+- Screen recording parity is enabled on macOS through FFmpeg (`avfoundation` input). If audio capture fails, the agent falls back to video-only and logs the reason.

@@ -1653,11 +1653,36 @@ internal partial class QuickChatWindow : Window
                 return;
             }
 
-            var dshowList = await Task.Run(() => RunProcessCapture(ffmpegPath, "-hide_banner -f dshow -list_devices true -i dummy", 9000), CancellationToken.None);
-            var devices = ParseDirectShowAudioDevices(dshowList.StdErr)
-                .Where(static x => !string.IsNullOrWhiteSpace(x))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
+            List<string> devices;
+            if (OperatingSystem.IsWindows())
+            {
+                var dshowList = await Task.Run(() => RunProcessCapture(ffmpegPath, "-hide_banner -f dshow -list_devices true -i dummy", 9000), CancellationToken.None);
+                devices = ParseDirectShowAudioDevices(dshowList.StdErr)
+                    .Where(static x => !string.IsNullOrWhiteSpace(x))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+            }
+            else if (OperatingSystem.IsMacOS())
+            {
+                var avList = await Task.Run(() => RunProcessCapture(ffmpegPath, "-hide_banner -f avfoundation -list_devices true -i \"\"", 9000), CancellationToken.None);
+                devices = ParseAvFoundationAudioDevices(avList.StdErr)
+                    .Where(static x => !string.IsNullOrWhiteSpace(x))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+            }
+            else if (OperatingSystem.IsLinux())
+            {
+                var pulseList = await Task.Run(() => RunProcessCapture("pactl", "list short sources", 6000), CancellationToken.None);
+                devices = ParsePulseAudioSources(pulseList.StdOut)
+                    .Where(static x => !string.IsNullOrWhiteSpace(x))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+            }
+            else
+            {
+                devices = new List<string>();
+            }
+
             var items = new List<string> { "<auto>" };
             items.AddRange(devices);
             _cfgAudioDeviceSelector.ItemsSource = items;
@@ -2852,6 +2877,10 @@ internal partial class QuickChatWindow : Window
             var tesseractFound = !string.IsNullOrWhiteSpace(tesseractPath);
             var hasWasapi = false;
             var hasDshow = false;
+            var hasAvfoundation = false;
+            var hasPipewire = false;
+            var hasPulse = false;
+            var hasAlsa = false;
             var dshowAudioDevices = new List<string>();
 
             lines.Add($"ffmpeg env override: {(string.IsNullOrWhiteSpace(ffmpegEnvPath) ? "<none>" : ffmpegEnvPath)}");
@@ -2864,7 +2893,19 @@ internal partial class QuickChatWindow : Window
                 var devicesText = string.Join(Environment.NewLine, new[] { devices.StdOut, devices.StdErr });
                 hasWasapi = Regex.IsMatch(devicesText, @"\bwasapi\b", RegexOptions.IgnoreCase);
                 hasDshow = Regex.IsMatch(devicesText, @"\bdshow\b", RegexOptions.IgnoreCase);
-                lines.Add($"ffmpeg audio backends: {(hasWasapi || hasDshow ? $"{(hasWasapi ? "WASAPI" : "")}{(hasWasapi && hasDshow ? ", " : "")}{(hasDshow ? "DirectShow" : "")}" : "none detected")}");
+                hasAvfoundation = Regex.IsMatch(devicesText, @"\bavfoundation\b", RegexOptions.IgnoreCase);
+                hasPipewire = Regex.IsMatch(devicesText, @"\bpipewire\b", RegexOptions.IgnoreCase);
+                hasPulse = Regex.IsMatch(devicesText, @"\bpulse\b", RegexOptions.IgnoreCase);
+                hasAlsa = Regex.IsMatch(devicesText, @"\balsa\b", RegexOptions.IgnoreCase);
+
+                var backendLabels = new List<string>();
+                if (hasWasapi) backendLabels.Add("WASAPI");
+                if (hasDshow) backendLabels.Add("DirectShow");
+                if (hasAvfoundation) backendLabels.Add("AVFoundation");
+                if (hasPipewire) backendLabels.Add("PipeWire");
+                if (hasPulse) backendLabels.Add("PulseAudio");
+                if (hasAlsa) backendLabels.Add("ALSA");
+                lines.Add($"ffmpeg audio backends: {(backendLabels.Count == 0 ? "none detected" : string.Join(", ", backendLabels))}");
 
                 var version = await Task.Run(() => RunProcessCapture(ffmpegPath!, "-hide_banner -version", 6000), CancellationToken.None);
                 var versionLine = version.StdOut
@@ -2896,15 +2937,16 @@ internal partial class QuickChatWindow : Window
             SetText(_diagBox, string.Join(Environment.NewLine, lines));
 
             var issues = new List<string>();
+            var hasAnyAudioBackend = hasWasapi || hasDshow || hasAvfoundation || hasPipewire || hasPulse || hasAlsa;
             if (!ffmpegFound)
             {
                 issues.Add("Install FFmpeg (Plugin setup).");
             }
-            else if (!hasWasapi && !hasDshow)
+            else if (!hasAnyAudioBackend)
             {
-                issues.Add("FFmpeg build has no WASAPI/DirectShow input.");
+                issues.Add("FFmpeg build has no supported audio input backend.");
             }
-            else if (hasDshow && dshowAudioDevices.Count == 0)
+            else if (OperatingSystem.IsWindows() && hasDshow && dshowAudioDevices.Count == 0)
             {
                 issues.Add("No DirectShow audio devices found (check microphone privacy + default input device).");
             }
@@ -2982,6 +3024,78 @@ internal partial class QuickChatWindow : Window
         return directAudioDevices
             .Concat(devices)
             .Distinct(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static IEnumerable<string> ParseAvFoundationAudioDevices(string? text)
+    {
+        var dump = text ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(dump))
+        {
+            return Array.Empty<string>();
+        }
+
+        var inAudioSection = false;
+        var devices = new List<string>();
+        foreach (var rawLine in dump.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var line = rawLine.Trim();
+            if (line.Contains("AVFoundation audio devices", StringComparison.OrdinalIgnoreCase))
+            {
+                inAudioSection = true;
+                continue;
+            }
+
+            if (line.Contains("AVFoundation video devices", StringComparison.OrdinalIgnoreCase))
+            {
+                inAudioSection = false;
+            }
+
+            if (!inAudioSection)
+            {
+                continue;
+            }
+
+            var match = Regex.Match(line, @"\[\d+\]\s+(.+)$");
+            if (!match.Success)
+            {
+                continue;
+            }
+
+            var name = match.Groups[1].Value.Trim();
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                devices.Add(name);
+            }
+        }
+
+        return devices.Distinct(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static IEnumerable<string> ParsePulseAudioSources(string? text)
+    {
+        var dump = text ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(dump))
+        {
+            return Array.Empty<string>();
+        }
+
+        var devices = new List<string>();
+        foreach (var rawLine in dump.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var columns = rawLine.Split('\t', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (columns.Length < 2)
+            {
+                continue;
+            }
+
+            var name = columns[1].Trim();
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                devices.Add(name);
+            }
+        }
+
+        return devices.Distinct(StringComparer.OrdinalIgnoreCase);
     }
 
     private static string? ResolveCommandPath(string command)

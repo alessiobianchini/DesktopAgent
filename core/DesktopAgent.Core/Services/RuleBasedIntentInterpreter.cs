@@ -103,6 +103,29 @@ public sealed class RuleBasedIntentInterpreter : IIntentInterpreter
         "tutti gli schermi",
         "tutti i monitor"
     };
+    private static readonly string[] SingleScreenTokens =
+    {
+        "single screen",
+        "single-screen",
+        "one screen",
+        "just one screen",
+        "only one screen",
+        "primary screen",
+        "main screen",
+        "single monitor",
+        "one monitor",
+        "only one monitor",
+        "single display",
+        "main display",
+        "singolo schermo",
+        "solo schermo",
+        "uno schermo",
+        "schermo singolo",
+        "schermo principale",
+        "monitor principale",
+        "un solo schermo",
+        "un solo monitor"
+    };
     private static readonly Regex StartRecordingRegex = BuildStartRecordingRegex();
     private static readonly Regex StopRecordingRegex = BuildStopRecordingRegex();
     private static readonly Regex MouseDurationRegex = BuildMouseDurationRegex();
@@ -172,6 +195,16 @@ public sealed class RuleBasedIntentInterpreter : IIntentInterpreter
                 Type = ActionType.RecordScreen,
                 WaitFor = recordDuration,
                 Text = includeAudio ? "audio:on" : "audio:off"
+            });
+            return plan;
+        }
+
+        if (IsSingleScreenSnapshotIntent(trimmed))
+        {
+            plan.Steps.Add(new PlanStep
+            {
+                Type = ActionType.CaptureScreen,
+                Text = "mode:single"
             });
             return plan;
         }
@@ -500,6 +533,28 @@ public sealed class RuleBasedIntentInterpreter : IIntentInterpreter
         return PerScreenTokens.Any(token => normalized.Contains(token, StringComparison.Ordinal));
     }
 
+    private static bool IsSingleScreenSnapshotIntent(string input)
+    {
+        if (string.IsNullOrWhiteSpace(input))
+        {
+            return false;
+        }
+
+        var normalized = Regex.Replace(input, "\\s+", " ").Trim().ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return false;
+        }
+
+        var hasSnapshotToken = SnapshotIntentTokens.Any(token => normalized.Contains(token, StringComparison.Ordinal));
+        if (!hasSnapshotToken)
+        {
+            return false;
+        }
+
+        return SingleScreenTokens.Any(token => normalized.Contains(token, StringComparison.Ordinal));
+    }
+
     private static Regex BuildStartRecordingRegex()
     {
         var pattern = "^(?:start\\s+record(?:ing)?|begin\\s+record(?:ing)?|avvia\\s+registrazione|inizia\\s+registrazione)(?:\\s+(?:screen|desktop|schermo))?(?<audio>\\s+(?:with\\s+audio|and\\s+audio|con\\s+audio|without\\s+audio|no\\s+audio|senza\\s+audio))?$";
@@ -715,6 +770,18 @@ public sealed class RuleBasedIntentInterpreter : IIntentInterpreter
                     Type = ActionType.RecordScreen,
                     WaitFor = recordDuration,
                     Text = includeAudio ? "audio:on" : "audio:off"
+                }
+            }, true);
+        }
+
+        if (IsSingleScreenSnapshotIntent(input))
+        {
+            return (new List<PlanStep>
+            {
+                new()
+                {
+                    Type = ActionType.CaptureScreen,
+                    Text = "mode:single"
                 }
             }, true);
         }

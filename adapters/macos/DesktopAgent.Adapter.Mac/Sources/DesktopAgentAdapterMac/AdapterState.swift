@@ -138,6 +138,22 @@ enum ClipboardHelper {
 }
 
 enum ScreenshotHelper {
+    static func screenBounds(index: Int) -> CGRect? {
+        let screens = NSScreen.screens
+            .sorted { lhs, rhs in
+                if lhs.frame.minX == rhs.frame.minX {
+                    return lhs.frame.minY < rhs.frame.minY
+                }
+                return lhs.frame.minX < rhs.frame.minX
+            }
+
+        guard index >= 0, index < screens.count else {
+            return nil
+        }
+
+        return screens[index].frame
+    }
+
     static func capture(region: CGRect?) -> (Data, CGSize)? {
         let rect = region ?? CGRect(x: 0, y: 0, width: NSScreen.main?.frame.width ?? 1024, height: NSScreen.main?.frame.height ?? 768)
         guard let image = CGWindowListCreateImage(rect, .optionOnScreenOnly, kCGNullWindowID, .bestResolution) else {

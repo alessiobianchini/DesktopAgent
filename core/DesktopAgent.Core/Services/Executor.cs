@@ -31,6 +31,7 @@ public sealed class Executor : IExecutor
     private bool _recordingAudio;
     private string? _recordingAudioBackend;
     private const string CapturePerScreenMode = "mode:per-screen";
+    private const string CaptureSingleMode = "mode:single";
     private const int MaxScreenCaptureCount = 16;
 
     public Executor(
@@ -545,7 +546,12 @@ public sealed class Executor : IExecutor
 
     private async Task<StepResult> ExecuteCaptureAsync(PlanStep step, CancellationToken cancellationToken)
     {
-        if (IsPerScreenCapture(step))
+        if (IsSingleScreenCapture(step))
+        {
+            return await ExecuteSingleCaptureAsync(step, cancellationToken);
+        }
+
+        if (WantsPerScreenCapture(step))
         {
             return await ExecuteCapturePerScreenAsync(step, cancellationToken);
         }
@@ -581,17 +587,6 @@ public sealed class Executor : IExecutor
 
     private async Task<StepResult> ExecuteCapturePerScreenAsync(PlanStep step, CancellationToken cancellationToken)
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            var fallback = await ExecuteSingleCaptureAsync(step, cancellationToken);
-            if (fallback.Success)
-            {
-                fallback.Message += " (per-screen capture not supported on this OS yet)";
-            }
-
-            return fallback;
-        }
-
         var supportsIndexedCapture = await SupportsIndexedScreenCaptureAsync(cancellationToken);
         if (!supportsIndexedCapture)
         {
@@ -650,10 +645,21 @@ public sealed class Executor : IExecutor
         return probe.Png.IsEmpty;
     }
 
-    private static bool IsPerScreenCapture(PlanStep step)
+    private static bool WantsPerScreenCapture(PlanStep step)
     {
+        if (string.IsNullOrWhiteSpace(step.Text))
+        {
+            return true;
+        }
+
         return string.Equals(step.Text, CapturePerScreenMode, StringComparison.OrdinalIgnoreCase)
                || string.Equals(step.Text, "per-screen", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsSingleScreenCapture(PlanStep step)
+    {
+        return string.Equals(step.Text, CaptureSingleMode, StringComparison.OrdinalIgnoreCase)
+               || string.Equals(step.Text, "single-screen", StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task<StepResult> ExecuteRecordScreenAsync(PlanStep step, CancellationToken cancellationToken)
@@ -671,16 +677,6 @@ public sealed class Executor : IExecutor
         var includeAudioRequested = !string.Equals(step.Text, "audio:off", StringComparison.OrdinalIgnoreCase);
         var outputPath = BuildMediaOutputPath(step.Target, "recording", ".mp4");
 
-        if (!OperatingSystem.IsWindows())
-        {
-            return new StepResult
-            {
-                Success = false,
-                Message = "Screen recording is currently supported only on Windows in this MVP.",
-                Data = new { outputPath, seconds = (int)Math.Round(duration.TotalSeconds), includeAudioRequested }
-            };
-        }
-
         var seconds = Math.Max(1, (int)Math.Ceiling(duration.TotalSeconds));
         var ffmpegPath = ResolveFfmpegPath();
 
@@ -691,13 +687,20 @@ public sealed class Executor : IExecutor
         {
             if (audioBackends.Count == 0)
             {
-                audioErrors.Add("No supported audio backend in ffmpeg (WASAPI/DirectShow missing).");
+                audioErrors.Add(GetNoSupportedAudioBackendMessage());
             }
             else
             {
                 foreach (var backend in audioBackends)
                 {
-                    var withAudio = await RunProcessAsync(ffmpegPath, BuildRecordingArguments(outputPath, seconds, backend.InputArguments), timeout, cancellationToken);
+                    var withAudioArgs = BuildRecordingArguments(ffmpegPath, outputPath, seconds, backend, out var withAudioError);
+                    if (string.IsNullOrWhiteSpace(withAudioArgs))
+                    {
+                        audioErrors.Add($"{backend.DisplayName}: {withAudioError}");
+                        continue;
+                    }
+
+                    var withAudio = await RunProcessAsync(ffmpegPath, withAudioArgs, timeout, cancellationToken);
                     if (withAudio.Success)
                     {
                         return new StepResult
@@ -715,7 +718,18 @@ public sealed class Executor : IExecutor
             }
         }
 
-        var videoOnly = await RunProcessAsync(ffmpegPath, BuildRecordingArguments(outputPath, seconds, audioInputArguments: null), timeout, cancellationToken);
+        var videoOnlyArgs = BuildRecordingArguments(ffmpegPath, outputPath, seconds, audioInput: null, out var videoOnlyArgsError);
+        if (string.IsNullOrWhiteSpace(videoOnlyArgs))
+        {
+            return new StepResult
+            {
+                Success = false,
+                Message = $"Screen recording failed: {videoOnlyArgsError ?? "No supported video capture backend"}",
+                Data = new { outputPath, seconds, includeAudioRequested }
+            };
+        }
+
+        var videoOnly = await RunProcessAsync(ffmpegPath, videoOnlyArgs, timeout, cancellationToken);
         if (videoOnly.Success)
         {
             var reason = includeAudioRequested
@@ -744,16 +758,6 @@ public sealed class Executor : IExecutor
         cancellationToken.ThrowIfCancellationRequested();
         var includeAudioRequested = !string.Equals(step.Text, "audio:off", StringComparison.OrdinalIgnoreCase);
         var outputPath = BuildMediaOutputPath(step.Target, "recording-live", ".mp4");
-
-        if (!OperatingSystem.IsWindows())
-        {
-            return Task.FromResult(new StepResult
-            {
-                Success = false,
-                Message = "Live screen recording is currently supported only on Windows in this MVP.",
-                Data = new { outputPath, includeAudioRequested }
-            });
-        }
 
         lock (_recordingSync)
         {
@@ -2607,49 +2611,154 @@ public sealed class Executor : IExecutor
         return string.IsNullOrWhiteSpace(ffmpegPath) ? "ffmpeg" : ffmpegPath;
     }
 
-    private string BuildRecordingArguments(string outputPath, int seconds, string? audioInputArguments)
+    private string? BuildRecordingArguments(string ffmpegPath, string outputPath, int seconds, FfmpegAudioInput? audioInput, out string? error)
     {
+        error = null;
         var fps = 12;
-        var videoInput = BuildVideoInputArguments(fps);
-        if (!string.IsNullOrWhiteSpace(audioInputArguments))
+        var inputArguments = BuildInputArguments(ffmpegPath, fps, audioInput, out error);
+        if (string.IsNullOrWhiteSpace(inputArguments))
         {
-            return $"-y {videoInput} {audioInputArguments} -t {seconds} -c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac \"{outputPath}\"";
+            return null;
         }
 
-        return $"-y {videoInput} -t {seconds} -c:v libx264 -preset veryfast -pix_fmt yuv420p \"{outputPath}\"";
+        if (audioInput.HasValue)
+        {
+            return $"-y {inputArguments} -t {seconds} -c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac \"{outputPath}\"";
+        }
+
+        return $"-y {inputArguments} -t {seconds} -c:v libx264 -preset veryfast -pix_fmt yuv420p \"{outputPath}\"";
     }
 
-    private string BuildLiveRecordingArguments(string outputPath, string? audioInputArguments)
+    private string? BuildLiveRecordingArguments(string ffmpegPath, string outputPath, FfmpegAudioInput? audioInput, out string? error)
     {
+        error = null;
         var fps = 12;
-        var videoInput = BuildVideoInputArguments(fps);
-        if (!string.IsNullOrWhiteSpace(audioInputArguments))
+        var inputArguments = BuildInputArguments(ffmpegPath, fps, audioInput, out error);
+        if (string.IsNullOrWhiteSpace(inputArguments))
         {
-            return $"-y {videoInput} {audioInputArguments} -c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac \"{outputPath}\"";
+            return null;
         }
 
-        return $"-y {videoInput} -c:v libx264 -preset veryfast -pix_fmt yuv420p \"{outputPath}\"";
+        if (audioInput.HasValue)
+        {
+            return $"-y {inputArguments} -c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac \"{outputPath}\"";
+        }
+
+        return $"-y {inputArguments} -c:v libx264 -preset veryfast -pix_fmt yuv420p \"{outputPath}\"";
     }
 
-    private string BuildVideoInputArguments(int fps)
+    private string? BuildInputArguments(string ffmpegPath, int fps, FfmpegAudioInput? audioInput, out string? error)
     {
-        if (!OperatingSystem.IsWindows())
+        if (!TryBuildVideoInputArguments(ffmpegPath, fps, out var videoInput, out error))
         {
-            return $"-f gdigrab -framerate {fps} -i desktop";
+            return null;
         }
 
-        if (!_config.ScreenRecordingPrimaryDisplayOnly)
+        if (audioInput is { CombinedInputArguments: { } combined } && !string.IsNullOrWhiteSpace(combined))
         {
-            return $"-f gdigrab -framerate {fps} -i desktop";
+            return combined;
         }
 
-        if (TryGetPrimaryDisplaySize(out var width, out var height))
+        if (audioInput is { InputArguments: { } input } && !string.IsNullOrWhiteSpace(input))
         {
-            return $"-f gdigrab -framerate {fps} -offset_x 0 -offset_y 0 -video_size {width}x{height} -i desktop";
+            return $"{videoInput} {input}";
         }
 
-        _logger.LogInformation("Primary display capture requested but size detection failed. Falling back to full desktop capture.");
-        return $"-f gdigrab -framerate {fps} -i desktop";
+        return videoInput;
+    }
+
+    private bool TryBuildVideoInputArguments(string ffmpegPath, int fps, out string videoInput, out string? error)
+    {
+        videoInput = string.Empty;
+        error = null;
+
+        if (OperatingSystem.IsWindows())
+        {
+            if (!_config.ScreenRecordingPrimaryDisplayOnly)
+            {
+                videoInput = $"-f gdigrab -framerate {fps} -i desktop";
+                return true;
+            }
+
+            if (TryGetPrimaryDisplaySize(out var width, out var height))
+            {
+                videoInput = $"-f gdigrab -framerate {fps} -offset_x 0 -offset_y 0 -video_size {width}x{height} -i desktop";
+                return true;
+            }
+
+            _logger.LogInformation("Primary display capture requested but size detection failed. Falling back to full desktop capture.");
+            videoInput = $"-f gdigrab -framerate {fps} -i desktop";
+            return true;
+        }
+
+        if (OperatingSystem.IsMacOS())
+        {
+            if (!FfmpegSupportsInput(ffmpegPath, "avfoundation"))
+            {
+                error = "ffmpeg build has no avfoundation input support.";
+                return false;
+            }
+
+            var videoIndex = ResolveAvFoundationVideoDeviceIndex(ffmpegPath);
+            videoInput = $"-f avfoundation -framerate {fps} -capture_cursor 1 -capture_mouse_clicks 1 -i \"{videoIndex}:none\"";
+            return true;
+        }
+
+        if (OperatingSystem.IsLinux())
+        {
+            var display = (Environment.GetEnvironmentVariable("DISPLAY") ?? string.Empty).Trim();
+            if (!string.IsNullOrWhiteSpace(display))
+            {
+                videoInput = $"-f x11grab -framerate {fps} -i {display}+0,0";
+                return true;
+            }
+
+            if (IsWaylandSession() && FfmpegSupportsInput(ffmpegPath, "pipewire"))
+            {
+                var node = (Environment.GetEnvironmentVariable("DESKTOP_AGENT_PIPEWIRE_NODE") ?? "0").Trim();
+                if (string.IsNullOrWhiteSpace(node))
+                {
+                    node = "0";
+                }
+
+                videoInput = $"-f pipewire -framerate {fps} -i {node}";
+                return true;
+            }
+
+            error = IsWaylandSession()
+                ? "No X11 display detected. For Wayland recording set DESKTOP_AGENT_PIPEWIRE_NODE and use an ffmpeg build with pipewire input."
+                : "No X11 display detected (DISPLAY is empty).";
+            return false;
+        }
+
+        error = "Unsupported OS for screen recording.";
+        return false;
+    }
+
+    private static bool IsWaylandSession()
+    {
+        var wayland = (Environment.GetEnvironmentVariable("WAYLAND_DISPLAY") ?? string.Empty).Trim();
+        return !string.IsNullOrWhiteSpace(wayland);
+    }
+
+    private static string ResolveAvFoundationVideoDeviceIndex(string ffmpegPath)
+    {
+        if (TryListAvFoundationDevices(ffmpegPath, out var videoDevices, out _))
+        {
+            var captureScreen = videoDevices
+                .FirstOrDefault(device => device.Name.Contains("capture screen", StringComparison.OrdinalIgnoreCase));
+            if (captureScreen.Index.Length > 0)
+            {
+                return captureScreen.Index;
+            }
+
+            if (videoDevices.Count > 0 && videoDevices[0].Index.Length > 0)
+            {
+                return videoDevices[0].Index;
+            }
+        }
+
+        return "1";
     }
 
     private static bool TryGetPrimaryDisplaySize(out int width, out int height)
@@ -2689,7 +2798,7 @@ public sealed class Executor : IExecutor
 
         if (!includeAudioRequested)
         {
-            if (TryStartRecordingProcessCore(ffmpegPath, outputPath, audioInputArguments: null, out error))
+            if (TryStartRecordingProcessCore(ffmpegPath, outputPath, audioInput: null, out error))
             {
                 return true;
             }
@@ -2700,14 +2809,14 @@ public sealed class Executor : IExecutor
         var audioInputs = ResolveAvailableAudioInputs(ffmpegPath);
         if (audioInputs.Count == 0)
         {
-            error = "No supported audio backend in ffmpeg (WASAPI/DirectShow missing).";
+            error = GetNoSupportedAudioBackendMessage();
         }
         else
         {
             var failures = new List<string>();
             foreach (var input in audioInputs)
             {
-                if (TryStartRecordingProcessCore(ffmpegPath, outputPath, input.InputArguments, out error))
+                if (TryStartRecordingProcessCore(ffmpegPath, outputPath, input, out error))
                 {
                     audioUsed = true;
                     audioBackend = input.DisplayName;
@@ -2722,7 +2831,7 @@ public sealed class Executor : IExecutor
         }
 
         _logger.LogWarning("Live recording audio failed, retrying video-only. Error: {Error}", error);
-        if (TryStartRecordingProcessCore(ffmpegPath, outputPath, audioInputArguments: null, out var videoOnlyError))
+        if (TryStartRecordingProcessCore(ffmpegPath, outputPath, audioInput: null, out var videoOnlyError))
         {
             audioUsed = false;
             audioBackend = null;
@@ -2736,17 +2845,23 @@ public sealed class Executor : IExecutor
         return false;
     }
 
-    private bool TryStartRecordingProcessCore(string ffmpegPath, string outputPath, string? audioInputArguments, out string? error)
+    private bool TryStartRecordingProcessCore(string ffmpegPath, string outputPath, FfmpegAudioInput? audioInput, out string? error)
     {
         error = null;
         try
         {
+            var arguments = BuildLiveRecordingArguments(ffmpegPath, outputPath, audioInput, out error);
+            if (string.IsNullOrWhiteSpace(arguments))
+            {
+                return false;
+            }
+
             var process = new Process
             {
                 StartInfo = new ProcessStartInfo
                 {
                     FileName = ffmpegPath,
-                    Arguments = BuildLiveRecordingArguments(outputPath, audioInputArguments),
+                    Arguments = arguments,
                     UseShellExecute = false,
                     CreateNoWindow = true
                 }
@@ -2767,7 +2882,7 @@ public sealed class Executor : IExecutor
                 _recordingProcess = process;
                 _recordingOutputPath = outputPath;
                 _recordingStartedAtUtc = DateTimeOffset.UtcNow;
-                _recordingAudio = !string.IsNullOrWhiteSpace(audioInputArguments);
+                _recordingAudio = audioInput.HasValue;
             }
 
             return true;
@@ -2780,6 +2895,26 @@ public sealed class Executor : IExecutor
     }
 
     private List<FfmpegAudioInput> ResolveAvailableAudioInputs(string ffmpegPath)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return ResolveWindowsAudioInputs(ffmpegPath);
+        }
+
+        if (OperatingSystem.IsMacOS())
+        {
+            return ResolveMacAudioInputs(ffmpegPath);
+        }
+
+        if (OperatingSystem.IsLinux())
+        {
+            return ResolveLinuxAudioInputs(ffmpegPath);
+        }
+
+        return new List<FfmpegAudioInput>();
+    }
+
+    private List<FfmpegAudioInput> ResolveWindowsAudioInputs(string ffmpegPath)
     {
         var inputs = new List<FfmpegAudioInput>();
         var pref = (_config.ScreenRecordingAudioBackendPreference ?? "auto").Trim().ToLowerInvariant();
@@ -2809,53 +2944,10 @@ public sealed class Executor : IExecutor
             }
         }
 
-        switch (pref)
-        {
-            case "wasapi":
-                if (wasapiSupported)
-                {
-                    inputs.Add(new FfmpegAudioInput("WASAPI", "-f wasapi -i default"));
-                }
-                if (dshowInput != null)
-                {
-                    inputs.Add(dshowInput.Value);
-                }
-                if (dshowAutoInput != null)
-                {
-                    inputs.Add(dshowAutoInput.Value);
-                }
-                break;
-
-            case "dshow":
-                if (dshowInput != null)
-                {
-                    inputs.Add(dshowInput.Value);
-                }
-                if (dshowAutoInput != null)
-                {
-                    inputs.Add(dshowAutoInput.Value);
-                }
-                if (wasapiSupported)
-                {
-                    inputs.Add(new FfmpegAudioInput("WASAPI", "-f wasapi -i default"));
-                }
-                break;
-
-            default:
-                if (wasapiSupported)
-                {
-                    inputs.Add(new FfmpegAudioInput("WASAPI", "-f wasapi -i default"));
-                }
-                if (dshowInput != null)
-                {
-                    inputs.Add(dshowInput.Value);
-                }
-                if (dshowAutoInput != null)
-                {
-                    inputs.Add(dshowAutoInput.Value);
-                }
-                break;
-        }
+        AddInPreferredOrder(inputs, pref,
+            ("wasapi", wasapiSupported ? new FfmpegAudioInput("WASAPI", "-f wasapi -i default") : null),
+            ("dshow", dshowInput),
+            ("dshow:auto", dshowAutoInput));
 
         if (!wasapiSupported)
         {
@@ -2866,7 +2958,145 @@ public sealed class Executor : IExecutor
             _logger.LogInformation("ffmpeg dshow detected but no audio device found.");
         }
 
-        return inputs.DistinctBy(input => input.InputArguments).ToList();
+        return inputs
+            .Where(static input => !string.IsNullOrWhiteSpace(input.InputArguments) || !string.IsNullOrWhiteSpace(input.CombinedInputArguments))
+            .DistinctBy(static input => $"{input.InputArguments}|{input.CombinedInputArguments}")
+            .ToList();
+    }
+
+    private List<FfmpegAudioInput> ResolveMacAudioInputs(string ffmpegPath)
+    {
+        var inputs = new List<FfmpegAudioInput>();
+        if (!FfmpegSupportsInput(ffmpegPath, "avfoundation"))
+        {
+            return inputs;
+        }
+
+        var pref = (_config.ScreenRecordingAudioBackendPreference ?? "auto").Trim().ToLowerInvariant();
+        if (pref != "auto" && pref != "avfoundation")
+        {
+            return inputs;
+        }
+
+        var preferredDevice = (_config.ScreenRecordingAudioDevice ?? string.Empty).Trim();
+        var videoIndex = ResolveAvFoundationVideoDeviceIndex(ffmpegPath);
+        var audioDevice = ResolveAvFoundationAudioDevice(ffmpegPath, preferredDevice);
+        if (!audioDevice.HasValue)
+        {
+            _logger.LogInformation("ffmpeg avfoundation detected but no audio device found.");
+            return inputs;
+        }
+
+        var audioToken = audioDevice.Value.Index;
+        var displayName = $"AVFoundation ({audioDevice.Value.Name})";
+        var combinedInput = $"-f avfoundation -framerate 12 -capture_cursor 1 -capture_mouse_clicks 1 -i \"{videoIndex}:{audioToken}\"";
+        inputs.Add(new FfmpegAudioInput(displayName, InputArguments: null, CombinedInputArguments: combinedInput));
+        return inputs;
+    }
+
+    private List<FfmpegAudioInput> ResolveLinuxAudioInputs(string ffmpegPath)
+    {
+        var inputs = new List<FfmpegAudioInput>();
+        var pref = (_config.ScreenRecordingAudioBackendPreference ?? "auto").Trim().ToLowerInvariant();
+        var preferredDevice = (_config.ScreenRecordingAudioDevice ?? string.Empty).Trim();
+
+        var hasPipewire = FfmpegSupportsInput(ffmpegPath, "pipewire");
+        var hasPulse = FfmpegSupportsInput(ffmpegPath, "pulse");
+        var hasAlsa = FfmpegSupportsInput(ffmpegPath, "alsa");
+
+        FfmpegAudioInput? pipewireInput = null;
+        if (hasPipewire)
+        {
+            var node = string.IsNullOrWhiteSpace(preferredDevice)
+                ? (Environment.GetEnvironmentVariable("DESKTOP_AGENT_PIPEWIRE_AUDIO_NODE") ?? "0").Trim()
+                : preferredDevice;
+            if (string.IsNullOrWhiteSpace(node))
+            {
+                node = "0";
+            }
+
+            pipewireInput = new FfmpegAudioInput("PipeWire", $"-f pipewire -i {node}");
+        }
+
+        FfmpegAudioInput? pulseInput = null;
+        if (hasPulse)
+        {
+            var pulseDevice = string.IsNullOrWhiteSpace(preferredDevice) ? "default" : preferredDevice;
+            pulseInput = new FfmpegAudioInput($"PulseAudio ({pulseDevice})", $"-f pulse -i {EscapeFfmpegSimpleToken(pulseDevice)}");
+        }
+
+        FfmpegAudioInput? alsaInput = null;
+        if (hasAlsa)
+        {
+            var alsaDevice = string.IsNullOrWhiteSpace(preferredDevice) ? "default" : preferredDevice;
+            alsaInput = new FfmpegAudioInput($"ALSA ({alsaDevice})", $"-f alsa -i {EscapeFfmpegSimpleToken(alsaDevice)}");
+        }
+
+        AddInPreferredOrder(inputs, pref,
+            ("pipewire", pipewireInput),
+            ("pulse", pulseInput),
+            ("alsa", alsaInput));
+
+        return inputs
+            .Where(static input => !string.IsNullOrWhiteSpace(input.InputArguments) || !string.IsNullOrWhiteSpace(input.CombinedInputArguments))
+            .DistinctBy(static input => $"{input.InputArguments}|{input.CombinedInputArguments}")
+            .ToList();
+    }
+
+    private static void AddInPreferredOrder(List<FfmpegAudioInput> target, string preference, params (string Key, FfmpegAudioInput? Input)[] candidates)
+    {
+        var ordered = new List<(string Key, FfmpegAudioInput? Input)>();
+        if (!string.IsNullOrWhiteSpace(preference) && !string.Equals(preference, "auto", StringComparison.OrdinalIgnoreCase))
+        {
+            var prioritized = candidates.FirstOrDefault(candidate => string.Equals(candidate.Key, preference, StringComparison.OrdinalIgnoreCase));
+            if (prioritized.Input.HasValue)
+            {
+                ordered.Add(prioritized);
+            }
+        }
+
+        foreach (var candidate in candidates)
+        {
+            if (!candidate.Input.HasValue)
+            {
+                continue;
+            }
+
+            if (ordered.Any(existing => string.Equals(existing.Key, candidate.Key, StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
+            ordered.Add(candidate);
+        }
+
+        foreach (var item in ordered)
+        {
+            if (item.Input.HasValue)
+            {
+                target.Add(item.Input.Value);
+            }
+        }
+    }
+
+    private string GetNoSupportedAudioBackendMessage()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return "No supported audio backend in ffmpeg (WASAPI/DirectShow missing).";
+        }
+
+        if (OperatingSystem.IsMacOS())
+        {
+            return "No supported audio backend in ffmpeg (AVFoundation missing or no audio device).";
+        }
+
+        if (OperatingSystem.IsLinux())
+        {
+            return "No supported audio backend in ffmpeg (PipeWire/PulseAudio/ALSA missing).";
+        }
+
+        return "No supported audio backend in ffmpeg.";
     }
 
     private static bool FfmpegSupportsInput(string ffmpegPath, string inputName)
@@ -2951,8 +3181,114 @@ public sealed class Executor : IExecutor
         return false;
     }
 
+    private static (string Index, string Name)? ResolveAvFoundationAudioDevice(string ffmpegPath, string preferredDevice)
+    {
+        if (!TryListAvFoundationDevices(ffmpegPath, out _, out var audioDevices))
+        {
+            return null;
+        }
+
+        if (!string.IsNullOrWhiteSpace(preferredDevice))
+        {
+            var byIndex = audioDevices.FirstOrDefault(device => string.Equals(device.Index, preferredDevice, StringComparison.OrdinalIgnoreCase));
+            if (byIndex.Index.Length > 0)
+            {
+                return byIndex;
+            }
+
+            var byName = audioDevices.FirstOrDefault(device => string.Equals(device.Name, preferredDevice, StringComparison.OrdinalIgnoreCase));
+            if (byName.Index.Length > 0)
+            {
+                return byName;
+            }
+        }
+
+        if (audioDevices.Count == 0)
+        {
+            return null;
+        }
+
+        return audioDevices[0];
+    }
+
+    private static bool TryListAvFoundationDevices(
+        string ffmpegPath,
+        out List<(string Index, string Name)> videoDevices,
+        out List<(string Index, string Name)> audioDevices)
+    {
+        videoDevices = new List<(string Index, string Name)>();
+        audioDevices = new List<(string Index, string Name)>();
+
+        TryRunProcess(ffmpegPath, "-hide_banner -f avfoundation -list_devices true -i \"\"", out _, out var error);
+        var dump = error ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(dump))
+        {
+            return false;
+        }
+
+        var inVideoSection = false;
+        var inAudioSection = false;
+        foreach (var raw in dump.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var line = raw.Trim();
+            if (line.Contains("AVFoundation video devices", StringComparison.OrdinalIgnoreCase))
+            {
+                inVideoSection = true;
+                inAudioSection = false;
+                continue;
+            }
+
+            if (line.Contains("AVFoundation audio devices", StringComparison.OrdinalIgnoreCase))
+            {
+                inVideoSection = false;
+                inAudioSection = true;
+                continue;
+            }
+
+            var match = Regex.Match(line, @"\[(\d+)\]\s+(.+)$");
+            if (!match.Success)
+            {
+                continue;
+            }
+
+            var index = match.Groups[1].Value.Trim();
+            var name = match.Groups[2].Value.Trim();
+            if (string.IsNullOrWhiteSpace(index) || string.IsNullOrWhiteSpace(name))
+            {
+                continue;
+            }
+
+            if (inVideoSection)
+            {
+                videoDevices.Add((index, name));
+            }
+            else if (inAudioSection)
+            {
+                audioDevices.Add((index, name));
+            }
+        }
+
+        return videoDevices.Count > 0 || audioDevices.Count > 0;
+    }
+
     private static string EscapeFfmpegDshowDevice(string value)
         => value.Replace("\"", "\\\"", StringComparison.Ordinal);
+
+    private static string EscapeFfmpegSimpleToken(string value)
+    {
+        var token = value.Trim();
+        if (token.Length == 0)
+        {
+            return "default";
+        }
+
+        if (!token.Contains(' ') && !token.Contains('"'))
+        {
+            return token;
+        }
+
+        return $"\"{token.Replace("\"", "\\\"", StringComparison.Ordinal)}\"";
+    }
 
     private static string TrimForMessage(string? value)
     {
@@ -2969,7 +3305,7 @@ public sealed class Executor : IExecutor
         return text[..180] + "...";
     }
 
-    private readonly record struct FfmpegAudioInput(string DisplayName, string InputArguments);
+    private readonly record struct FfmpegAudioInput(string DisplayName, string? InputArguments, string? CombinedInputArguments = null);
 
     private void AddClipboardHistory(string source, string? text)
     {

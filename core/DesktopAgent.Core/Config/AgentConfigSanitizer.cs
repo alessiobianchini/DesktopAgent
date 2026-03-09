@@ -160,6 +160,10 @@ public static class AgentConfigSanitizer
         {
             "wasapi" => "wasapi",
             "dshow" => "dshow",
+            "avfoundation" => "avfoundation",
+            "pipewire" => "pipewire",
+            "pulse" => "pulse",
+            "alsa" => "alsa",
             _ => "auto"
         };
     }

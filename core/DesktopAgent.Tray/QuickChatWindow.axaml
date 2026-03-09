@@ -259,6 +259,10 @@
             <ComboBoxItem Content="auto" />
             <ComboBoxItem Content="wasapi" />
             <ComboBoxItem Content="dshow" />
+            <ComboBoxItem Content="avfoundation" />
+            <ComboBoxItem Content="pipewire" />
+            <ComboBoxItem Content="pulse" />
+            <ComboBoxItem Content="alsa" />
           </ComboBox>
 
           <TextBlock Grid.Row="8" Text="Audio Device (optional)" Margin="0,8,0,0" />

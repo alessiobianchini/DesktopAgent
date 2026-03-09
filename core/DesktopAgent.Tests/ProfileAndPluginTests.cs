@@ -179,6 +179,16 @@ public sealed class ProfileAndPluginTests
         Assert.Equal(ActionType.CaptureScreen, italianPerScreen.Steps[0].Type);
         Assert.Equal("mode:per-screen", italianPerScreen.Steps[0].Text);
 
+        var singleScreen = interpreter.Interpret("take snapshot single-screen");
+        Assert.Single(singleScreen.Steps);
+        Assert.Equal(ActionType.CaptureScreen, singleScreen.Steps[0].Type);
+        Assert.Equal("mode:single", singleScreen.Steps[0].Text);
+
+        var italianSingleScreen = interpreter.Interpret("fai screenshot su schermo principale");
+        Assert.Single(italianSingleScreen.Steps);
+        Assert.Equal(ActionType.CaptureScreen, italianSingleScreen.Steps[0].Type);
+        Assert.Equal("mode:single", italianSingleScreen.Steps[0].Text);
+
         var recordWithAudio = interpreter.Interpret("record screen and audio for 2 minutes");
         Assert.Single(recordWithAudio.Steps);
         Assert.Equal(ActionType.RecordScreen, recordWithAudio.Steps[0].Type);
@@ -213,6 +223,20 @@ public sealed class ProfileAndPluginTests
 
         var startStep = new PlanStep { Type = ActionType.StartScreenRecording };
         var startDecision = engine.Evaluate(startStep, new WindowRef());
+        Assert.True(startDecision.Allowed);
+        Assert.True(startDecision.RequiresConfirmation);
+    }
+
+    [Fact]
+    public void PolicyEngine_StillRequiresConfirmation_ForScreenRecording_WhenGlobalConfirmationDisabled()
+    {
+        var engine = new PolicyEngine(new AgentConfig { RequireConfirmation = false });
+
+        var recordDecision = engine.Evaluate(new PlanStep { Type = ActionType.RecordScreen }, new WindowRef());
+        Assert.True(recordDecision.Allowed);
+        Assert.True(recordDecision.RequiresConfirmation);
+
+        var startDecision = engine.Evaluate(new PlanStep { Type = ActionType.StartScreenRecording }, new WindowRef());
         Assert.True(startDecision.Allowed);
         Assert.True(startDecision.RequiresConfirmation);
     }

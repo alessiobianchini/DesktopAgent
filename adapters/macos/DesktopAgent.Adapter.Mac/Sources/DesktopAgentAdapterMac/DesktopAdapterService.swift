@@ -153,9 +153,29 @@ final class DesktopAdapterService: Desktopagent_DesktopAdapterProvider {
 
     func captureScreen(request: Desktopagent_ScreenshotRequest, context: StatusOnlyCallContext) -> EventLoopFuture<Desktopagent_ScreenshotResponse> {
         let promise = context.eventLoop.makePromise(of: Desktopagent_ScreenshotResponse.self)
+        if request.windowID.lowercased() == "__screen:-1" {
+            promise.succeed(Desktopagent_ScreenshotResponse())
+            return promise.futureResult
+        }
+
         var region: CGRect? = nil
         if request.hasRegion {
             region = CGRect(x: Int(request.region.x), y: Int(request.region.y), width: Int(request.region.width), height: Int(request.region.height))
+        }
+        if region == nil {
+            if let screenIndex = parseScreenIndexHint(request.windowID) {
+                guard let screenRect = ScreenshotHelper.screenBounds(index: screenIndex) else {
+                    promise.succeed(Desktopagent_ScreenshotResponse())
+                    return promise.futureResult
+                }
+                region = screenRect
+            } else if !request.windowID.isEmpty,
+                      let window = resolveWindow(id: request.windowID),
+                      let windowBounds = AccessibilityHelper.getBounds(window),
+                      windowBounds.width > 0,
+                      windowBounds.height > 0 {
+                region = windowBounds
+            }
         }
         if let (data, size) = ScreenshotHelper.capture(region: region) {
             var response = Desktopagent_ScreenshotResponse()
@@ -167,6 +187,19 @@ final class DesktopAdapterService: Desktopagent_DesktopAdapterProvider {
             promise.succeed(Desktopagent_ScreenshotResponse())
         }
         return promise.futureResult
+    }
+
+    private func parseScreenIndexHint(_ value: String) -> Int? {
+        guard value.lowercased().hasPrefix("__screen:") else {
+            return nil
+        }
+
+        let suffix = String(value.dropFirst("__screen:".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let index = Int(suffix), index >= 0 else {
+            return nil
+        }
+
+        return index
     }
 
     func getClipboard(request: Desktopagent_Empty, context: StatusOnlyCallContext) -> EventLoopFuture<Desktopagent_ClipboardResponse> {

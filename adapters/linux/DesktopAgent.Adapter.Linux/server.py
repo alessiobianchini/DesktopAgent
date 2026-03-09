@@ -4,6 +4,8 @@ import uuid
 import shlex
 import time
 import re
+import asyncio
+from urllib.parse import urlparse, unquote
 from concurrent import futures
 import grpc
 
@@ -15,6 +17,13 @@ try:
     HAS_ATSPI = True
 except Exception:
     HAS_ATSPI = False
+
+try:
+    from dbus_next.aio import MessageBus  # type: ignore
+    from dbus_next import Variant  # type: ignore
+    HAS_DBUS_NEXT = True
+except Exception:
+    HAS_DBUS_NEXT = False
 
 
 class AdapterState:
@@ -198,8 +207,31 @@ class DesktopAdapterService(pb2_grpc.DesktopAdapterServicer):
             return pb2.ActionResult(success=False, message=str(exc))
 
     def CaptureScreen(self, request, context):
+        if (request.windowId or "").strip().lower() == "__screen:-1":
+            return pb2.ScreenshotResponse()
+
         region = request.region if request.HasField("region") else None
+        if region is None and request.windowId:
+            screen_index = parse_screen_index_hint(request.windowId)
+            if screen_index is not None:
+                bounds = get_x11_screen_bounds(screen_index)
+                if bounds is None:
+                    if is_wayland_session() and screen_index == 0:
+                        region = None
+                    else:
+                        return pb2.ScreenshotResponse()
+                else:
+                    region = bounds_to_region(bounds)
+            else:
+                window = self.state.get_window(request.windowId)
+                bounds = get_bounds(window) if window is not None else None
+                if bounds is not None and bounds[2] > 0 and bounds[3] > 0:
+                    region = bounds_to_region(bounds)
         png_bytes = try_capture_x11(region)
+        if not png_bytes:
+            png_bytes = try_capture_wayland(region)
+        if not png_bytes:
+            png_bytes = try_capture_wayland_portal(region)
         if png_bytes:
             return pb2.ScreenshotResponse(png=png_bytes)
         return pb2.ScreenshotResponse()
@@ -405,6 +437,11 @@ def intersects(bounds, hint):
     return not (x + w < hx or hx + hw < x or y + h < hy or hy + hh < y)
 
 
+def bounds_to_region(bounds):
+    x, y, w, h = bounds
+    return {"x": int(x), "y": int(y), "width": int(w), "height": int(h)}
+
+
 def try_capture_x11(region=None):
     if os.environ.get("DISPLAY") is None:
         return b""
@@ -415,12 +452,180 @@ def try_capture_x11(region=None):
     try:
         cmd = ["import", "-window", "root"]
         if region is not None:
-            cmd.extend(["-crop", f"{region.width}x{region.height}+{region.x}+{region.y}"])
+            x, y, w, h = region_parts(region)
+            cmd.extend(["-crop", f"{w}x{h}+{x}+{y}"])
         cmd.append("png:-")
         proc = subprocess.run(cmd, capture_output=True, check=True)
         return proc.stdout
     except Exception:
         return b""
+
+
+def is_wayland_session():
+    return bool((os.environ.get("WAYLAND_DISPLAY") or "").strip())
+
+
+def try_capture_wayland(region=None):
+    if not is_wayland_session():
+        return b""
+
+    grim = shutil_which("grim")
+    if not grim:
+        return b""
+
+    try:
+        cmd = [grim]
+        if region is not None:
+            x, y, w, h = region_parts(region)
+            if w > 0 and h > 0:
+                cmd.extend(["-g", f"{x},{y} {w}x{h}"])
+        cmd.append("-")
+        proc = subprocess.run(cmd, capture_output=True, check=True)
+        return proc.stdout
+    except Exception:
+        return b""
+
+
+def try_capture_wayland_portal(region=None):
+    if not is_wayland_session() or not HAS_DBUS_NEXT:
+        return b""
+
+    timeout_sec = 15.0
+    raw_timeout = (os.environ.get("DESKTOP_AGENT_WAYLAND_PORTAL_TIMEOUT_SEC") or "").strip()
+    if raw_timeout:
+        try:
+            timeout_sec = max(3.0, float(raw_timeout))
+        except Exception:
+            timeout_sec = 15.0
+
+    try:
+        return asyncio.run(capture_wayland_portal_async(timeout_sec))
+    except Exception:
+        return b""
+
+
+async def capture_wayland_portal_async(timeout_sec: float):
+    bus = await MessageBus().connect()
+    try:
+        introspection = await bus.introspect("org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop")
+        desktop_obj = bus.get_proxy_object("org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop", introspection)
+        screenshot_iface = desktop_obj.get_interface("org.freedesktop.portal.Screenshot")
+
+        token = f"desktopagent{uuid.uuid4().hex[:8]}"
+        options = {
+            "handle_token": Variant("s", token),
+            "interactive": Variant("b", False),
+            "modal": Variant("b", False),
+        }
+
+        request_path = await screenshot_iface.call_screenshot("", options)
+        request_introspection = await bus.introspect("org.freedesktop.portal.Desktop", request_path)
+        request_obj = bus.get_proxy_object("org.freedesktop.portal.Desktop", request_path, request_introspection)
+        request_iface = request_obj.get_interface("org.freedesktop.portal.Request")
+
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+
+        def on_response(response_code, results):
+            if future.done():
+                return
+            future.set_result((int(response_code), results))
+
+        request_iface.on_response(on_response)
+        response_code, results = await asyncio.wait_for(future, timeout=timeout_sec)
+        if response_code != 0:
+            return b""
+
+        uri = ""
+        uri_variant = results.get("uri") if isinstance(results, dict) else None
+        if uri_variant is None:
+            return b""
+        if hasattr(uri_variant, "value"):
+            uri = str(uri_variant.value or "")
+        else:
+            uri = str(uri_variant or "")
+
+        if not uri:
+            return b""
+
+        path = uri
+        parsed = urlparse(uri)
+        if parsed.scheme == "file":
+            path = unquote(parsed.path or "")
+
+        if not path:
+            return b""
+
+        for _ in range(20):
+            if os.path.isfile(path):
+                with open(path, "rb") as handle:
+                    return handle.read()
+            await asyncio.sleep(0.15)
+
+        return b""
+    finally:
+        bus.disconnect()
+
+
+def region_parts(region):
+    if isinstance(region, dict):
+        return int(region.get("x", 0)), int(region.get("y", 0)), int(region.get("width", 0)), int(region.get("height", 0))
+    return int(region.x), int(region.y), int(region.width), int(region.height)
+
+
+def parse_screen_index_hint(value: str):
+    if not value:
+        return None
+    prefix = "__screen:"
+    lower = value.lower()
+    if not lower.startswith(prefix):
+        return None
+    suffix = value[len(prefix):].strip()
+    try:
+        index = int(suffix)
+    except Exception:
+        return None
+    if index < 0:
+        return None
+    return index
+
+
+def get_x11_screen_bounds(index: int):
+    if os.environ.get("DISPLAY") is None:
+        return None
+
+    xrandr = shutil_which("xrandr")
+    if not xrandr:
+        return None
+
+    try:
+        proc = subprocess.run([xrandr, "--listmonitors"], capture_output=True, check=True)
+        output = proc.stdout.decode("utf-8", errors="ignore")
+    except Exception:
+        return None
+
+    monitor_re = re.compile(r"^\s*(\d+):.*?(\d+)/\d+x(\d+)/\d+\+(-?\d+)\+(-?\d+)", re.IGNORECASE)
+    monitors = []
+    for line in output.splitlines():
+        match = monitor_re.match(line.strip())
+        if not match:
+            continue
+        monitor_index = int(match.group(1))
+        width = int(match.group(2))
+        height = int(match.group(3))
+        x = int(match.group(4))
+        y = int(match.group(5))
+        monitors.append((monitor_index, x, y, width, height))
+
+    if not monitors:
+        return None
+
+    monitors.sort(key=lambda item: item[0])
+    if index < 0 or index >= len(monitors):
+        return None
+
+    _, x, y, width, height = monitors[index]
+    return x, y, width, height
 
 
 def get_clipboard():
