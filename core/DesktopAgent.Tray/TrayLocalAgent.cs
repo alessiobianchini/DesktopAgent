@@ -2847,6 +2847,11 @@ internal sealed class TrayLocalAgent : IDisposable
         var matches = _appResolver.Suggest(query, 12);
         if (allowedOnly)
         {
+            if (_config.AllowedApps.Count == 0)
+            {
+                return WebChatResponse.Simple("Allowlist is empty: all apps are considered allowed.");
+            }
+
             matches = matches.Where(match => match.IsAllowed).ToList();
         }
 

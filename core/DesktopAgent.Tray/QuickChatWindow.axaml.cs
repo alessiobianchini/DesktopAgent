@@ -183,6 +183,11 @@ internal partial class QuickChatWindow : Window
     private Button? _diagCopyButton;
     private TextBlock? _diagStatusText;
     private TextBox? _diagBox;
+    private TextBox? _wikiSearchBox;
+    private Button? _wikiResetSearchButton;
+    private Button? _wikiCopyButton;
+    private TextBlock? _wikiStatusText;
+    private TextBox? _wikiContentBox;
 
     private string? _pendingToken;
     private string? _aiSuggestedCommand;
@@ -213,6 +218,7 @@ internal partial class QuickChatWindow : Window
     private readonly List<MediaFileItem> _mediaItems = new();
     private Bitmap? _mediaPreviewBitmap;
     private bool? _lastOcrEnabled;
+    private string _wikiFullText = string.Empty;
     private static readonly string[] BaseCommandPalette =
     {
         "status",
@@ -406,6 +412,11 @@ internal partial class QuickChatWindow : Window
         _diagCopyButton = this.FindControl<Button>("DiagCopyButton");
         _diagStatusText = this.FindControl<TextBlock>("DiagStatusText");
         _diagBox = this.FindControl<TextBox>("DiagBox");
+        _wikiSearchBox = this.FindControl<TextBox>("WikiSearchBox");
+        _wikiResetSearchButton = this.FindControl<Button>("WikiResetSearchButton");
+        _wikiCopyButton = this.FindControl<Button>("WikiCopyButton");
+        _wikiStatusText = this.FindControl<TextBlock>("WikiStatusText");
+        _wikiContentBox = this.FindControl<TextBox>("WikiContentBox");
 
         if (_sendButton != null)
         {
@@ -747,6 +758,28 @@ internal partial class QuickChatWindow : Window
         {
             _diagCopyButton.Click += async (_, _) => await CopyTextAsync(_diagBox?.Text, "Diagnostics copied.");
         }
+        if (_wikiSearchBox != null)
+        {
+            _wikiSearchBox.PropertyChanged += (_, args) =>
+            {
+                if (args.Property.Name == nameof(TextBox.Text))
+                {
+                    ApplyWikiFilter();
+                }
+            };
+        }
+        if (_wikiResetSearchButton != null)
+        {
+            _wikiResetSearchButton.Click += (_, _) =>
+            {
+                SetText(_wikiSearchBox, string.Empty);
+                ApplyWikiFilter();
+            };
+        }
+        if (_wikiCopyButton != null)
+        {
+            _wikiCopyButton.Click += async (_, _) => await CopyTextAsync(_wikiContentBox?.Text, "Wiki copied.");
+        }
 
         Opened += OnOpened;
         Activated += (_, _) =>
@@ -804,6 +837,7 @@ internal partial class QuickChatWindow : Window
         await LoadMediaAsync();
         await LoadAuditAsync();
         await RefreshDiagnosticsAsync();
+        RefreshWikiContent();
         RefreshMacroRecorderUi();
         _ = PollStatusAsync(_pollingCts.Token);
     }
@@ -1564,6 +1598,7 @@ internal partial class QuickChatWindow : Window
             await RefreshAudioInputsAsync();
             AppendConfigStatus("Config loaded.");
             RefreshUpdateStatusInConfig();
+            RefreshWikiContent();
         }
         catch (Exception ex)
         {
@@ -2967,6 +3002,121 @@ internal partial class QuickChatWindow : Window
         {
             SetText(_diagStatusText, $"Diagnostics failed: {ex.Message}");
         }
+    }
+
+    private void RefreshWikiContent()
+    {
+        _wikiFullText = BuildWikiText();
+        ApplyWikiFilter();
+    }
+
+    private void ApplyWikiFilter()
+    {
+        var fullText = _wikiFullText;
+        if (string.IsNullOrWhiteSpace(fullText))
+        {
+            fullText = BuildWikiText();
+            _wikiFullText = fullText;
+        }
+
+        var rawQuery = (_wikiSearchBox?.Text ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(rawQuery))
+        {
+            SetText(_wikiContentBox, fullText);
+            SetText(_wikiStatusText, "Wiki ready. Search to filter.");
+            return;
+        }
+
+        var tokens = rawQuery
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(static token => token.Length >= 2)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (tokens.Length == 0)
+        {
+            SetText(_wikiContentBox, fullText);
+            SetText(_wikiStatusText, "Type at least 2 chars to filter.");
+            return;
+        }
+
+        var sections = fullText
+            .Split($"{Environment.NewLine}{Environment.NewLine}", StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .ToList();
+        var matches = sections
+            .Where(section => tokens.All(token => section.Contains(token, StringComparison.OrdinalIgnoreCase)))
+            .ToList();
+
+        if (matches.Count == 0)
+        {
+            SetText(_wikiContentBox, "No wiki matches found.");
+            SetText(_wikiStatusText, $"No results for '{rawQuery}'.");
+            return;
+        }
+
+        SetText(_wikiContentBox, string.Join($"{Environment.NewLine}{Environment.NewLine}", matches));
+        SetText(_wikiStatusText, $"Wiki: {matches.Count} section(s) matched '{rawQuery}'.");
+    }
+
+    private string BuildWikiText()
+    {
+        var lines = new List<string>
+        {
+            "DesktopAgent Wiki",
+            "Last update: " + DateTime.Now.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture),
+            "",
+            "## Quick Start",
+            "1) arm",
+            "2) run <intent>  (or type natural language in chat)",
+            "3) confirm when requested",
+            "4) disarm when done",
+            "",
+            "## Most Useful Commands",
+            "- status",
+            "- arm / disarm",
+            "- simulate presence / require presence",
+            "- run \"open notepad and then type hello\"",
+            "- run \"take screenshot\"",
+            "- run \"take screenshot for each screen\"",
+            "- run \"take screenshot single-screen\"",
+            "- run \"record screen for 10 seconds\"",
+            "- run \"start recording screen without audio\"",
+            "- run \"stop recording\"",
+            "",
+            "## Safety Model",
+            "- Adapter starts DISARMED by default.",
+            "- Allowlist can block actions: if active window app is not allowed, actions are denied.",
+            "- Sensitive actions require confirmation (recording, dangerous clicks/keys, etc.).",
+            "- Kill switch stops execution immediately.",
+            "- Every action is written to audit logs.",
+            "",
+            "## Troubleshooting",
+            "- 'Blocked: Active window not in allowlist':",
+            "  Open Config and update AllowedApps, or clear the list to allow all apps.",
+            "- 'Adapter unavailable':",
+            "  Ensure adapter process is running on the configured endpoint.",
+            "- 'LLM unavailable':",
+            "  Check endpoint/model in Config and use Test LLM.",
+            "- 'audio unavailable' during recording:",
+            "  Verify ffmpeg build has audio backends and pick device/backend in Config.",
+            "",
+            "## Snapshot Modes",
+            "- take screenshot                    => default mode",
+            "- take screenshot for each screen    => mode:per-screen",
+            "- take screenshot single-screen      => mode:single",
+            "",
+            "## Profiles",
+            "- safe: stricter policy + lower rate",
+            "- balanced: default",
+            "- power: more permissive (but critical actions can still require confirmation)",
+            "",
+            "## Useful Tabs",
+            "- Config: LLM, media folder, audio backend/device, updates",
+            "- Media: screenshots/recordings preview and open",
+            "- Audit: action log",
+            "- Diagnostics: environment checks (ffmpeg, adapter, logs)"
+        };
+
+        return string.Join(Environment.NewLine, lines);
     }
 
     private static IEnumerable<string> ParseDirectShowAudioDevices(string? text)

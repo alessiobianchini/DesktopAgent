@@ -117,6 +117,22 @@ public sealed class AppResolverTests
             $"Unexpected resolution: {resolved}");
     }
 
+    [Fact]
+    public void Suggest_MarksAppsAllowed_WhenAllowlistIsEmpty()
+    {
+        var catalog = new StubCatalog(new List<AppEntry>
+        {
+            new("Notepad", @"C:\Windows\notepad.exe"),
+            new("Calculator", @"C:\Windows\System32\calc.exe")
+        });
+        var resolver = new AppResolver(new AgentConfig(), catalog);
+
+        var suggestions = resolver.Suggest(string.Empty, 10);
+
+        Assert.NotEmpty(suggestions);
+        Assert.All(suggestions, s => Assert.True(s.IsAllowed));
+    }
+
     private sealed class StubCatalog : IAppCatalog
     {
         private readonly IReadOnlyList<AppEntry> _entries;

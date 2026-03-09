@@ -169,7 +169,7 @@ public sealed class AppResolver : IAppResolver
     {
         if (_config.AllowedApps.Count == 0)
         {
-            return false;
+            return true;
         }
 
         return _config.AllowedApps.Any(app => entry.Name.Contains(app, StringComparison.OrdinalIgnoreCase)

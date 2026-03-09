@@ -551,6 +551,33 @@
                    FontSize="12" />
         </Grid>
       </TabItem>
+
+      <TabItem Header="Wiki">
+        <Grid RowDefinitions="Auto,Auto,*" Margin="8">
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <TextBox x:Name="WikiSearchBox"
+                     Width="360"
+                     Watermark="Search in wiki (commands, safety, setup...)"
+                     Background="#0F1520"
+                     BorderBrush="#2A3950"
+                     BorderThickness="1" />
+            <Button x:Name="WikiResetSearchButton" Content="Reset" MinWidth="90" />
+            <Button x:Name="WikiCopyButton" Content="Copy" MinWidth="90" />
+          </StackPanel>
+          <TextBlock x:Name="WikiStatusText" Grid.Row="1" Margin="0,8,0,0" Opacity="0.8" />
+          <TextBox x:Name="WikiContentBox"
+                   Grid.Row="2"
+                   Margin="0,10,0,0"
+                   IsReadOnly="True"
+                   AcceptsReturn="True"
+                   TextWrapping="Wrap"
+                   Background="#0F1520"
+                   BorderBrush="#2A3950"
+                   BorderThickness="1"
+                   FontFamily="Cascadia Mono, Consolas, monospace"
+                   FontSize="12" />
+        </Grid>
+      </TabItem>
     </TabControl>
   </Grid>
 </Window>
