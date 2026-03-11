@@ -31,6 +31,7 @@ internal sealed class WebApiClient : IDisposable
     public Task<WebApiSimpleResponse?> RestartServerAsync(CancellationToken cancellationToken) => _agent.RestartServerAsync(cancellationToken);
     public Task<WebApiSimpleResponse?> RestartAdapterAsync(CancellationToken cancellationToken) => _agent.RestartAdapterAsync(cancellationToken);
     public Task<WebIntentResponse?> ExecuteIntentAsync(string intent, bool dryRun, CancellationToken cancellationToken) => _agent.ExecuteIntentAsync(intent, dryRun, cancellationToken);
+    public Task<WebIntentResponse?> ExecutePlanJsonAsync(string planJson, bool dryRun, CancellationToken cancellationToken) => _agent.ExecutePlanJsonAsync(planJson, dryRun, cancellationToken);
     public Task WriteSystemAuditAsync(string eventType, string message, object? data, CancellationToken cancellationToken) => _agent.WriteSystemAuditAsync(eventType, message, data, cancellationToken);
 
     public async Task<string> GetStatusLineAsync(CancellationToken cancellationToken)

@@ -91,7 +91,7 @@
             </Border>
           </StackPanel>
         </TabItem.Header>
-        <Grid RowDefinitions="Auto,*,Auto,Auto,Auto,Auto" Margin="2">
+        <Grid RowDefinitions="Auto,*,Auto,Auto,Auto,Auto,Auto,Auto" Margin="2">
           <Border x:Name="ChatUpdateBadgePanel"
                   Grid.Row="0"
                   Margin="0,0,0,10"
@@ -155,14 +155,67 @@
             </StackPanel>
           </Border>
 
+          <Border x:Name="QuickActionsPanel"
+                  Grid.Row="4"
+                  Margin="0,0,0,10"
+                  Padding="8"
+                  IsVisible="False"
+                  Background="#111A2A"
+                  BorderBrush="#2A3950"
+                  BorderThickness="1"
+                  CornerRadius="6">
+            <WrapPanel ItemHeight="30">
+              <Button x:Name="QuickRunSuggestionButton" Content="Run Suggestion" MinWidth="120" Margin="0,0,8,0" />
+              <Button x:Name="QuickDryRunButton" Content="Dry-run Last" MinWidth="110" Margin="0,0,8,0" />
+              <Button x:Name="QuickExplainPlanButton" Content="Explain Plan" MinWidth="110" Margin="0,0,8,0" />
+              <Button x:Name="QuickEditPromptButton" Content="Edit Prompt" MinWidth="100" Margin="0,0,8,0" />
+              <Button x:Name="QuickHelpButton" Content="Help" MinWidth="76" />
+            </WrapPanel>
+          </Border>
+
+          <Border x:Name="PlanEditorPanel"
+                  Grid.Row="5"
+                  Margin="0,0,0,10"
+                  Padding="8"
+                  IsVisible="False"
+                  Background="#111A2A"
+                  BorderBrush="#2A3950"
+                  BorderThickness="1"
+                  CornerRadius="6">
+            <Grid RowDefinitions="Auto,*,Auto">
+              <Grid ColumnDefinitions="*,Auto,Auto,Auto,Auto">
+                <TextBlock x:Name="PlanEditorTitleText" Text="Plan preview (editable)" VerticalAlignment="Center" />
+                <Button x:Name="PlanEditorLoadButton" Grid.Column="1" Content="Load Last" MinWidth="90" Margin="8,0,0,0" />
+                <Button x:Name="PlanEditorValidateButton" Grid.Column="2" Content="Validate" MinWidth="90" Margin="8,0,0,0" />
+                <Button x:Name="PlanEditorDryRunButton" Grid.Column="3" Content="Dry-run Plan" MinWidth="108" Margin="8,0,0,0" />
+                <Button x:Name="PlanEditorExecuteButton" Grid.Column="4" Content="Execute Plan" MinWidth="108" Margin="8,0,0,0" />
+              </Grid>
+              <TextBox x:Name="PlanEditorBox"
+                       Grid.Row="1"
+                       Margin="0,8,0,8"
+                       AcceptsReturn="True"
+                       TextWrapping="Wrap"
+                       MinHeight="110"
+                       MaxHeight="220"
+                       ScrollViewer.VerticalScrollBarVisibility="Auto"
+                       ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                       FontFamily="Cascadia Mono, Consolas, monospace"
+                       FontSize="12"
+                       Background="#0F1520"
+                       BorderBrush="#2A3950"
+                       BorderThickness="1" />
+              <TextBlock x:Name="PlanEditorStatusText" Grid.Row="2" Opacity="0.8" />
+            </Grid>
+          </Border>
+
           <ListBox x:Name="CommandPaletteList"
-                   Grid.Row="4"
+                   Grid.Row="6"
                    Margin="0,0,0,10"
                    MinHeight="40"
                    MaxHeight="120"
                    IsVisible="False" />
 
-          <Grid Grid.Row="5" ColumnDefinitions="*,Auto,Auto">
+          <Grid Grid.Row="7" ColumnDefinitions="*,Auto,Auto">
             <TextBox x:Name="InputBox"
                      Watermark="Write command in natural language..."
                      TextWrapping="Wrap"

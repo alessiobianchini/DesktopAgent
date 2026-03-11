@@ -71,6 +71,20 @@ internal partial class QuickChatWindow : Window
     private Button? _useSuggestionButton;
     private Border? _busyPanel;
     private TextBlock? _busyText;
+    private Border? _quickActionsPanel;
+    private Button? _quickRunSuggestionButton;
+    private Button? _quickDryRunButton;
+    private Button? _quickExplainPlanButton;
+    private Button? _quickEditPromptButton;
+    private Button? _quickHelpButton;
+    private Border? _planEditorPanel;
+    private TextBlock? _planEditorTitleText;
+    private TextBox? _planEditorBox;
+    private TextBlock? _planEditorStatusText;
+    private Button? _planEditorLoadButton;
+    private Button? _planEditorValidateButton;
+    private Button? _planEditorDryRunButton;
+    private Button? _planEditorExecuteButton;
     private TextBlock? _statusText;
     private TextBlock? _versionText;
     private StackPanel? _confirmPanel;
@@ -192,11 +206,17 @@ internal partial class QuickChatWindow : Window
     private string? _pendingToken;
     private string? _aiSuggestedCommand;
     private string? _pendingMessage;
+    private string? _lastPlanJson;
     private string _lastSentMessage = string.Empty;
+    private string _lastReply = string.Empty;
     private DateTimeOffset _lastSentAtUtc = DateTimeOffset.MinValue;
     private DateTimeOffset _lastUtilityProbeAtUtc = DateTimeOffset.MinValue;
+    private DateTimeOffset _busyStartedAtUtc = DateTimeOffset.MinValue;
+    private double _busyAvgSeconds = 7;
     private bool _ffmpegAvailable;
     private CancellationTokenSource? _activeRequestCts;
+    private CancellationTokenSource? _busyAnimationCts;
+    private CancellationTokenSource? _streamingCts;
     private CancellationTokenSource? _paletteDebounceCts;
     private CancellationTokenSource? _persistSessionCts;
     private bool _busy;
@@ -300,6 +320,20 @@ internal partial class QuickChatWindow : Window
         _useSuggestionButton = this.FindControl<Button>("UseSuggestionButton");
         _busyPanel = this.FindControl<Border>("BusyPanel");
         _busyText = this.FindControl<TextBlock>("BusyText");
+        _quickActionsPanel = this.FindControl<Border>("QuickActionsPanel");
+        _quickRunSuggestionButton = this.FindControl<Button>("QuickRunSuggestionButton");
+        _quickDryRunButton = this.FindControl<Button>("QuickDryRunButton");
+        _quickExplainPlanButton = this.FindControl<Button>("QuickExplainPlanButton");
+        _quickEditPromptButton = this.FindControl<Button>("QuickEditPromptButton");
+        _quickHelpButton = this.FindControl<Button>("QuickHelpButton");
+        _planEditorPanel = this.FindControl<Border>("PlanEditorPanel");
+        _planEditorTitleText = this.FindControl<TextBlock>("PlanEditorTitleText");
+        _planEditorBox = this.FindControl<TextBox>("PlanEditorBox");
+        _planEditorStatusText = this.FindControl<TextBlock>("PlanEditorStatusText");
+        _planEditorLoadButton = this.FindControl<Button>("PlanEditorLoadButton");
+        _planEditorValidateButton = this.FindControl<Button>("PlanEditorValidateButton");
+        _planEditorDryRunButton = this.FindControl<Button>("PlanEditorDryRunButton");
+        _planEditorExecuteButton = this.FindControl<Button>("PlanEditorExecuteButton");
         _statusText = this.FindControl<TextBlock>("StatusText");
         _versionText = this.FindControl<TextBlock>("VersionText");
         _confirmPanel = this.FindControl<StackPanel>("ConfirmPanel");
@@ -493,6 +527,42 @@ internal partial class QuickChatWindow : Window
         if (_useSuggestionButton != null)
         {
             _useSuggestionButton.Click += async (_, _) => await UseAiSuggestionAsync();
+        }
+        if (_quickRunSuggestionButton != null)
+        {
+            _quickRunSuggestionButton.Click += async (_, _) => await UseAiSuggestionAsync();
+        }
+        if (_quickDryRunButton != null)
+        {
+            _quickDryRunButton.Click += async (_, _) => await RunDryRunLastCommandAsync();
+        }
+        if (_quickExplainPlanButton != null)
+        {
+            _quickExplainPlanButton.Click += (_, _) => ExplainCurrentPlan();
+        }
+        if (_quickEditPromptButton != null)
+        {
+            _quickEditPromptButton.Click += (_, _) => EditCurrentPrompt();
+        }
+        if (_quickHelpButton != null)
+        {
+            _quickHelpButton.Click += (_, _) => AppendSystem("Try commands like: arm, open notepad, run open edge and search weather, take snapshot.");
+        }
+        if (_planEditorLoadButton != null)
+        {
+            _planEditorLoadButton.Click += (_, _) => LoadCurrentPlanIntoEditor();
+        }
+        if (_planEditorValidateButton != null)
+        {
+            _planEditorValidateButton.Click += (_, _) => ValidateEditedPlan();
+        }
+        if (_planEditorDryRunButton != null)
+        {
+            _planEditorDryRunButton.Click += async (_, _) => await ExecuteEditedPlanAsync(dryRun: true);
+        }
+        if (_planEditorExecuteButton != null)
+        {
+            _planEditorExecuteButton.Click += async (_, _) => await ExecuteEditedPlanAsync(dryRun: false);
         }
         if (_cancelRequestButton != null)
         {
@@ -799,6 +869,12 @@ internal partial class QuickChatWindow : Window
             _activeRequestCts?.Cancel();
             _activeRequestCts?.Dispose();
             _activeRequestCts = null;
+            _busyAnimationCts?.Cancel();
+            _busyAnimationCts?.Dispose();
+            _busyAnimationCts = null;
+            _streamingCts?.Cancel();
+            _streamingCts?.Dispose();
+            _streamingCts = null;
             _paletteDebounceCts?.Cancel();
             _paletteDebounceCts?.Dispose();
             _paletteDebounceCts = null;
@@ -828,6 +904,8 @@ internal partial class QuickChatWindow : Window
         LoadTimelineSession();
         RefreshChatUpdateBadge();
         UpdateCommandPalette();
+        UpdateQuickActionState();
+        UpdatePlanEditorState();
         await RefreshStatusAsync();
         await LoadConfigAsync();
         RefreshUpdateStatusInConfig();
@@ -927,7 +1005,7 @@ internal partial class QuickChatWindow : Window
             var response = await Task.Run(
                 () => _apiClient.SendChatAsync(normalized, requestToken),
                 requestToken);
-            RenderResponse(response);
+            await RenderResponseAsync(response, requestToken);
         }
         catch (OperationCanceledException)
         {
@@ -967,7 +1045,7 @@ internal partial class QuickChatWindow : Window
             var response = await Task.Run(
                 () => _apiClient.ConfirmAsync(_pendingToken, approve, CancellationToken.None),
                 CancellationToken.None);
-            RenderResponse(response);
+            await RenderResponseAsync(response, CancellationToken.None);
         }
         catch (Exception ex)
         {
@@ -982,11 +1060,19 @@ internal partial class QuickChatWindow : Window
         }
     }
 
-    private void RenderResponse(WebChatResponse response)
+    private async Task RenderResponseAsync(WebChatResponse response, CancellationToken cancellationToken)
     {
         var reply = string.IsNullOrWhiteSpace(response.Reply) ? "<no reply>" : response.Reply;
-        AppendAgent(reply);
+        _lastReply = reply;
+        await AppendAgentStreamingAsync(reply, cancellationToken);
         UpdateAiSuggestionState(reply);
+        _lastPlanJson = string.IsNullOrWhiteSpace(response.PlanJson) ? _lastPlanJson : response.PlanJson;
+        if (!string.IsNullOrWhiteSpace(response.PlanJson))
+        {
+            SetText(_planEditorBox, response.PlanJson!);
+            SetText(_planEditorTitleText, "Plan preview (editable) - loaded from last response");
+            SetText(_planEditorStatusText, "Plan loaded. You can validate, dry-run, or execute.");
+        }
 
         if (!string.IsNullOrWhiteSpace(response.ModeLabel))
         {
@@ -1019,6 +1105,9 @@ internal partial class QuickChatWindow : Window
             _pendingToken = null;
             ShowConfirm(false, null);
         }
+
+        UpdateQuickActionState();
+        UpdatePlanEditorState();
     }
 
     private async Task RefreshStatusAsync()
@@ -1350,6 +1439,7 @@ internal partial class QuickChatWindow : Window
         _aiSuggestedCommand = ExtractAiSuggestion(reply);
         UpdateUseSuggestionButton();
         UpdateCommandPalette();
+        UpdateQuickActionState();
     }
 
     private void UpdateUseSuggestionButton()
@@ -1364,6 +1454,73 @@ internal partial class QuickChatWindow : Window
             var hasSuggestion = !string.IsNullOrWhiteSpace(_aiSuggestedCommand);
             _useSuggestionButton.IsEnabled = !_busy && hasSuggestion;
             _useSuggestionButton.Content = hasSuggestion ? "Use Suggestion" : "No Suggestion";
+        });
+    }
+
+    private void UpdateQuickActionState()
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            var hasSuggestion = !string.IsNullOrWhiteSpace(_aiSuggestedCommand);
+            var hasLastCommand = !string.IsNullOrWhiteSpace(_lastSentMessage);
+            var hasPlan = !string.IsNullOrWhiteSpace(_lastPlanJson);
+
+            if (_quickActionsPanel != null)
+            {
+                _quickActionsPanel.IsVisible = hasSuggestion || hasLastCommand || hasPlan;
+            }
+
+            if (_quickRunSuggestionButton != null)
+            {
+                _quickRunSuggestionButton.IsEnabled = !_busy && hasSuggestion;
+            }
+
+            if (_quickDryRunButton != null)
+            {
+                _quickDryRunButton.IsEnabled = !_busy && hasLastCommand;
+            }
+
+            if (_quickExplainPlanButton != null)
+            {
+                _quickExplainPlanButton.IsEnabled = hasPlan;
+            }
+
+            if (_quickEditPromptButton != null)
+            {
+                _quickEditPromptButton.IsEnabled = hasSuggestion || hasLastCommand;
+            }
+        });
+    }
+
+    private void UpdatePlanEditorState()
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            var hasPlan = !string.IsNullOrWhiteSpace(_lastPlanJson);
+            if (_planEditorPanel != null)
+            {
+                _planEditorPanel.IsVisible = hasPlan;
+            }
+
+            if (_planEditorLoadButton != null)
+            {
+                _planEditorLoadButton.IsEnabled = hasPlan;
+            }
+
+            if (_planEditorValidateButton != null)
+            {
+                _planEditorValidateButton.IsEnabled = !_busy;
+            }
+
+            if (_planEditorDryRunButton != null)
+            {
+                _planEditorDryRunButton.IsEnabled = !_busy && hasPlan;
+            }
+
+            if (_planEditorExecuteButton != null)
+            {
+                _planEditorExecuteButton.IsEnabled = !_busy && hasPlan;
+            }
         });
     }
 
@@ -1556,6 +1713,170 @@ internal partial class QuickChatWindow : Window
         }
 
         await SendMessageAsync(suggestion);
+    }
+
+    private async Task RunDryRunLastCommandAsync()
+    {
+        if (_busy)
+        {
+            return;
+        }
+
+        var last = _lastSentMessage?.Trim();
+        if (string.IsNullOrWhiteSpace(last))
+        {
+            AppendSystem("No previous command to dry-run.");
+            return;
+        }
+
+        await SendMessageAsync($"dry-run {last}");
+    }
+
+    private void ExplainCurrentPlan()
+    {
+        if (string.IsNullOrWhiteSpace(_lastPlanJson))
+        {
+            AppendSystem("No plan available yet.");
+            return;
+        }
+
+        LoadCurrentPlanIntoEditor();
+        AppendSystem("Plan loaded in editor. You can validate, dry-run, or execute it.");
+    }
+
+    private void EditCurrentPrompt()
+    {
+        var prompt = _aiSuggestedCommand?.Trim();
+        if (string.IsNullOrWhiteSpace(prompt))
+        {
+            prompt = _lastSentMessage?.Trim();
+        }
+
+        if (string.IsNullOrWhiteSpace(prompt))
+        {
+            return;
+        }
+
+        if (_inputBox != null)
+        {
+            _inputBox.Text = prompt;
+            _inputBox.CaretIndex = _inputBox.Text?.Length ?? 0;
+            _inputBox.Focus();
+        }
+    }
+
+    private void LoadCurrentPlanIntoEditor()
+    {
+        if (string.IsNullOrWhiteSpace(_lastPlanJson))
+        {
+            SetText(_planEditorStatusText, "No plan to load.");
+            return;
+        }
+
+        SetText(_planEditorBox, _lastPlanJson!);
+        SetText(_planEditorStatusText, "Plan loaded.");
+        UpdatePlanEditorState();
+    }
+
+    private void ValidateEditedPlan()
+    {
+        var json = _planEditorBox?.Text?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            SetText(_planEditorStatusText, "Plan JSON is empty.");
+            return;
+        }
+
+        if (!TryParsePlanJson(json, out var error))
+        {
+            SetText(_planEditorStatusText, $"Invalid plan: {error}");
+            return;
+        }
+
+        _lastPlanJson = json;
+        SetText(_planEditorStatusText, "Plan is valid.");
+        UpdatePlanEditorState();
+    }
+
+    private async Task ExecuteEditedPlanAsync(bool dryRun)
+    {
+        if (_busy)
+        {
+            return;
+        }
+
+        var json = _planEditorBox?.Text?.Trim() ?? string.Empty;
+        if (!TryParsePlanJson(json, out var error))
+        {
+            SetText(_planEditorStatusText, $"Invalid plan: {error}");
+            return;
+        }
+
+        _lastPlanJson = json;
+        SetText(_planEditorStatusText, dryRun ? "Running dry-run..." : "Executing plan...");
+
+        SetBusy(true);
+        AppendUser(dryRun ? "dry-run [edited plan]" : "run [edited plan]");
+        SetTimeline(new[] { "[..] Waiting for response..." });
+        try
+        {
+            var response = await Task.Run(
+                () => _apiClient.ExecutePlanJsonAsync(json, dryRun, CancellationToken.None),
+                CancellationToken.None);
+            if (response == null)
+            {
+                AppendSystem("No response from plan execution.");
+                return;
+            }
+
+            await RenderResponseAsync(ToChatResponse(response), CancellationToken.None);
+            SetText(_planEditorStatusText, dryRun ? "Dry-run completed." : "Plan submitted.");
+        }
+        catch (Exception ex)
+        {
+            AppendSystem($"Error: {ex.Message}");
+            SetText(_planEditorStatusText, $"Execution failed: {ex.Message}");
+        }
+        finally
+        {
+            SetBusy(false);
+            await RefreshStatusAsync();
+        }
+    }
+
+    private static bool TryParsePlanJson(string planJson, out string error)
+    {
+        error = string.Empty;
+        try
+        {
+            using var doc = JsonDocument.Parse(planJson);
+            if (!doc.RootElement.TryGetProperty("steps", out var steps)
+                || steps.ValueKind != JsonValueKind.Array
+                || steps.GetArrayLength() == 0)
+            {
+                error = "Missing or empty 'steps' array.";
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            return false;
+        }
+    }
+
+    private static WebChatResponse ToChatResponse(WebIntentResponse response)
+    {
+        return new WebChatResponse(
+            response.Reply,
+            response.NeedsConfirmation,
+            response.Token,
+            response.ActionLabel,
+            response.Steps,
+            response.PlanJson,
+            response.ModeLabel);
     }
 
     private async Task LoadConfigAsync()
@@ -2722,6 +3043,30 @@ internal partial class QuickChatWindow : Window
 
     private void SetBusy(bool busy)
     {
+        if (busy)
+        {
+            _busyStartedAtUtc = DateTimeOffset.UtcNow;
+            _busyAnimationCts?.Cancel();
+            _busyAnimationCts?.Dispose();
+            _busyAnimationCts = new CancellationTokenSource();
+            StartBusyAnimation(_busyAnimationCts.Token);
+        }
+        else
+        {
+            _busyAnimationCts?.Cancel();
+            _busyAnimationCts?.Dispose();
+            _busyAnimationCts = null;
+
+            if (_busyStartedAtUtc != DateTimeOffset.MinValue)
+            {
+                var elapsed = (DateTimeOffset.UtcNow - _busyStartedAtUtc).TotalSeconds;
+                if (elapsed is > 0.1 and < 120)
+                {
+                    _busyAvgSeconds = (_busyAvgSeconds * 0.7) + (elapsed * 0.3);
+                }
+            }
+        }
+
         _busy = busy;
         Dispatcher.UIThread.Post(() =>
         {
@@ -2731,7 +3076,9 @@ internal partial class QuickChatWindow : Window
             }
             if (_busyText != null)
             {
-                _busyText.Text = busy ? "Waiting for agent response..." : string.Empty;
+                _busyText.Text = busy
+                    ? $"Thinking... 0.0s elapsed | ETA ~{Math.Max(1, (int)Math.Round(_busyAvgSeconds, MidpointRounding.AwayFromZero))}s"
+                    : string.Empty;
             }
 
             foreach (var button in AllButtons())
@@ -2747,8 +3094,37 @@ internal partial class QuickChatWindow : Window
         });
         UpdateUseSuggestionButton();
         UpdateCommandPalette();
+        UpdateQuickActionState();
+        UpdatePlanEditorState();
         RefreshChatUpdateBadge();
         RefreshUpdateStatusInConfig();
+    }
+
+    private void StartBusyAnimation(CancellationToken cancellationToken)
+    {
+        _ = Task.Run(async () =>
+        {
+            var frame = 0;
+            var dots = new[] { ".", "..", "..." };
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                var elapsed = DateTimeOffset.UtcNow - _busyStartedAtUtc;
+                var etaSeconds = Math.Max(0, _busyAvgSeconds - elapsed.TotalSeconds);
+                var etaLabel = etaSeconds < 1
+                    ? "<1s"
+                    : $"{Math.Ceiling(etaSeconds):0}s";
+                SetText(_busyText, $"Thinking{dots[frame % dots.Length]} {elapsed.TotalSeconds:0.0}s elapsed | ETA ~{etaLabel}");
+                frame++;
+                try
+                {
+                    await Task.Delay(250, cancellationToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+            }
+        }, CancellationToken.None);
     }
 
     private IEnumerable<Button> AllButtons()
@@ -2757,6 +3133,8 @@ internal partial class QuickChatWindow : Window
         {
             _sendButton, _confirmButton, _cancelButton, _statusButton, _armButton, _disarmButton, _simPresenceButton,
             _useSuggestionButton, _chatUpdateDetailsButton, _chatApplyUpdateButton, _cancelRequestButton,
+            _quickRunSuggestionButton, _quickDryRunButton, _quickExplainPlanButton, _quickEditPromptButton, _quickHelpButton,
+            _planEditorLoadButton, _planEditorValidateButton, _planEditorDryRunButton, _planEditorExecuteButton,
             _reqPresenceButton, _killButton, _resetKillButton, _restartAdapterButton, _restartServerButton,
             _lockWindowButton, _lockAppButton, _unlockButton, _profileSafeButton,
             _profileBalancedButton, _profilePowerButton, _copyButton, _clearButton,
@@ -3338,6 +3716,61 @@ internal partial class QuickChatWindow : Window
     private void AppendAgent(string text) => AppendLine("AGENT", text);
     private void AppendSystem(string text) => AppendLine("SYSTEM", text);
 
+    private async Task AppendAgentStreamingAsync(string text, CancellationToken cancellationToken)
+    {
+        var cleanText = text.Replace("\r", string.Empty).Replace('\n', ' ').Trim();
+        if (string.IsNullOrWhiteSpace(cleanText))
+        {
+            AppendAgent("<no reply>");
+            return;
+        }
+
+        if (cleanText.Length < 90)
+        {
+            AppendAgent(cleanText);
+            return;
+        }
+
+        _streamingCts?.Cancel();
+        _streamingCts?.Dispose();
+        _streamingCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var token = _streamingCts.Token;
+        var timestamp = DateTime.Now.ToString("HH:mm:ss", CultureInfo.InvariantCulture);
+        var prefix = $"[{timestamp}] {"AGENT",-6} ";
+
+        await Dispatcher.UIThread.InvokeAsync(() =>
+        {
+            _historyLines.Enqueue($"{prefix}...");
+            TrimHistoryLines();
+            RewriteHistoryTextBox();
+
+            if (!IsChatTabSelected())
+            {
+                _unreadChatEvents = Math.Min(_unreadChatEvents + 1, 999);
+                _unreadInfoEvents = Math.Min(_unreadInfoEvents + 1, 999);
+                UpdateUnreadBadge();
+            }
+        });
+
+        var chunkSize = cleanText.Length > 800 ? 28 : 18;
+        for (var i = chunkSize; i < cleanText.Length; i += chunkSize)
+        {
+            token.ThrowIfCancellationRequested();
+            var partial = cleanText[..i];
+            await Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                RewriteLastHistoryLine($"{prefix}{partial}");
+            });
+            await Task.Delay(16, token);
+        }
+
+        await Dispatcher.UIThread.InvokeAsync(() =>
+        {
+            RewriteLastHistoryLine($"{prefix}{cleanText}");
+            SchedulePersistSessionState();
+        });
+    }
+
     private async Task CopyTextAsync(string? text, string successMessage)
     {
         var value = text ?? string.Empty;
@@ -3372,16 +3805,8 @@ internal partial class QuickChatWindow : Window
             var timestamp = DateTime.Now.ToString("HH:mm:ss", CultureInfo.InvariantCulture);
             var cleanText = text.Replace("\r", string.Empty).Replace('\n', ' ').Trim();
             _historyLines.Enqueue($"[{timestamp}] {role,-6} {cleanText}");
-            while (_historyLines.Count > MaxHistoryLines)
-            {
-                _historyLines.Dequeue();
-            }
-
-            SetText(_historyBox, string.Join(Environment.NewLine, _historyLines));
-            if (_historyBox != null)
-            {
-                _historyBox.CaretIndex = _historyBox.Text?.Length ?? 0;
-            }
+            TrimHistoryLines();
+            RewriteHistoryTextBox();
 
             if (!string.Equals(role, "YOU", StringComparison.OrdinalIgnoreCase) && !IsChatTabSelected())
             {
@@ -3400,6 +3825,45 @@ internal partial class QuickChatWindow : Window
 
             SchedulePersistSessionState();
         });
+    }
+
+    private void TrimHistoryLines()
+    {
+        while (_historyLines.Count > MaxHistoryLines)
+        {
+            _historyLines.Dequeue();
+        }
+    }
+
+    private void RewriteLastHistoryLine(string line)
+    {
+        if (_historyLines.Count == 0)
+        {
+            _historyLines.Enqueue(line);
+            TrimHistoryLines();
+            RewriteHistoryTextBox();
+            return;
+        }
+
+        var lines = _historyLines.ToList();
+        lines[^1] = line;
+        _historyLines.Clear();
+        foreach (var entry in lines)
+        {
+            _historyLines.Enqueue(entry);
+        }
+
+        TrimHistoryLines();
+        RewriteHistoryTextBox();
+    }
+
+    private void RewriteHistoryTextBox()
+    {
+        SetText(_historyBox, string.Join(Environment.NewLine, _historyLines));
+        if (_historyBox != null)
+        {
+            _historyBox.CaretIndex = _historyBox.Text?.Length ?? 0;
+        }
     }
 
     private static bool IsErrorLine(string line)

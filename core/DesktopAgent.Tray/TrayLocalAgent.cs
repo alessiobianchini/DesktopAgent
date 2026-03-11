@@ -48,6 +48,7 @@ internal sealed class TrayLocalAgent : IDisposable
     private IOcrEngine _ocrEngine;
     private bool _ocrRestartRequired;
     private readonly Dictionary<string, PendingAction> _pendingActions = new(StringComparer.OrdinalIgnoreCase);
+    private ClarificationRequest? _pendingClarification;
     private readonly List<WebTaskItem> _tasks = new();
     private readonly List<ScheduleState> _schedules = new();
     private readonly List<GoalState> _goals = new();
@@ -125,6 +126,17 @@ internal sealed class TrayLocalAgent : IDisposable
         }
 
         var normalized = text.ToLowerInvariant();
+
+        if (TryHandlePendingClarificationReply(text, out var clarificationResponse, out var clarificationMessage))
+        {
+            if (clarificationResponse == null)
+            {
+                return WebChatResponse.Simple(clarificationMessage ?? "Please answer with a number (e.g. 1) or 'cancel'.");
+            }
+
+            return await BuildPlanConfirmationAsync(clarificationResponse.Intent, dryRun: false, cancellationToken);
+        }
+        _pendingClarification = null;
 
         if (normalized is "kill" or "kill switch" or "panic" or "panic stop" or "stop now" or "abort")
         {
@@ -348,6 +360,11 @@ internal sealed class TrayLocalAgent : IDisposable
         if (IsUnrecognizedPlan(plan))
         {
             return await BuildUnknownCommandResponseAsync(text, cancellationToken);
+        }
+
+        if (TryCreateOpenAppClarification(plan, out var clarification))
+        {
+            return clarification;
         }
 
         var pendingToken = CreatePendingAction(PendingActionType.ExecutePlan, text, plan, dryRun: false);
@@ -951,6 +968,52 @@ internal sealed class TrayLocalAgent : IDisposable
         return await ExecutePlanInternalAsync(intent ?? string.Empty, plan, dryRun, approvedByUser: false, cancellationToken);
     }
 
+    public async Task<WebIntentResponse?> ExecutePlanJsonAsync(string planJson, bool dryRun, CancellationToken cancellationToken)
+    {
+        if (!TryParseActionPlanJson(planJson, out var parsedPlan, out var parseError) || parsedPlan == null)
+        {
+            return new WebIntentResponse($"Invalid plan JSON: {parseError}", false, null, null, null, planJson, "Mode: Plan editor");
+        }
+
+        if (TryCreateOpenAppClarification(parsedPlan, out var clarification))
+        {
+            return new WebIntentResponse(
+                clarification.Reply,
+                clarification.NeedsConfirmation,
+                clarification.Token,
+                clarification.ActionLabel,
+                clarification.Steps,
+                clarification.PlanJson,
+                clarification.ModeLabel ?? "Mode: Plan editor");
+        }
+
+        if (dryRun)
+        {
+            return await ExecutePlanInternalAsync("plan:edited", parsedPlan, dryRun: true, approvedByUser: false, cancellationToken);
+        }
+
+        var safety = await EvaluatePlanSafetyAsync(parsedPlan, cancellationToken);
+        if (!safety.Allowed)
+        {
+            return new WebIntentResponse($"Blocked: {safety.Reason}", false, null, null, null, PlanToJson(parsedPlan), "Mode: Plan editor");
+        }
+
+        if (!safety.AutoExecute)
+        {
+            var token = CreatePendingAction(PendingActionType.ExecutePlan, "plan:edited", parsedPlan, dryRun: false);
+            return new WebIntentResponse(
+                "Edited plan requires confirmation.",
+                true,
+                token,
+                "Confirm",
+                PlanToLines(parsedPlan),
+                PlanToJson(parsedPlan),
+                "Mode: Plan editor");
+        }
+
+        return await ExecutePlanInternalAsync("plan:edited", parsedPlan, dryRun: false, approvedByUser: false, cancellationToken);
+    }
+
     public void Dispose()
     {
         _schedulerCts.Cancel();
@@ -974,6 +1037,11 @@ internal sealed class TrayLocalAgent : IDisposable
         if (IsUnrecognizedPlan(plan))
         {
             return await BuildUnknownCommandResponseAsync(intent ?? string.Empty, cancellationToken);
+        }
+
+        if (TryCreateOpenAppClarification(plan, out var clarification))
+        {
+            return clarification;
         }
 
         if (dryRun)
@@ -1029,6 +1097,11 @@ internal sealed class TrayLocalAgent : IDisposable
 
     private async Task<WebChatResponse> BuildUnknownCommandResponseAsync(string input, CancellationToken cancellationToken)
     {
+        if (TryBuildClarificationFromInput(input, out var clarification))
+        {
+            return clarification;
+        }
+
         var suggestion = await SuggestSupportedCommandAsync(input, cancellationToken);
         if (!string.IsNullOrWhiteSpace(suggestion))
         {
@@ -1037,6 +1110,154 @@ internal sealed class TrayLocalAgent : IDisposable
 
         return WebChatResponse.Simple(SupportedCommandsHelp);
     }
+
+    private bool TryHandlePendingClarificationReply(string input, out ClarificationChoice? choice, out string? message)
+    {
+        choice = null;
+        message = null;
+        var pending = _pendingClarification;
+        if (pending == null)
+        {
+            return false;
+        }
+
+        var text = input.Trim();
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            message = "Please answer with a number (e.g. 1) or 'cancel'.";
+            return true;
+        }
+
+        if (text.Equals("cancel", StringComparison.OrdinalIgnoreCase)
+            || text.Equals("no", StringComparison.OrdinalIgnoreCase)
+            || text.Equals("skip", StringComparison.OrdinalIgnoreCase))
+        {
+            _pendingClarification = null;
+            message = "Cancelled.";
+            return true;
+        }
+
+        if (int.TryParse(text, out var index)
+            && index >= 1
+            && index <= pending.Options.Count)
+        {
+            choice = pending.Options[index - 1];
+            _pendingClarification = null;
+            return true;
+        }
+
+        message = $"Please choose 1-{pending.Options.Count} or type 'cancel'.";
+        return true;
+    }
+
+    private bool TryCreateOpenAppClarification(ActionPlan plan, out WebChatResponse clarification)
+    {
+        clarification = WebChatResponse.Simple(string.Empty);
+        if (plan.Steps.Count == 0)
+        {
+            return false;
+        }
+
+        var openStep = plan.Steps.FirstOrDefault(step => step.Type == ActionType.OpenApp && !string.IsNullOrWhiteSpace(step.AppIdOrPath));
+        if (openStep == null || string.IsNullOrWhiteSpace(openStep.AppIdOrPath))
+        {
+            return false;
+        }
+
+        var query = openStep.AppIdOrPath.Trim();
+        if (_appResolver.TryResolveApp(query, out _))
+        {
+            return false;
+        }
+
+        var options = _appResolver.Suggest(query, 5)
+            .Where(match => match.Score >= 0.35)
+            .Take(4)
+            .Select(match => new ClarificationChoice(
+                Label: match.Entry.Name,
+                Intent: $"open {match.Entry.Path}",
+                Description: $"{match.Entry.Name} ({match.Entry.Path})"))
+            .ToList();
+
+        if (options.Count == 0)
+        {
+            return false;
+        }
+
+        _pendingClarification = new ClarificationRequest("open-app", query, options);
+        var lines = options.Select((option, idx) => $"{idx + 1}. {option.Label}").ToList();
+        var prompt = $"I found multiple matches for '{query}'. Reply with 1-{options.Count} to choose, or 'cancel'.";
+        clarification = WebChatResponse.WithSteps(prompt, lines, null, "Mode: Clarification");
+        return true;
+    }
+
+    private bool TryBuildClarificationFromInput(string input, out WebChatResponse clarification)
+    {
+        clarification = WebChatResponse.Simple(string.Empty);
+        if (!TryExtractOpenQuery(input, out var query))
+        {
+            return false;
+        }
+
+        var options = _appResolver.Suggest(query, 5)
+            .Where(match => match.Score >= 0.35)
+            .Take(4)
+            .Select(match => new ClarificationChoice(
+                Label: match.Entry.Name,
+                Intent: $"open {match.Entry.Path}",
+                Description: $"{match.Entry.Name} ({match.Entry.Path})"))
+            .ToList();
+
+        if (options.Count == 0)
+        {
+            return false;
+        }
+
+        _pendingClarification = new ClarificationRequest("open-app", query, options);
+        var lines = options.Select((option, idx) => $"{idx + 1}. {option.Label}").ToList();
+        clarification = WebChatResponse.WithSteps(
+            $"Do you want me to open one of these apps for '{query}'? Reply with 1-{options.Count} or 'cancel'.",
+            lines,
+            null,
+            "Mode: Clarification");
+        return true;
+    }
+
+    private static bool TryExtractOpenQuery(string input, out string query)
+    {
+        query = string.Empty;
+        if (string.IsNullOrWhiteSpace(input))
+        {
+            return false;
+        }
+
+        var trimmed = input.Trim();
+        var patterns = new[]
+        {
+            @"^(?:open|launch|start|run)\s+(?<app>.+)$",
+            @"^(?:apri|avvia|lancia|esegui)\s+(?<app>.+)$",
+            @"^(?:can you|could you|please)\s+(?:open|launch|start)\s+(?:for me\s+)?(?<app>.+)$",
+            @"^(?:potresti|puoi|per favore)\s+(?:aprire|avviare|lanciare)\s+(?<app>.+)$"
+        };
+
+        foreach (var pattern in patterns)
+        {
+            var match = Regex.Match(trimmed, pattern, RegexOptions.IgnoreCase);
+            if (!match.Success)
+            {
+                continue;
+            }
+
+            query = match.Groups["app"].Value.Trim(' ', '.', '!', '?', '"', '\'');
+            if (!string.IsNullOrWhiteSpace(query))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private async Task<WebIntentResponse> ExecutePlanInternalAsync(string source, ActionPlan plan, bool dryRun, bool approvedByUser, CancellationToken cancellationToken)
     {
         if (plan.Steps.Count == 0)
@@ -3604,6 +3825,8 @@ internal sealed class TrayLocalAgent : IDisposable
     }
 
     private sealed record PendingAction(PendingActionType Type, string Source, ActionPlan? Plan, bool DryRun);
+    private sealed record ClarificationChoice(string Label, string Intent, string Description);
+    private sealed record ClarificationRequest(string Kind, string Input, IReadOnlyList<ClarificationChoice> Options);
 
     private sealed record ContextLockState(bool Enabled, string? WindowId, string? AppId, string? WindowTitle)
     {
