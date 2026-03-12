@@ -33,6 +33,12 @@ public sealed class FallbackIntentInterpreter : IIntentInterpreter
             return ruleBasedPlan;
         }
 
+        var mode = (_config.LlmInterpretationMode ?? "primary").Trim().ToLowerInvariant();
+        if (mode == "fallback" && !ShouldFallback(ruleBasedPlan))
+        {
+            return ruleBasedPlan;
+        }
+
         var rewritten = _rewriter.Rewrite(intent);
         if (!string.IsNullOrWhiteSpace(rewritten))
         {

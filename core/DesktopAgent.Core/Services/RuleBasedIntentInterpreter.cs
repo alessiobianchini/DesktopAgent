@@ -83,6 +83,7 @@ public sealed class RuleBasedIntentInterpreter : IIntentInterpreter
         "capture screen",
         "capture the screen",
         "cattura schermo",
+        "cattura dello schermo",
         "foto"
     };
     private static readonly string[] PerScreenTokens =
@@ -219,7 +220,7 @@ public sealed class RuleBasedIntentInterpreter : IIntentInterpreter
             return plan;
         }
 
-        if (SnapshotRegex.IsMatch(trimmed))
+        if (IsGenericSnapshotIntent(trimmed))
         {
             plan.Steps.Add(new PlanStep { Type = ActionType.CaptureScreen });
             return plan;
@@ -555,6 +556,52 @@ public sealed class RuleBasedIntentInterpreter : IIntentInterpreter
         return SingleScreenTokens.Any(token => normalized.Contains(token, StringComparison.Ordinal));
     }
 
+    private static bool IsGenericSnapshotIntent(string input)
+    {
+        if (string.IsNullOrWhiteSpace(input))
+        {
+            return false;
+        }
+
+        var normalized = Regex.Replace(input, "\\s+", " ").Trim().ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return false;
+        }
+
+        if (normalized.Contains("record", StringComparison.Ordinal)
+            || normalized.Contains("registr", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        if (SnapshotRegex.IsMatch(normalized))
+        {
+            return true;
+        }
+
+        if (normalized.Contains("screenshot", StringComparison.Ordinal)
+            || normalized.Contains("snapshot", StringComparison.Ordinal)
+            || normalized.Contains("screen shot", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        if (normalized.Contains("cattura schermo", StringComparison.Ordinal)
+            || normalized.Contains("cattura dello schermo", StringComparison.Ordinal)
+            || normalized.Contains("capture screen", StringComparison.Ordinal)
+            || normalized.Contains("capture the screen", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        return (normalized.Contains("foto", StringComparison.Ordinal)
+                || normalized.Contains("immagine", StringComparison.Ordinal))
+               && (normalized.Contains("schermo", StringComparison.Ordinal)
+                   || normalized.Contains("screen", StringComparison.Ordinal)
+                   || normalized.Contains("desktop", StringComparison.Ordinal));
+    }
+
     private static Regex BuildStartRecordingRegex()
     {
         var pattern = "^(?:start\\s+record(?:ing)?|begin\\s+record(?:ing)?|avvia\\s+registrazione|inizia\\s+registrazione)(?:\\s+(?:screen|desktop|schermo))?(?<audio>\\s+(?:with\\s+audio|and\\s+audio|con\\s+audio|without\\s+audio|no\\s+audio|senza\\s+audio))?$";
@@ -798,7 +845,7 @@ public sealed class RuleBasedIntentInterpreter : IIntentInterpreter
             }, true);
         }
 
-        if (SnapshotRegex.IsMatch(input))
+        if (IsGenericSnapshotIntent(input))
         {
             return (new List<PlanStep>
             {

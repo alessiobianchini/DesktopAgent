@@ -22,6 +22,7 @@ public static class AgentConfigSanitizer
         config.GoalSchedulerMaxPerTick = Math.Clamp(config.GoalSchedulerMaxPerTick, 1, 10);
         config.PostCheckTimeoutMs = Math.Clamp(config.PostCheckTimeoutMs, 100, 5000);
         config.PostCheckPollMs = Math.Clamp(config.PostCheckPollMs, 20, 1000);
+        config.LlmInterpretationMode = NormalizeLlmInterpretationMode(config.LlmInterpretationMode);
         config.ScreenRecordingAudioBackendPreference = NormalizeAudioBackendPreference(config.ScreenRecordingAudioBackendPreference);
         config.ScreenRecordingAudioDevice = (config.ScreenRecordingAudioDevice ?? string.Empty).Trim();
         config.MediaOutputDirectory = string.IsNullOrWhiteSpace(config.MediaOutputDirectory)
@@ -165,6 +166,16 @@ public static class AgentConfigSanitizer
             "pulse" => "pulse",
             "alsa" => "alsa",
             _ => "auto"
+        };
+    }
+
+    private static string NormalizeLlmInterpretationMode(string? value)
+    {
+        var normalized = (value ?? string.Empty).Trim().ToLowerInvariant();
+        return normalized switch
+        {
+            "fallback" => "fallback",
+            _ => "primary"
         };
     }
 }

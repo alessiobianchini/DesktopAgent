@@ -281,7 +281,7 @@
       </TabItem>
 
       <TabItem Header="Config">
-        <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,*" ColumnDefinitions="220,*" Margin="8">
+        <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,*" ColumnDefinitions="220,*" Margin="8">
           <TextBlock Text="LLM Enabled" />
           <CheckBox x:Name="CfgLlmEnabled" Grid.Column="1" />
 
@@ -292,23 +292,29 @@
             <ComboBoxItem Content="llama.cpp" />
           </ComboBox>
 
-          <TextBlock Grid.Row="2" Text="Endpoint" Margin="0,8,0,0" />
-          <TextBox x:Name="CfgLlmEndpoint" Grid.Row="2" Grid.Column="1" Margin="0,8,0,0" />
+          <TextBlock Grid.Row="2" Text="LLM Parsing Mode" Margin="0,8,0,0" />
+          <ComboBox x:Name="CfgLlmParsingMode" Grid.Row="2" Grid.Column="1" Margin="0,8,0,0" SelectedIndex="0">
+            <ComboBoxItem Content="primary" />
+            <ComboBoxItem Content="fallback" />
+          </ComboBox>
 
-          <TextBlock Grid.Row="3" Text="Model" Margin="0,8,0,0" />
-          <TextBox x:Name="CfgLlmModel" Grid.Row="3" Grid.Column="1" Margin="0,8,0,0" />
+          <TextBlock Grid.Row="3" Text="Endpoint" Margin="0,8,0,0" />
+          <TextBox x:Name="CfgLlmEndpoint" Grid.Row="3" Grid.Column="1" Margin="0,8,0,0" />
 
-          <TextBlock Grid.Row="4" Text="Timeout Seconds" Margin="0,8,0,0" />
-          <TextBox x:Name="CfgLlmTimeout" Grid.Row="4" Grid.Column="1" Margin="0,8,0,0" />
+          <TextBlock Grid.Row="4" Text="Model" Margin="0,8,0,0" />
+          <TextBox x:Name="CfgLlmModel" Grid.Row="4" Grid.Column="1" Margin="0,8,0,0" />
 
-          <TextBlock Grid.Row="5" Text="Max Tokens" Margin="0,8,0,0" />
-          <TextBox x:Name="CfgLlmMaxTokens" Grid.Row="5" Grid.Column="1" Margin="0,8,0,0" />
+          <TextBlock Grid.Row="5" Text="Timeout Seconds" Margin="0,8,0,0" />
+          <TextBox x:Name="CfgLlmTimeout" Grid.Row="5" Grid.Column="1" Margin="0,8,0,0" />
 
-          <TextBlock Grid.Row="6" Text="Allow Remote Endpoint" Margin="0,8,0,0" />
-          <CheckBox x:Name="CfgLlmAllowRemote" Grid.Row="6" Grid.Column="1" Margin="0,8,0,0" />
+          <TextBlock Grid.Row="6" Text="Max Tokens" Margin="0,8,0,0" />
+          <TextBox x:Name="CfgLlmMaxTokens" Grid.Row="6" Grid.Column="1" Margin="0,8,0,0" />
 
-          <TextBlock Grid.Row="7" Text="Audio Backend" Margin="0,8,0,0" />
-          <ComboBox x:Name="CfgAudioBackend" Grid.Row="7" Grid.Column="1" Margin="0,8,0,0" SelectedIndex="0">
+          <TextBlock Grid.Row="7" Text="Allow Remote Endpoint" Margin="0,8,0,0" />
+          <CheckBox x:Name="CfgLlmAllowRemote" Grid.Row="7" Grid.Column="1" Margin="0,8,0,0" />
+
+          <TextBlock Grid.Row="8" Text="Audio Backend" Margin="0,8,0,0" />
+          <ComboBox x:Name="CfgAudioBackend" Grid.Row="8" Grid.Column="1" Margin="0,8,0,0" SelectedIndex="0">
             <ComboBoxItem Content="auto" />
             <ComboBoxItem Content="wasapi" />
             <ComboBoxItem Content="dshow" />
@@ -318,39 +324,39 @@
             <ComboBoxItem Content="alsa" />
           </ComboBox>
 
-          <TextBlock Grid.Row="8" Text="Audio Device (optional)" Margin="0,8,0,0" />
-          <TextBox x:Name="CfgAudioDevice" Grid.Row="8" Grid.Column="1" Margin="0,8,0,0" />
+          <TextBlock Grid.Row="9" Text="Audio Device (optional)" Margin="0,8,0,0" />
+          <TextBox x:Name="CfgAudioDevice" Grid.Row="9" Grid.Column="1" Margin="0,8,0,0" />
 
-          <TextBlock Grid.Row="9" Text="Audio Input Selector" Margin="0,8,0,0" />
-          <StackPanel Grid.Row="9" Grid.Column="1" Orientation="Horizontal" Spacing="8" Margin="0,8,0,0">
+          <TextBlock Grid.Row="10" Text="Audio Input Selector" Margin="0,8,0,0" />
+          <StackPanel Grid.Row="10" Grid.Column="1" Orientation="Horizontal" Spacing="8" Margin="0,8,0,0">
             <ComboBox x:Name="CfgAudioDeviceSelector" MinWidth="320" />
             <Button x:Name="CfgAudioRefreshButton" Content="Refresh Inputs" MinWidth="130" />
           </StackPanel>
 
-          <TextBlock Grid.Row="10" Text="Capture Primary Display Only" Margin="0,8,0,0" />
-          <CheckBox x:Name="CfgPrimaryDisplayOnly" Grid.Row="10" Grid.Column="1" Margin="0,8,0,0" />
+          <TextBlock Grid.Row="11" Text="Capture Primary Display Only" Margin="0,8,0,0" />
+          <CheckBox x:Name="CfgPrimaryDisplayOnly" Grid.Row="11" Grid.Column="1" Margin="0,8,0,0" />
 
-          <TextBlock Grid.Row="11" Text="Media Folder" Margin="0,8,0,0" />
-          <StackPanel Grid.Row="11" Grid.Column="1" Orientation="Horizontal" Spacing="8" Margin="0,8,0,0">
+          <TextBlock Grid.Row="12" Text="Media Folder" Margin="0,8,0,0" />
+          <StackPanel Grid.Row="12" Grid.Column="1" Orientation="Horizontal" Spacing="8" Margin="0,8,0,0">
             <TextBox x:Name="CfgMediaOutputDirectory" MinWidth="320" />
             <Button x:Name="CfgOpenDataFolderButton" Content="Open Data Folder" MinWidth="140" />
           </StackPanel>
 
-          <StackPanel Grid.Row="12" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="8" Margin="0,12,0,0">
+          <StackPanel Grid.Row="13" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="8" Margin="0,12,0,0">
             <Button x:Name="CfgLoadButton" Content="Reload Config" MinWidth="120" />
             <Button x:Name="CfgSaveButton" Content="Save Config" MinWidth="120" />
             <Button x:Name="CfgTestLlmButton" Content="Test LLM" MinWidth="120" />
             <Button x:Name="CfgRunFirstSetupButton" Content="Run First Setup" MinWidth="130" />
           </StackPanel>
 
-          <StackPanel Grid.Row="13" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="8" Margin="0,10,0,0">
+          <StackPanel Grid.Row="14" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="8" Margin="0,10,0,0">
             <Button x:Name="CfgCheckUpdatesButton" Content="Check Updates Now" MinWidth="140" />
             <Button x:Name="CfgApplyUpdateButton" Content="Apply Downloaded Update" MinWidth="180" />
             <TextBlock x:Name="CfgUpdateStatusText" VerticalAlignment="Center" />
           </StackPanel>
 
           <TextBox x:Name="CfgStatusBox"
-                   Grid.Row="14"
+                   Grid.Row="15"
                    Grid.ColumnSpan="2"
                    Margin="0,12,0,0"
                    IsReadOnly="True"

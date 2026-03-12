@@ -92,6 +92,34 @@ public sealed class FallbackIntentInterpreterTests
         Assert.Equal(ActionType.CaptureScreen, plan.Steps[0].Type);
     }
 
+    [Fact]
+    public void Interpret_UsesRuleBased_WhenFallbackModeAndRuleBasedIsRecognized()
+    {
+        var config = new AgentConfig { LlmFallbackEnabled = true, LlmInterpretationMode = "fallback" };
+        var ruleBased = new RuleBasedIntentInterpreter(new StubAppResolver(), config);
+        var interpreter = new FallbackIntentInterpreter(ruleBased, new StubRewriter("open notepad"), new StubAuditLog(), config);
+
+        var plan = interpreter.Interpret("open calculator");
+
+        Assert.Single(plan.Steps);
+        Assert.Equal(ActionType.OpenApp, plan.Steps[0].Type);
+        Assert.Equal("calculator", plan.Steps[0].AppIdOrPath);
+    }
+
+    [Fact]
+    public void Interpret_UsesLlm_WhenFallbackModeAndRuleBasedIsUnrecognized()
+    {
+        var config = new AgentConfig { LlmFallbackEnabled = true, LlmInterpretationMode = "fallback" };
+        var ruleBased = new RuleBasedIntentInterpreter(new StubAppResolver(), config);
+        var interpreter = new FallbackIntentInterpreter(ruleBased, new StubRewriter("open calculator"), new StubAuditLog(), config);
+
+        var plan = interpreter.Interpret("do the thing for me");
+
+        Assert.Single(plan.Steps);
+        Assert.Equal(ActionType.OpenApp, plan.Steps[0].Type);
+        Assert.Equal("calculator", plan.Steps[0].AppIdOrPath);
+    }
+
     private sealed class StubRewriter : ILlmIntentRewriter
     {
         private readonly string? _value;

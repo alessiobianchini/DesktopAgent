@@ -105,16 +105,45 @@ internal sealed class TrayLocalAgent : IDisposable
         var informational = assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
         if (!string.IsNullOrWhiteSpace(informational))
         {
-            return informational;
+            return NormalizeVersionForDisplay(informational);
         }
 
         var fileVersion = assembly.GetCustomAttribute<AssemblyFileVersionAttribute>()?.Version;
         if (!string.IsNullOrWhiteSpace(fileVersion))
         {
-            return fileVersion;
+            return NormalizeVersionForDisplay(fileVersion);
         }
 
-        return assembly.GetName().Version?.ToString() ?? "unknown";
+        var fallback = assembly.GetName().Version?.ToString() ?? "unknown";
+        return NormalizeVersionForDisplay(fallback);
+    }
+
+    private static string NormalizeVersionForDisplay(string raw)
+    {
+        var value = (raw ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "unknown";
+        }
+
+        var plusIndex = value.IndexOf('+');
+        if (plusIndex > 0)
+        {
+            value = value[..plusIndex];
+        }
+
+        var semverCore = Regex.Match(value, @"^\d+\.\d+\.\d+");
+        if (semverCore.Success)
+        {
+            return semverCore.Value;
+        }
+
+        if (Version.TryParse(value, out var parsed))
+        {
+            return $"{parsed.Major}.{parsed.Minor}.{Math.Max(0, parsed.Build)}";
+        }
+
+        return value;
     }
 
     public async Task<WebChatResponse> SendChatAsync(string message, CancellationToken cancellationToken)
@@ -431,6 +460,7 @@ internal sealed class TrayLocalAgent : IDisposable
         var response = new WebConfigResponse(
             ProfileModeEnabled: _config.ProfileModeEnabled,
             ActiveProfile: _config.ActiveProfile,
+            LlmInterpretationMode: _config.LlmInterpretationMode,
             RequireConfirmation: _config.RequireConfirmation,
             MaxActionsPerSecond: _config.MaxActionsPerSecond,
             QuizSafeModeEnabled: _config.QuizSafeModeEnabled,
@@ -587,6 +617,11 @@ internal sealed class TrayLocalAgent : IDisposable
         if (payload.AuditLlmIncludeRawText.HasValue)
         {
             _config.AuditLlmIncludeRawText = payload.AuditLlmIncludeRawText.Value;
+        }
+
+        if (!string.IsNullOrWhiteSpace(payload.LlmInterpretationMode))
+        {
+            _config.LlmInterpretationMode = payload.LlmInterpretationMode.Trim();
         }
 
         if (payload.Llm != null)
@@ -1105,6 +1140,29 @@ internal sealed class TrayLocalAgent : IDisposable
         var suggestion = await SuggestSupportedCommandAsync(input, cancellationToken);
         if (!string.IsNullOrWhiteSpace(suggestion))
         {
+            var suggestedPlan = _planner.PlanFromIntent(suggestion);
+            if (!IsUnrecognizedPlan(suggestedPlan))
+            {
+                var token = CreatePendingAction(PendingActionType.ExecutePlan, input, suggestedPlan, dryRun: false);
+                var prompt = $"I interpreted your request as: {suggestion}. Confirm execution?";
+                await WriteAuditAsync(
+                    "llm_suggestion_parsed",
+                    "Unknown input mapped via AI suggestion",
+                    cancellationToken,
+                    new
+                    {
+                        input = input,
+                        suggestion = suggestion,
+                        steps = suggestedPlan.Steps.Count
+                    });
+                return WebChatResponse.ConfirmWithSteps(
+                    prompt,
+                    token,
+                    PlanToLines(suggestedPlan),
+                    PlanToJson(suggestedPlan),
+                    "Mode: LLM interpreter");
+            }
+
             return WebChatResponse.Simple($"I couldn't map that safely. AI suggestion: {suggestion}\nIf it's correct, send that command.");
         }
 

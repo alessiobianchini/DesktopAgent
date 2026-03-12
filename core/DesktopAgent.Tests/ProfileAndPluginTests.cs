@@ -189,6 +189,10 @@ public sealed class ProfileAndPluginTests
         Assert.Equal(ActionType.CaptureScreen, italianSingleScreen.Steps[0].Type);
         Assert.Equal("mode:single", italianSingleScreen.Steps[0].Text);
 
+        var conversationalItalian = interpreter.Interpret("puoi fare una cattura schermo?");
+        Assert.Single(conversationalItalian.Steps);
+        Assert.Equal(ActionType.CaptureScreen, conversationalItalian.Steps[0].Type);
+
         var recordWithAudio = interpreter.Interpret("record screen and audio for 2 minutes");
         Assert.Single(recordWithAudio.Steps);
         Assert.Equal(ActionType.RecordScreen, recordWithAudio.Steps[0].Type);

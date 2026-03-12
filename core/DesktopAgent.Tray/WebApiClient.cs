@@ -94,6 +94,7 @@ internal sealed record WebKillSwitchStatus(bool Tripped, string? Reason);
 internal sealed record WebConfigResponse(
     bool ProfileModeEnabled,
     string? ActiveProfile,
+    string? LlmInterpretationMode,
     bool RequireConfirmation,
     int MaxActionsPerSecond,
     bool QuizSafeModeEnabled,
@@ -149,7 +150,8 @@ internal sealed record WebConfigUpdate(
     IReadOnlyList<string>? AllowedApps,
     Dictionary<string, string>? AppAliases,
     bool? AuditLlmInteractions,
-    bool? AuditLlmIncludeRawText);
+    bool? AuditLlmIncludeRawText,
+    string? LlmInterpretationMode = null);
 
 internal sealed record WebConfigUpdateLlm(
     bool? Enabled,

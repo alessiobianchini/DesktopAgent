@@ -112,6 +112,7 @@ internal partial class QuickChatWindow : Window
 
     private CheckBox? _cfgLlmEnabled;
     private ComboBox? _cfgLlmProvider;
+    private ComboBox? _cfgLlmParsingMode;
     private ComboBox? _cfgAudioBackend;
     private TextBox? _cfgAudioDevice;
     private ComboBox? _cfgAudioDeviceSelector;
@@ -361,6 +362,7 @@ internal partial class QuickChatWindow : Window
 
         _cfgLlmEnabled = this.FindControl<CheckBox>("CfgLlmEnabled");
         _cfgLlmProvider = this.FindControl<ComboBox>("CfgLlmProvider");
+        _cfgLlmParsingMode = this.FindControl<ComboBox>("CfgLlmParsingMode");
         _cfgAudioBackend = this.FindControl<ComboBox>("CfgAudioBackend");
         _cfgAudioDevice = this.FindControl<TextBox>("CfgAudioDevice");
         _cfgAudioDeviceSelector = this.FindControl<ComboBox>("CfgAudioDeviceSelector");
@@ -1904,6 +1906,7 @@ internal partial class QuickChatWindow : Window
             SetText(_cfgLlmModel, config.Llm.Model ?? string.Empty);
             SetText(_cfgLlmTimeout, config.Llm.TimeoutSeconds.ToString(CultureInfo.InvariantCulture));
             SetText(_cfgLlmMaxTokens, config.Llm.MaxTokens.ToString(CultureInfo.InvariantCulture));
+            SelectLlmParsingMode(config.LlmInterpretationMode ?? "primary");
             _configuredMediaOutputDirectory = string.IsNullOrWhiteSpace(config.MediaOutputDirectory)
                 ? "media"
                 : config.MediaOutputDirectory.Trim();
@@ -1961,7 +1964,8 @@ internal partial class QuickChatWindow : Window
                 AllowedApps: null,
                 AppAliases: null,
                 AuditLlmInteractions: null,
-                AuditLlmIncludeRawText: null);
+                AuditLlmIncludeRawText: null,
+                LlmInterpretationMode: GetSelectedLlmParsingMode());
 
             var response = await _apiClient.SaveConfigAsync(update, CancellationToken.None);
             if (response == null)
@@ -3105,7 +3109,6 @@ internal partial class QuickChatWindow : Window
         _ = Task.Run(async () =>
         {
             var frame = 0;
-            var dots = new[] { ".", "..", "..." };
             while (!cancellationToken.IsCancellationRequested)
             {
                 var elapsed = DateTimeOffset.UtcNow - _busyStartedAtUtc;
@@ -3113,7 +3116,7 @@ internal partial class QuickChatWindow : Window
                 var etaLabel = etaSeconds < 1
                     ? "<1s"
                     : $"{Math.Ceiling(etaSeconds):0}s";
-                SetText(_busyText, $"Thinking{dots[frame % dots.Length]} {elapsed.TotalSeconds:0.0}s elapsed | ETA ~{etaLabel}");
+                SetText(_busyText, $"Thinking... {elapsed.TotalSeconds:0.0}s elapsed | ETA ~{etaLabel}");
                 frame++;
                 try
                 {
@@ -3969,6 +3972,27 @@ internal partial class QuickChatWindow : Window
         _cfgLlmProvider.SelectedIndex = 0;
     }
 
+    private void SelectLlmParsingMode(string mode)
+    {
+        if (_cfgLlmParsingMode == null)
+        {
+            return;
+        }
+
+        var normalized = mode.Trim().ToLowerInvariant();
+        for (var i = 0; i < _cfgLlmParsingMode.ItemCount; i++)
+        {
+            if (_cfgLlmParsingMode.Items[i] is ComboBoxItem item &&
+                string.Equals(item.Content?.ToString(), normalized, StringComparison.OrdinalIgnoreCase))
+            {
+                _cfgLlmParsingMode.SelectedIndex = i;
+                return;
+            }
+        }
+
+        _cfgLlmParsingMode.SelectedIndex = 0;
+    }
+
     private void SelectAudioBackend(string backend)
     {
         if (_cfgAudioBackend == null)
@@ -3998,6 +4022,17 @@ internal partial class QuickChatWindow : Window
         }
 
         return "ollama";
+    }
+
+    private string GetSelectedLlmParsingMode()
+    {
+        if (_cfgLlmParsingMode?.SelectedItem is ComboBoxItem combo && combo.Content != null)
+        {
+            var mode = combo.Content.ToString() ?? "primary";
+            return mode.Trim().ToLowerInvariant();
+        }
+
+        return "primary";
     }
 
     private string GetSelectedAudioBackend()
