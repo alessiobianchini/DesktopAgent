@@ -183,27 +183,45 @@
                   BorderThickness="1"
                   CornerRadius="6">
             <Grid RowDefinitions="Auto,*,Auto">
-              <Grid ColumnDefinitions="*,Auto,Auto,Auto,Auto">
+              <Grid ColumnDefinitions="*,Auto,Auto,Auto,Auto,Auto">
                 <TextBlock x:Name="PlanEditorTitleText" Text="Plan preview (editable)" VerticalAlignment="Center" />
                 <Button x:Name="PlanEditorLoadButton" Grid.Column="1" Content="Load Last" MinWidth="90" Margin="8,0,0,0" />
                 <Button x:Name="PlanEditorValidateButton" Grid.Column="2" Content="Validate" MinWidth="90" Margin="8,0,0,0" />
                 <Button x:Name="PlanEditorDryRunButton" Grid.Column="3" Content="Dry-run Plan" MinWidth="108" Margin="8,0,0,0" />
                 <Button x:Name="PlanEditorExecuteButton" Grid.Column="4" Content="Execute Plan" MinWidth="108" Margin="8,0,0,0" />
+                <Button x:Name="PlanEditorRefreshHumanButton" Grid.Column="5" Content="Refresh Summary" MinWidth="124" Margin="8,0,0,0" />
               </Grid>
-              <TextBox x:Name="PlanEditorBox"
-                       Grid.Row="1"
-                       Margin="0,8,0,8"
-                       AcceptsReturn="True"
-                       TextWrapping="Wrap"
-                       MinHeight="110"
-                       MaxHeight="220"
-                       ScrollViewer.VerticalScrollBarVisibility="Auto"
-                       ScrollViewer.HorizontalScrollBarVisibility="Auto"
-                       FontFamily="Cascadia Mono, Consolas, monospace"
-                       FontSize="12"
-                       Background="#0F1520"
-                       BorderBrush="#2A3950"
-                       BorderThickness="1" />
+              <TabControl Grid.Row="1" Margin="0,8,0,8">
+                <TabItem Header="JSON">
+                  <TextBox x:Name="PlanEditorBox"
+                           AcceptsReturn="True"
+                           TextWrapping="Wrap"
+                           MinHeight="110"
+                           MaxHeight="220"
+                           ScrollViewer.VerticalScrollBarVisibility="Auto"
+                           ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                           FontFamily="Cascadia Mono, Consolas, monospace"
+                           FontSize="12"
+                           Background="#0F1520"
+                           BorderBrush="#2A3950"
+                           BorderThickness="1" />
+                </TabItem>
+                <TabItem Header="Human">
+                  <TextBox x:Name="PlanEditorHumanBox"
+                           IsReadOnly="True"
+                           AcceptsReturn="True"
+                           TextWrapping="Wrap"
+                           MinHeight="110"
+                           MaxHeight="220"
+                           ScrollViewer.VerticalScrollBarVisibility="Auto"
+                           ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                           FontFamily="Cascadia Mono, Consolas, monospace"
+                           FontSize="12"
+                           Background="#0F1520"
+                           BorderBrush="#2A3950"
+                           BorderThickness="1" />
+                </TabItem>
+              </TabControl>
               <TextBlock x:Name="PlanEditorStatusText" Grid.Row="2" Opacity="0.8" />
             </Grid>
           </Border>

@@ -13,6 +13,7 @@ DesktopAgent is a local, safety-first desktop automation agent with a cross-plat
 - Falls back to vision/OCR flows when UI tree is unavailable.
 - Supports natural-language commands (rule-based + optional local LLM rewrite).
 - Tray Quick Chat includes command palette, AI command suggestions, loading state, and execution timeline.
+- Tray Quick Chat includes an editable **Plan Preview** panel (`Load Last`, `Validate`, `Dry-run Plan`, `Execute Plan`).
 - Optional plugin setup flow for FFmpeg/OCR (first-run wizard + manual retrigger from tray/config).
 - Keeps full local audit logs and safety guardrails.
 
@@ -79,6 +80,17 @@ Artifacts are available in each workflow run under **Actions -> Artifacts**.
   - `AutoUpdateSource`
   - `AutoUpdateCheckIntervalMinutes`
   - `AutoUpdateAutoApply`
+  - `LlmInterpretationMode` (`primary` or `fallback`)
+
+## Plan Preview (Tray)
+
+- `Load Last`: load latest generated plan JSON.
+- `Human` tab: readable plan summary (step-by-step).
+- `Validate`: local JSON/steps validation before execution.
+- `Dry-run Plan`: simulate plan execution.
+- `Execute Plan`: run edited plan (still subject to policy/confirmations).
+
+Note: plan JSON accepts both `steps` and `Steps` (case-insensitive validation in tray).
 
 ## Configuration
 

@@ -80,11 +80,13 @@ internal partial class QuickChatWindow : Window
     private Border? _planEditorPanel;
     private TextBlock? _planEditorTitleText;
     private TextBox? _planEditorBox;
+    private TextBox? _planEditorHumanBox;
     private TextBlock? _planEditorStatusText;
     private Button? _planEditorLoadButton;
     private Button? _planEditorValidateButton;
     private Button? _planEditorDryRunButton;
     private Button? _planEditorExecuteButton;
+    private Button? _planEditorRefreshHumanButton;
     private TextBlock? _statusText;
     private TextBlock? _versionText;
     private StackPanel? _confirmPanel;
@@ -330,11 +332,13 @@ internal partial class QuickChatWindow : Window
         _planEditorPanel = this.FindControl<Border>("PlanEditorPanel");
         _planEditorTitleText = this.FindControl<TextBlock>("PlanEditorTitleText");
         _planEditorBox = this.FindControl<TextBox>("PlanEditorBox");
+        _planEditorHumanBox = this.FindControl<TextBox>("PlanEditorHumanBox");
         _planEditorStatusText = this.FindControl<TextBlock>("PlanEditorStatusText");
         _planEditorLoadButton = this.FindControl<Button>("PlanEditorLoadButton");
         _planEditorValidateButton = this.FindControl<Button>("PlanEditorValidateButton");
         _planEditorDryRunButton = this.FindControl<Button>("PlanEditorDryRunButton");
         _planEditorExecuteButton = this.FindControl<Button>("PlanEditorExecuteButton");
+        _planEditorRefreshHumanButton = this.FindControl<Button>("PlanEditorRefreshHumanButton");
         _statusText = this.FindControl<TextBlock>("StatusText");
         _versionText = this.FindControl<TextBlock>("VersionText");
         _confirmPanel = this.FindControl<StackPanel>("ConfirmPanel");
@@ -565,6 +569,10 @@ internal partial class QuickChatWindow : Window
         if (_planEditorExecuteButton != null)
         {
             _planEditorExecuteButton.Click += async (_, _) => await ExecuteEditedPlanAsync(dryRun: false);
+        }
+        if (_planEditorRefreshHumanButton != null)
+        {
+            _planEditorRefreshHumanButton.Click += (_, _) => RefreshHumanPlanPreview();
         }
         if (_cancelRequestButton != null)
         {
@@ -1072,6 +1080,7 @@ internal partial class QuickChatWindow : Window
         if (!string.IsNullOrWhiteSpace(response.PlanJson))
         {
             SetText(_planEditorBox, response.PlanJson!);
+            RefreshHumanPlanPreview(response.PlanJson);
             SetText(_planEditorTitleText, "Plan preview (editable) - loaded from last response");
             SetText(_planEditorStatusText, "Plan loaded. You can validate, dry-run, or execute.");
         }
@@ -1523,6 +1532,11 @@ internal partial class QuickChatWindow : Window
             {
                 _planEditorExecuteButton.IsEnabled = !_busy && hasPlan;
             }
+
+            if (_planEditorRefreshHumanButton != null)
+            {
+                _planEditorRefreshHumanButton.IsEnabled = !_busy && hasPlan;
+            }
         });
     }
 
@@ -1776,6 +1790,7 @@ internal partial class QuickChatWindow : Window
         }
 
         SetText(_planEditorBox, _lastPlanJson!);
+        RefreshHumanPlanPreview(_lastPlanJson);
         SetText(_planEditorStatusText, "Plan loaded.");
         UpdatePlanEditorState();
     }
@@ -1796,6 +1811,7 @@ internal partial class QuickChatWindow : Window
         }
 
         _lastPlanJson = json;
+        RefreshHumanPlanPreview(json);
         SetText(_planEditorStatusText, "Plan is valid.");
         UpdatePlanEditorState();
     }
@@ -1815,6 +1831,7 @@ internal partial class QuickChatWindow : Window
         }
 
         _lastPlanJson = json;
+        RefreshHumanPlanPreview(json);
         SetText(_planEditorStatusText, dryRun ? "Running dry-run..." : "Executing plan...");
 
         SetBusy(true);
@@ -1846,13 +1863,182 @@ internal partial class QuickChatWindow : Window
         }
     }
 
+    private void RefreshHumanPlanPreview(string? rawJson = null)
+    {
+        var json = rawJson ?? _planEditorBox?.Text;
+        var summary = BuildHumanPlanSummary(json, out var error);
+        SetText(_planEditorHumanBox, summary);
+        if (!string.IsNullOrWhiteSpace(error))
+        {
+            SetText(_planEditorStatusText, $"Human summary warning: {error}");
+        }
+    }
+
+    private static string BuildHumanPlanSummary(string? json, out string error)
+    {
+        error = string.Empty;
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return "No plan loaded.";
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            if (!TryGetJsonPropertyIgnoreCase(root, "steps", out var steps)
+                || steps.ValueKind != JsonValueKind.Array
+                || steps.GetArrayLength() == 0)
+            {
+                error = "Missing or empty steps.";
+                return "No executable steps found.";
+            }
+
+            var lines = new List<string>();
+            if (TryGetJsonPropertyIgnoreCase(root, "intent", out var intentElement))
+            {
+                var intent = JsonElementToCompactString(intentElement);
+                if (!string.IsNullOrWhiteSpace(intent))
+                {
+                    lines.Add($"Intent: {intent}");
+                    lines.Add(string.Empty);
+                }
+            }
+
+            var index = 1;
+            foreach (var step in steps.EnumerateArray())
+            {
+                var typeLabel = TryGetJsonPropertyIgnoreCase(step, "type", out var typeElement)
+                    ? NormalizeActionTypeLabel(typeElement)
+                    : "Unknown";
+                var details = new List<string>();
+
+                if (TryGetJsonPropertyIgnoreCase(step, "appidorpath", out var appElement))
+                {
+                    var app = JsonElementToCompactString(appElement);
+                    if (!string.IsNullOrWhiteSpace(app))
+                    {
+                        details.Add($"app={app}");
+                    }
+                }
+
+                if (TryGetJsonPropertyIgnoreCase(step, "target", out var targetElement))
+                {
+                    var target = JsonElementToCompactString(targetElement);
+                    if (!string.IsNullOrWhiteSpace(target))
+                    {
+                        details.Add($"target={target}");
+                    }
+                }
+
+                if (TryGetJsonPropertyIgnoreCase(step, "text", out var textElement))
+                {
+                    var text = JsonElementToCompactString(textElement);
+                    if (!string.IsNullOrWhiteSpace(text))
+                    {
+                        details.Add($"text={text}");
+                    }
+                }
+
+                if (TryGetJsonPropertyIgnoreCase(step, "keys", out var keysElement))
+                {
+                    var keys = JsonElementToCompactString(keysElement);
+                    if (!string.IsNullOrWhiteSpace(keys))
+                    {
+                        details.Add($"keys={keys}");
+                    }
+                }
+
+                if (TryGetJsonPropertyIgnoreCase(step, "waitfor", out var waitElement))
+                {
+                    var wait = JsonElementToCompactString(waitElement);
+                    if (!string.IsNullOrWhiteSpace(wait))
+                    {
+                        details.Add($"wait={wait}");
+                    }
+                }
+
+                if (TryGetJsonPropertyIgnoreCase(step, "expectedappid", out var expectedAppElement))
+                {
+                    var expectedApp = JsonElementToCompactString(expectedAppElement);
+                    if (!string.IsNullOrWhiteSpace(expectedApp))
+                    {
+                        details.Add($"expectedApp={expectedApp}");
+                    }
+                }
+
+                if (TryGetJsonPropertyIgnoreCase(step, "expectedwindowid", out var expectedWindowElement))
+                {
+                    var expectedWindow = JsonElementToCompactString(expectedWindowElement);
+                    if (!string.IsNullOrWhiteSpace(expectedWindow))
+                    {
+                        details.Add($"expectedWindow={expectedWindow}");
+                    }
+                }
+
+                lines.Add(details.Count == 0
+                    ? $"{index}. {typeLabel}"
+                    : $"{index}. {typeLabel} ({string.Join(", ", details)})");
+                index++;
+            }
+
+            lines.Add(string.Empty);
+            lines.Add($"Total steps: {steps.GetArrayLength()}");
+            return string.Join(Environment.NewLine, lines);
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            return "Unable to build human summary from plan JSON.";
+        }
+    }
+
+    private static string NormalizeActionTypeLabel(JsonElement value)
+    {
+        if (value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var intValue))
+        {
+            if (Enum.IsDefined(typeof(DesktopAgent.Core.Models.ActionType), intValue))
+            {
+                return ((DesktopAgent.Core.Models.ActionType)intValue).ToString();
+            }
+
+            return $"Action#{intValue}";
+        }
+
+        var raw = JsonElementToCompactString(value);
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return "Unknown";
+        }
+
+        if (Enum.TryParse<DesktopAgent.Core.Models.ActionType>(raw, ignoreCase: true, out var parsed))
+        {
+            return parsed.ToString();
+        }
+
+        return raw;
+    }
+
+    private static string JsonElementToCompactString(JsonElement value)
+    {
+        return value.ValueKind switch
+        {
+            JsonValueKind.String => value.GetString()?.Trim() ?? string.Empty,
+            JsonValueKind.Null => string.Empty,
+            JsonValueKind.Undefined => string.Empty,
+            JsonValueKind.Array => string.Join("+", value.EnumerateArray().Select(JsonElementToCompactString).Where(v => !string.IsNullOrWhiteSpace(v))),
+            JsonValueKind.Object => value.GetRawText(),
+            _ => value.GetRawText()
+        };
+    }
+
     private static bool TryParsePlanJson(string planJson, out string error)
     {
         error = string.Empty;
         try
         {
             using var doc = JsonDocument.Parse(planJson);
-            if (!doc.RootElement.TryGetProperty("steps", out var steps)
+            if (!TryGetJsonPropertyIgnoreCase(doc.RootElement, "steps", out var steps)
                 || steps.ValueKind != JsonValueKind.Array
                 || steps.GetArrayLength() == 0)
             {
@@ -1867,6 +2053,26 @@ internal partial class QuickChatWindow : Window
             error = ex.Message;
             return false;
         }
+    }
+
+    private static bool TryGetJsonPropertyIgnoreCase(JsonElement element, string name, out JsonElement value)
+    {
+        value = default;
+        if (element.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        foreach (var property in element.EnumerateObject())
+        {
+            if (string.Equals(property.Name, name, StringComparison.OrdinalIgnoreCase))
+            {
+                value = property.Value;
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static WebChatResponse ToChatResponse(WebIntentResponse response)
@@ -3137,7 +3343,7 @@ internal partial class QuickChatWindow : Window
             _sendButton, _confirmButton, _cancelButton, _statusButton, _armButton, _disarmButton, _simPresenceButton,
             _useSuggestionButton, _chatUpdateDetailsButton, _chatApplyUpdateButton, _cancelRequestButton,
             _quickRunSuggestionButton, _quickDryRunButton, _quickExplainPlanButton, _quickEditPromptButton, _quickHelpButton,
-            _planEditorLoadButton, _planEditorValidateButton, _planEditorDryRunButton, _planEditorExecuteButton,
+            _planEditorLoadButton, _planEditorValidateButton, _planEditorDryRunButton, _planEditorExecuteButton, _planEditorRefreshHumanButton,
             _reqPresenceButton, _killButton, _resetKillButton, _restartAdapterButton, _restartServerButton,
             _lockWindowButton, _lockAppButton, _unlockButton, _profileSafeButton,
             _profileBalancedButton, _profilePowerButton, _copyButton, _clearButton,
@@ -3463,6 +3669,14 @@ internal partial class QuickChatWindow : Window
             "- run \"start recording screen without audio\"",
             "- run \"stop recording\"",
             "",
+            "## Plan Preview (Chat)",
+            "- Shows the JSON plan generated from your request.",
+            "- Human tab shows a readable step-by-step summary.",
+            "- Validate: checks plan structure before execution.",
+            "- Dry-run Plan: simulate without acting on desktop.",
+            "- Execute Plan: run edited plan (policy and safety still enforced).",
+            "- Supports both 'steps' and 'Steps' JSON keys.",
+            "",
             "## Safety Model",
             "- Adapter starts DISARMED by default.",
             "- Allowlist can block actions: if active window app is not allowed, actions are denied.",
@@ -3491,7 +3705,8 @@ internal partial class QuickChatWindow : Window
             "- power: more permissive (but critical actions can still require confirmation)",
             "",
             "## Useful Tabs",
-            "- Config: LLM, media folder, audio backend/device, updates",
+            "- Config: LLM, LLM parsing mode (primary/fallback), media folder, audio backend/device, updates",
+            "- Chat: quick actions + plan preview editor (load/validate/dry-run/execute)",
             "- Media: screenshots/recordings preview and open",
             "- Audit: action log",
             "- Diagnostics: environment checks (ffmpeg, adapter, logs)"
