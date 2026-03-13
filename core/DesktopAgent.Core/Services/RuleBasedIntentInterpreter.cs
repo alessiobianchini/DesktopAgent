@@ -75,6 +75,7 @@ public sealed class RuleBasedIntentInterpreter : IIntentInterpreter
     private static readonly Regex NotifyRegex = BuildNotifyRegex();
     private static readonly Regex ClipboardHistoryRegex = BuildSimpleRegex("clipboard history", "show clipboard history", "cronologia clipboard");
     private static readonly Regex SnapshotRegex = BuildSnapshotRegex();
+    private static readonly Regex SnapshotThenOpenRegex = BuildSnapshotThenOpenRegex();
     private static readonly string[] SnapshotIntentTokens =
     {
         "snapshot",
@@ -174,6 +175,22 @@ public sealed class RuleBasedIntentInterpreter : IIntentInterpreter
         }
 
         var segments = SplitSegments(trimmed);
+
+        if (TryParseSnapshotThenOpen(trimmed, out var snapshotMode, out var openApp))
+        {
+            var appTarget = ResolveOpenAppTarget(openApp);
+            plan.Steps.Add(new PlanStep
+            {
+                Type = ActionType.CaptureScreen,
+                Text = snapshotMode
+            });
+            plan.Steps.Add(new PlanStep
+            {
+                Type = ActionType.OpenApp,
+                AppIdOrPath = appTarget
+            });
+            return plan;
+        }
 
         if (TryParseStartScreenRecording(trimmed, out var startWithAudio))
         {
@@ -515,6 +532,14 @@ public sealed class RuleBasedIntentInterpreter : IIntentInterpreter
         return new Regex(pattern, RegexOptions.IgnoreCase | RegexOptions.Compiled);
     }
 
+    private static Regex BuildSnapshotThenOpenRegex()
+    {
+        var openVerbs = string.Join("|", OpenVerbs.Select(Regex.Escape));
+        var connectors = "(?:and|then|after|e|poi|quindi|dopo|successivamente)";
+        var pattern = $"^(?<snapshot>.+?)\\s+{connectors}\\s+(?<open>(?:{openVerbs})\\s+.+)$";
+        return new Regex(pattern, RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    }
+
     private static bool IsPerScreenSnapshotIntent(string input)
     {
         if (string.IsNullOrWhiteSpace(input))
@@ -603,6 +628,53 @@ public sealed class RuleBasedIntentInterpreter : IIntentInterpreter
                && (normalized.Contains("schermo", StringComparison.Ordinal)
                    || normalized.Contains("screen", StringComparison.Ordinal)
                    || normalized.Contains("desktop", StringComparison.Ordinal));
+    }
+
+    private static bool TryParseSnapshotThenOpen(string input, out string? mode, out string app)
+    {
+        mode = null;
+        app = string.Empty;
+        if (string.IsNullOrWhiteSpace(input))
+        {
+            return false;
+        }
+
+        var match = SnapshotThenOpenRegex.Match(input);
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        var snapshotPart = match.Groups["snapshot"].Value.Trim();
+        if (string.IsNullOrWhiteSpace(snapshotPart))
+        {
+            return false;
+        }
+
+        if (!(IsSingleScreenSnapshotIntent(snapshotPart)
+              || IsPerScreenSnapshotIntent(snapshotPart)
+              || IsGenericSnapshotIntent(snapshotPart)))
+        {
+            return false;
+        }
+
+        if (IsSingleScreenSnapshotIntent(snapshotPart))
+        {
+            mode = "mode:single";
+        }
+        else if (IsPerScreenSnapshotIntent(snapshotPart))
+        {
+            mode = "mode:per-screen";
+        }
+
+        var openPart = match.Groups["open"].Value.Trim();
+        if (!TryMatch(OpenRegex, openPart, out var appCandidate))
+        {
+            return false;
+        }
+
+        app = appCandidate;
+        return !string.IsNullOrWhiteSpace(app);
     }
 
     private static Regex BuildStartRecordingRegex()

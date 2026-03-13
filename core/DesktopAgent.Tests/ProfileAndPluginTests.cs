@@ -199,6 +199,12 @@ public sealed class ProfileAndPluginTests
         Assert.Equal(ActionType.OpenApp, chainedSnapshotAndOpen.Steps[1].Type);
         Assert.Equal("notepad", chainedSnapshotAndOpen.Steps[1].AppIdOrPath);
 
+        var chainedSnapshotThenOpen = interpreter.Interpret("fai uno screenshot, poi apri notepad");
+        Assert.Equal(2, chainedSnapshotThenOpen.Steps.Count);
+        Assert.Equal(ActionType.CaptureScreen, chainedSnapshotThenOpen.Steps[0].Type);
+        Assert.Equal(ActionType.OpenApp, chainedSnapshotThenOpen.Steps[1].Type);
+        Assert.Equal("notepad", chainedSnapshotThenOpen.Steps[1].AppIdOrPath);
+
         var recordWithAudio = interpreter.Interpret("record screen and audio for 2 minutes");
         Assert.Single(recordWithAudio.Steps);
         Assert.Equal(ActionType.RecordScreen, recordWithAudio.Steps[0].Type);
