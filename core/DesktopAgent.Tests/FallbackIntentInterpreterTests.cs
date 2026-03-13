@@ -93,6 +93,21 @@ public sealed class FallbackIntentInterpreterTests
     }
 
     [Fact]
+    public void Interpret_PreservesSnapshotChain_WhenLlmRewriteDropsSnapshot()
+    {
+        var config = new AgentConfig { LlmFallbackEnabled = true };
+        var ruleBased = new RuleBasedIntentInterpreter(new StubAppResolver(), config);
+        var interpreter = new FallbackIntentInterpreter(ruleBased, new StubRewriter("open chrome and then open notepad"), new StubAuditLog(), config);
+
+        var plan = interpreter.Interpret("puoi fare una cattura schermo e aprire notepad?");
+
+        Assert.Equal(2, plan.Steps.Count);
+        Assert.Equal(ActionType.CaptureScreen, plan.Steps[0].Type);
+        Assert.Equal(ActionType.OpenApp, plan.Steps[1].Type);
+        Assert.Equal("notepad", plan.Steps[1].AppIdOrPath);
+    }
+
+    [Fact]
     public void Interpret_UsesRuleBased_WhenFallbackModeAndRuleBasedIsRecognized()
     {
         var config = new AgentConfig { LlmFallbackEnabled = true, LlmInterpretationMode = "fallback" };

@@ -27,8 +27,9 @@ public sealed class FallbackIntentInterpreter : IIntentInterpreter
             return ruleBasedPlan;
         }
 
-        // Keep deterministic, safe parser behavior for explicit snapshot commands.
-        if (IsSnapshotOnlyPlan(ruleBasedPlan))
+        // Keep deterministic, safe parser behavior for explicit snapshot commands,
+        // including chained actions like "take screenshot and open notepad".
+        if (ShouldPreserveDeterministicRuleBasedPlan(ruleBasedPlan))
         {
             return ruleBasedPlan;
         }
@@ -94,10 +95,9 @@ public sealed class FallbackIntentInterpreter : IIntentInterpreter
         return false;
     }
 
-    private static bool IsSnapshotOnlyPlan(ActionPlan plan)
+    private static bool ShouldPreserveDeterministicRuleBasedPlan(ActionPlan plan)
     {
-        return plan.Steps.Count == 1
-               && plan.Steps[0].Type == ActionType.CaptureScreen;
+        return plan.Steps.Any(step => step.Type == ActionType.CaptureScreen);
     }
 
     private static ActionPlan PruneNonActionableNoise(ActionPlan plan)
