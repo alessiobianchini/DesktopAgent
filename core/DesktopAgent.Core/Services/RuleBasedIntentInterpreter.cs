@@ -173,6 +173,8 @@ public sealed class RuleBasedIntentInterpreter : IIntentInterpreter
             return plan;
         }
 
+        var segments = SplitSegments(trimmed);
+
         if (TryParseStartScreenRecording(trimmed, out var startWithAudio))
         {
             plan.Steps.Add(new PlanStep
@@ -200,7 +202,9 @@ public sealed class RuleBasedIntentInterpreter : IIntentInterpreter
             return plan;
         }
 
-        if (IsSingleScreenSnapshotIntent(trimmed))
+        // Snapshot intents can be chained with additional commands ("take screenshot and open notepad").
+        // Only short-circuit when the input is a single segment.
+        if (segments.Count == 1 && IsSingleScreenSnapshotIntent(trimmed))
         {
             plan.Steps.Add(new PlanStep
             {
@@ -210,7 +214,7 @@ public sealed class RuleBasedIntentInterpreter : IIntentInterpreter
             return plan;
         }
 
-        if (IsPerScreenSnapshotIntent(trimmed))
+        if (segments.Count == 1 && IsPerScreenSnapshotIntent(trimmed))
         {
             plan.Steps.Add(new PlanStep
             {
@@ -220,7 +224,7 @@ public sealed class RuleBasedIntentInterpreter : IIntentInterpreter
             return plan;
         }
 
-        if (IsGenericSnapshotIntent(trimmed))
+        if (segments.Count == 1 && IsGenericSnapshotIntent(trimmed))
         {
             plan.Steps.Add(new PlanStep { Type = ActionType.CaptureScreen });
             return plan;
@@ -234,7 +238,6 @@ public sealed class RuleBasedIntentInterpreter : IIntentInterpreter
             return plan;
         }
 
-        var segments = SplitSegments(trimmed);
         if (segments.Count > 1)
         {
             var unknownSegments = new List<string>();
