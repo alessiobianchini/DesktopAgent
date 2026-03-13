@@ -138,4 +138,5 @@ public sealed class LlmFallbackConfig
     public string Model { get; set; } = "llama3";
     public int TimeoutSeconds { get; set; } = 10;
     public int MaxTokens { get; set; } = 128;
+    public double MinConfidence { get; set; } = 0.65;
 }

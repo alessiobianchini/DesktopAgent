@@ -108,6 +108,21 @@ public sealed class FallbackIntentInterpreterTests
     }
 
     [Fact]
+    public void Interpret_PreservesScreenRecording_WhenLlmRewriteDropsRecording()
+    {
+        var config = new AgentConfig { LlmFallbackEnabled = true };
+        var ruleBased = new RuleBasedIntentInterpreter(new StubAppResolver(), config);
+        var interpreter = new FallbackIntentInterpreter(ruleBased, new StubRewriter("open chrome"), new StubAuditLog(), config);
+
+        var plan = interpreter.Interpret("record screen and audio for 2 minutes");
+
+        Assert.Single(plan.Steps);
+        Assert.Equal(ActionType.RecordScreen, plan.Steps[0].Type);
+        Assert.Equal(TimeSpan.FromMinutes(2), plan.Steps[0].WaitFor);
+        Assert.Equal("audio:on", plan.Steps[0].Text);
+    }
+
+    [Fact]
     public void Interpret_UsesRuleBased_WhenFallbackModeAndRuleBasedIsRecognized()
     {
         var config = new AgentConfig { LlmFallbackEnabled = true, LlmInterpretationMode = "fallback" };
@@ -135,16 +150,45 @@ public sealed class FallbackIntentInterpreterTests
         Assert.Equal("calculator", plan.Steps[0].AppIdOrPath);
     }
 
+    [Fact]
+    public void Interpret_AddsLowConfidenceMarker_WhenRewriteConfidenceIsBelowThreshold()
+    {
+        var config = new AgentConfig { LlmFallbackEnabled = true, LlmFallback = new LlmFallbackConfig { MinConfidence = 0.8 } };
+        var ruleBased = new RuleBasedIntentInterpreter(new StubAppResolver(), config);
+        var interpreter = new FallbackIntentInterpreter(
+            ruleBased,
+            new StubRewriter("open notepad", confidence: 0.42),
+            new StubAuditLog(),
+            config);
+
+        var plan = interpreter.Interpret("open notepaad");
+
+        Assert.Single(plan.Steps);
+        Assert.Equal(ActionType.OpenApp, plan.Steps[0].Type);
+        Assert.Contains("llm-low-confidence:0.42", plan.Steps[0].Note, StringComparison.OrdinalIgnoreCase);
+    }
+
     private sealed class StubRewriter : ILlmIntentRewriter
     {
         private readonly string? _value;
+        private readonly double _confidence;
+        private readonly bool _needsClarification;
+        private readonly string? _clarification;
 
-        public StubRewriter(string? value)
+        public StubRewriter(string? value, double confidence = 0.9, bool needsClarification = false, string? clarification = null)
         {
             _value = value;
+            _confidence = confidence;
+            _needsClarification = needsClarification;
+            _clarification = clarification;
         }
 
-        public string? Rewrite(string input) => _value;
+        public LlmRewriteResult? Rewrite(string input)
+        {
+            return string.IsNullOrWhiteSpace(_value)
+                ? null
+                : new LlmRewriteResult(_value!, _confidence, _needsClarification, _clarification, _value);
+        }
     }
 
     private sealed class StubAuditLog : IAuditLog

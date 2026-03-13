@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -25,7 +26,7 @@ public sealed class LocalLlmIntentRewriter : ILlmIntentRewriter
         };
     }
 
-    public string? Rewrite(string input)
+    public LlmRewriteResult? Rewrite(string input)
     {
         if (string.IsNullOrWhiteSpace(input))
         {
@@ -60,34 +61,37 @@ public sealed class LocalLlmIntentRewriter : ILlmIntentRewriter
 
         try
         {
-            string? rewritten;
+            string? rawOutput;
             if (provider == "ollama")
             {
-                rewritten = CallOllama(uri, prompt);
+                rawOutput = CallOllama(uri, prompt);
             }
             else if (provider == "openai")
             {
-                rewritten = CallOpenAiCompatible(uri, prompt);
+                rawOutput = CallOpenAiCompatible(uri, prompt);
             }
             else if (provider == "llama.cpp")
             {
-                rewritten = CallLlamaCpp(uri, prompt);
+                rawOutput = CallLlamaCpp(uri, prompt);
             }
             else
             {
-                rewritten = CallOllama(uri, prompt);
+                rawOutput = CallOllama(uri, prompt);
             }
 
+            var rewritten = ParseResult(rawOutput);
             stopwatch.Stop();
             WriteAudit("llm_response", "LLM rewrite completed", new
             {
                 provider,
                 model = _config.LlmFallback.Model,
                 latencyMs = stopwatch.ElapsedMilliseconds,
-                success = !string.IsNullOrWhiteSpace(rewritten),
-                output = ToAuditText(rewritten),
-                translatedCommand = rewritten ?? string.Empty,
-                outputLength = rewritten?.Length ?? 0
+                success = rewritten != null,
+                output = ToAuditText(rewritten?.RawOutput),
+                translatedCommand = rewritten?.Command ?? string.Empty,
+                confidence = rewritten?.Confidence ?? 0,
+                needsClarification = rewritten?.NeedsClarification ?? false,
+                outputLength = rewritten?.Command.Length ?? 0
             });
             return rewritten;
         }
@@ -112,6 +116,7 @@ public sealed class LocalLlmIntentRewriter : ILlmIntentRewriter
             model = _config.LlmFallback.Model,
             prompt,
             stream = false,
+            format = "json",
             options = new { temperature = 0.2, num_predict = _config.LlmFallback.MaxTokens }
         };
 
@@ -125,7 +130,7 @@ public sealed class LocalLlmIntentRewriter : ILlmIntentRewriter
         using var doc = JsonDocument.Parse(stream);
         if (doc.RootElement.TryGetProperty("response", out var resp))
         {
-            return CleanOutput(resp.GetString());
+            return resp.GetString();
         }
 
         return null;
@@ -142,7 +147,8 @@ public sealed class LocalLlmIntentRewriter : ILlmIntentRewriter
                 new { role = "user", content = prompt }
             },
             temperature = 0.2,
-            max_tokens = _config.LlmFallback.MaxTokens
+            max_tokens = _config.LlmFallback.MaxTokens,
+            response_format = new { type = "json_object" }
         };
 
         var response = _client.PostAsJsonAsync(uri, payload, JsonOptions).GetAwaiter().GetResult();
@@ -158,11 +164,11 @@ public sealed class LocalLlmIntentRewriter : ILlmIntentRewriter
             var first = choices[0];
             if (first.TryGetProperty("message", out var message) && message.TryGetProperty("content", out var content))
             {
-                return CleanOutput(content.GetString());
+                return content.GetString();
             }
             if (first.TryGetProperty("text", out var text))
             {
-                return CleanOutput(text.GetString());
+                return text.GetString();
             }
         }
 
@@ -189,14 +195,14 @@ public sealed class LocalLlmIntentRewriter : ILlmIntentRewriter
         using var doc = JsonDocument.Parse(stream);
         if (doc.RootElement.TryGetProperty("content", out var content))
         {
-            return CleanOutput(content.GetString());
+            return content.GetString();
         }
         if (doc.RootElement.TryGetProperty("choices", out var choices) && choices.GetArrayLength() > 0)
         {
             var first = choices[0];
             if (first.TryGetProperty("text", out var text))
             {
-                return CleanOutput(text.GetString());
+                return text.GetString();
             }
         }
 
@@ -206,33 +212,23 @@ public sealed class LocalLlmIntentRewriter : ILlmIntentRewriter
     private static string BuildPrompt(string input)
     {
         return $"{SystemPrompt()}\n" +
+               "Output schema (strict JSON, no extra keys):\n" +
+               "{\"command\":\"<normalized command>\",\"confidence\":0.0,\"needs_clarification\":false,\"clarification_question\":\"\"}\n" +
                "Examples:\n" +
                "User: pen notepad plus plus\n" +
-               "Command: open notepad plus plus\n" +
+               "{\"command\":\"open notepad plus plus\",\"confidence\":0.93,\"needs_clarification\":false,\"clarification_question\":\"\"}\n" +
                "User: move mouse for 2 munutes\n" +
-               "Command: move mouse for 2 minutes\n" +
+               "{\"command\":\"move mouse for 2 minutes\",\"confidence\":0.95,\"needs_clarification\":false,\"clarification_question\":\"\"}\n" +
                "User: apri vs code e crea nuovo file\n" +
-               "Command: open vs code and create new file\n" +
-               "User: apri teams e scrivi ciao\n" +
-               "Command: open teams and then type ciao\n" +
-               "User: puoi aprire chrome e cercare meteo gubbio\n" +
-               "Command: open chrome and then search meteo gubbio on chrome\n" +
-               "User: doppio clic su conferma\n" +
-               "Command: double click conferma\n" +
-               "User: registra schermo e audio per 2 minuti\n" +
-               "Command: record screen and audio for 2 minutes\n" +
-               "User: start recording screen without audio\n" +
-               "Command: start recording screen without audio\n" +
-               "User: stop recording\n" +
-               "Command: stop recording\n" +
-               "User: take a snapshot\n" +
-               "Command: take screenshot\n" +
-               "User: take a screenshot for each screen\n" +
-               "Command: take screenshot for each screen\n" +
-               "User: take snapshot single-screen\n" +
-               "Command: take screenshot single-screen\n" +
+               "{\"command\":\"open vs code and then create new file\",\"confidence\":0.90,\"needs_clarification\":false,\"clarification_question\":\"\"}\n" +
+               "User: puoi fare una cattura schermo e aprire notepad?\n" +
+               "{\"command\":\"take screenshot and then open notepad\",\"confidence\":0.94,\"needs_clarification\":false,\"clarification_question\":\"\"}\n" +
+               "User: apri teams\n" +
+               "{\"command\":\"open teams\",\"confidence\":0.84,\"needs_clarification\":false,\"clarification_question\":\"\"}\n" +
+               "User: open the chat app maybe teams or slack\n" +
+               "{\"command\":\"open teams\",\"confidence\":0.52,\"needs_clarification\":true,\"clarification_question\":\"Do you want Teams or Slack?\"}\n" +
                $"User: {input}\n" +
-               "Command:";
+               "JSON:";
     }
 
     private static string SystemPrompt()
@@ -244,7 +240,94 @@ public sealed class LocalLlmIntentRewriter : ILlmIntentRewriter
                "If there are multiple actions, output them in sequence using ' and then ' as separator. " +
                "When app is implied, infer the most likely app token (examples: teams, chrome, edge, vscode). " +
                "Preserve numeric values and duration from user text exactly when present. " +
-               "Output only commands in English or Italian. Do not add notes, explanations, or markdown. If unsure, reply with NONE.";
+               "Always output strict JSON only, with keys: command, confidence, needs_clarification, clarification_question. " +
+               "Do not output markdown or prose. If unsure, set needs_clarification=true and confidence<0.60.";
+    }
+
+    private LlmRewriteResult? ParseResult(string? rawOutput)
+    {
+        var raw = rawOutput?.Trim();
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return null;
+        }
+
+        var parsed = TryParseJsonResult(raw);
+        if (parsed != null)
+        {
+            return parsed;
+        }
+
+        var command = CleanOutput(raw);
+        if (string.IsNullOrWhiteSpace(command))
+        {
+            return null;
+        }
+
+        return new LlmRewriteResult(command, 0.60, false, null, raw);
+    }
+
+    private static LlmRewriteResult? TryParseJsonResult(string raw)
+    {
+        var candidate = ExtractJsonPayload(raw);
+        if (string.IsNullOrWhiteSpace(candidate))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(candidate);
+            var root = doc.RootElement;
+            var command = root.TryGetProperty("command", out var cmd) ? cmd.GetString() : null;
+            command = CleanOutput(command);
+            if (string.IsNullOrWhiteSpace(command))
+            {
+                return null;
+            }
+
+            var confidence = 0.6;
+            if (root.TryGetProperty("confidence", out var conf))
+            {
+                confidence = conf.ValueKind switch
+                {
+                    JsonValueKind.Number => conf.GetDouble(),
+                    JsonValueKind.String when double.TryParse(conf.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed)
+                        => parsed,
+                    _ => confidence
+                };
+            }
+
+            confidence = Math.Clamp(confidence, 0.0, 1.0);
+            var needsClarification = root.TryGetProperty("needs_clarification", out var needs) && needs.ValueKind == JsonValueKind.True;
+            var clarification = root.TryGetProperty("clarification_question", out var question)
+                ? question.GetString()
+                : null;
+
+            return new LlmRewriteResult(command, confidence, needsClarification, clarification, raw);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string? ExtractJsonPayload(string raw)
+    {
+        var trimmed = raw.Trim();
+        if (trimmed.StartsWith('{') && trimmed.EndsWith('}'))
+        {
+            return trimmed;
+        }
+
+        var start = trimmed.IndexOf('{');
+        var end = trimmed.LastIndexOf('}');
+        if (start < 0 || end <= start)
+        {
+            return null;
+        }
+
+        return trimmed.Substring(start, end - start + 1);
     }
 
     private static string? CleanOutput(string? raw)

@@ -1107,6 +1107,11 @@ internal sealed class TrayLocalAgent : IDisposable
 
     private async Task<PlanSafetyResult> EvaluatePlanSafetyAsync(ActionPlan plan, CancellationToken cancellationToken)
     {
+        if (RequiresLlmConfidenceConfirmation(plan, out var llmReason))
+        {
+            return new PlanSafetyResult(true, false, llmReason);
+        }
+
         var activeWindow = await _desktopClient.GetActiveWindowAsync(cancellationToken);
         foreach (var step in plan.Steps)
         {
@@ -1128,6 +1133,33 @@ internal sealed class TrayLocalAgent : IDisposable
         }
 
         return new PlanSafetyResult(true, true, string.Empty);
+    }
+
+    private static bool RequiresLlmConfidenceConfirmation(ActionPlan plan, out string reason)
+    {
+        reason = string.Empty;
+        var note = plan.Steps
+            .Select(step => step.Note)
+            .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value) && value.StartsWith("Rewritten intent:", StringComparison.OrdinalIgnoreCase));
+
+        if (string.IsNullOrWhiteSpace(note))
+        {
+            return false;
+        }
+
+        if (note.Contains("llm-needs-clarification", StringComparison.OrdinalIgnoreCase))
+        {
+            reason = "LLM requested clarification before auto-execution.";
+            return true;
+        }
+
+        if (note.Contains("llm-low-confidence", StringComparison.OrdinalIgnoreCase))
+        {
+            reason = "LLM confidence is low; explicit confirmation required.";
+            return true;
+        }
+
+        return false;
     }
 
     private async Task<WebChatResponse> BuildUnknownCommandResponseAsync(string input, CancellationToken cancellationToken)
@@ -2211,8 +2243,32 @@ internal sealed class TrayLocalAgent : IDisposable
         => string.IsNullOrWhiteSpace(notice) ? reply : $"{reply} {notice}";
 
     private static string? GetRewriteNotice(ActionPlan plan)
-        => plan.Steps.Select(step => step.Note)
+    {
+        var raw = plan.Steps.Select(step => step.Note)
             .FirstOrDefault(note => !string.IsNullOrWhiteSpace(note) && note.StartsWith("Rewritten intent:", StringComparison.OrdinalIgnoreCase));
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return null;
+        }
+
+        var cleaned = Regex.Replace(raw, @"\s*\|\s*llm-low-confidence:[0-9.]+", string.Empty, RegexOptions.IgnoreCase);
+        cleaned = Regex.Replace(cleaned, @"\s*\|\s*llm-needs-clarification", string.Empty, RegexOptions.IgnoreCase);
+        cleaned = Regex.Replace(cleaned, @"\s+\|\s+", " | ");
+        cleaned = cleaned.Trim();
+
+        var lowMatch = Regex.Match(raw, @"llm-low-confidence:(?<score>[0-9.]+)", RegexOptions.IgnoreCase);
+        if (lowMatch.Success)
+        {
+            cleaned = $"{cleaned} | Low confidence ({lowMatch.Groups["score"].Value})";
+        }
+
+        if (raw.Contains("llm-needs-clarification", StringComparison.OrdinalIgnoreCase))
+        {
+            cleaned = $"{cleaned} | Clarification suggested";
+        }
+
+        return cleaned;
+    }
 
     private static string GetModeLabel(ActionPlan plan)
         => string.IsNullOrWhiteSpace(GetRewriteNotice(plan)) ? "Mode: Rule-based" : "Mode: LLM interpreter";

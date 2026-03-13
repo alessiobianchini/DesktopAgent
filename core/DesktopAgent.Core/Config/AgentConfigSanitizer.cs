@@ -22,6 +22,7 @@ public static class AgentConfigSanitizer
         config.GoalSchedulerMaxPerTick = Math.Clamp(config.GoalSchedulerMaxPerTick, 1, 10);
         config.PostCheckTimeoutMs = Math.Clamp(config.PostCheckTimeoutMs, 100, 5000);
         config.PostCheckPollMs = Math.Clamp(config.PostCheckPollMs, 20, 1000);
+        config.LlmFallback.MinConfidence = Math.Clamp(config.LlmFallback.MinConfidence, 0.0, 1.0);
         config.LlmInterpretationMode = NormalizeLlmInterpretationMode(config.LlmInterpretationMode);
         config.ScreenRecordingAudioBackendPreference = NormalizeAudioBackendPreference(config.ScreenRecordingAudioBackendPreference);
         config.ScreenRecordingAudioDevice = (config.ScreenRecordingAudioDevice ?? string.Empty).Trim();
