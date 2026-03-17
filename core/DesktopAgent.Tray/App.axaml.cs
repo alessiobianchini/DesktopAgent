@@ -50,6 +50,7 @@ public partial class App : Application
     private NativeMenuItem? _updateStatusItem;
     private NativeMenuItem? _checkUpdatesItem;
     private NativeMenuItem? _applyUpdateItem;
+    private NativeMenuItem? _forceApplyUpdateItem;
     private NativeMenuItem? _exitItem;
 
     private Task? _pollingTask;
@@ -173,6 +174,9 @@ public partial class App : Application
         _applyUpdateItem = new NativeMenuItem("Apply downloaded update") { IsEnabled = false };
         _applyUpdateItem.Click += (_, _) => ApplyPendingUpdate();
 
+        _forceApplyUpdateItem = new NativeMenuItem("Force apply update (kill blockers)") { IsEnabled = false };
+        _forceApplyUpdateItem.Click += (_, _) => ForceApplyPendingUpdate();
+
         _exitItem = new NativeMenuItem("Exit");
         _exitItem.Click += (_, _) =>
         {
@@ -194,6 +198,7 @@ public partial class App : Application
         menu.Add(_refreshItem);
         menu.Add(_checkUpdatesItem);
         menu.Add(_applyUpdateItem);
+        menu.Add(_forceApplyUpdateItem);
         menu.Add(new NativeMenuItemSeparator());
         menu.Add(_armItem);
         menu.Add(_disarmItem);
@@ -466,7 +471,17 @@ public partial class App : Application
         }
     }
 
+    private void ForceApplyPendingUpdate()
+    {
+        ApplyPendingUpdateInternal(force: true);
+    }
+
     private void ApplyPendingUpdate()
+    {
+        ApplyPendingUpdateInternal(force: false);
+    }
+
+    private void ApplyPendingUpdateInternal(bool force)
     {
         _lastUpdateBlockers = Array.Empty<string>();
         if (_updateManager == null || _pendingUpdate == null)
@@ -492,6 +507,7 @@ public partial class App : Application
             var killed = installRoot == null ? Array.Empty<string>() : TryTerminateProcessesInInstallRoot(installRoot);
             _ = WriteUpdateAuditAsync("update_apply_requested", "Applying downloaded update", new
             {
+                force,
                 version = _pendingUpdate.Version.ToString(),
                 file = _pendingUpdate.FileName,
                 currentExe = Environment.ProcessPath,
@@ -503,24 +519,39 @@ public partial class App : Application
             // Ensure sidecar processes don't keep files locked in the current app folder.
             TryStopManagedProcess(_managedAdapterProcess);
             _managedAdapterProcess = null;
+            TryStopKnownAdapterProcesses(installRoot);
+            if (!string.IsNullOrWhiteSpace(installRoot))
+            {
+                TryTerminateKnownDesktopAgentProcessesInInstallRoot(installRoot!);
+            }
 
             _shutdown.Cancel();
-            Thread.Sleep(900);
+            Thread.Sleep(1200);
 
             if (!string.IsNullOrWhiteSpace(installRoot))
             {
-                var blockers = WaitForInstallRootToUnlock(installRoot!, timeoutMs: 5000);
+                var blockers = WaitForInstallRootToUnlock(installRoot!, timeoutMs: force ? 18000 : 12000);
                 if (blockers.Count > 0)
                 {
-                    _lastUpdateBlockers = blockers.ToList();
-                    _updateStatus = $"apply blocked: files in use ({blockers.Count})";
-                    _ = WriteUpdateAuditAsync("update_apply_blocked", "Apply blocked by running processes in install root", new
+                    if (force)
                     {
-                        installRoot,
-                        blockers
-                    });
-                    RefreshUpdateUi();
-                    return;
+                        TryForceTerminateInstallRootProcesses(installRoot!);
+                        blockers = WaitForInstallRootToUnlock(installRoot!, timeoutMs: 8000);
+                    }
+
+                    if (blockers.Count > 0)
+                    {
+                        _lastUpdateBlockers = blockers.ToList();
+                        _updateStatus = $"apply blocked: files in use ({blockers.Count})";
+                        _ = WriteUpdateAuditAsync("update_apply_blocked", "Apply blocked by running processes in install root", new
+                        {
+                            force,
+                            installRoot,
+                            blockers
+                        });
+                        RefreshUpdateUi();
+                        return;
+                    }
                 }
             }
 
@@ -532,6 +563,7 @@ public partial class App : Application
             _updateStatus = $"apply failed: {Compact(ex.Message, 30)}";
             _ = WriteUpdateAuditAsync("update_apply_failed", "Apply update failed", new
             {
+                force,
                 version = _pendingUpdate.Version.ToString(),
                 error = ex.Message
             });
@@ -544,6 +576,7 @@ public partial class App : Application
         try
         {
             updateManager.ApplyUpdatesAndRestart(pendingUpdate);
+            Environment.Exit(0);
         }
         catch
         {
@@ -551,10 +584,12 @@ public partial class App : Application
             if (!string.IsNullOrWhiteSpace(installRoot))
             {
                 TryTerminateProcessesInInstallRoot(installRoot!);
+                TryTerminateKnownDesktopAgentProcessesInInstallRoot(installRoot!);
                 Thread.Sleep(800);
             }
 
             updateManager.ApplyUpdatesAndRestart(pendingUpdate);
+            Environment.Exit(0);
         }
     }
 
@@ -575,6 +610,11 @@ public partial class App : Application
             if (_applyUpdateItem != null)
             {
                 _applyUpdateItem.IsEnabled = CanApplyPendingUpdate();
+            }
+
+            if (_forceApplyUpdateItem != null)
+            {
+                _forceApplyUpdateItem.IsEnabled = CanApplyPendingUpdate();
             }
         });
     }
@@ -1385,11 +1425,108 @@ public partial class App : Application
             if (!process.HasExited)
             {
                 process.Kill(true);
+                process.WaitForExit(5000);
             }
         }
         catch
         {
             // ignored
+        }
+    }
+
+    private static void TryStopKnownAdapterProcesses(string? installRoot)
+    {
+        var currentPid = Environment.ProcessId;
+        foreach (var process in Process.GetProcesses())
+        {
+            try
+            {
+                if (process.Id == currentPid)
+                {
+                    continue;
+                }
+
+                var name = process.ProcessName;
+                if (!name.StartsWith("DesktopAgent.Adapter", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (!string.IsNullOrWhiteSpace(installRoot))
+                {
+                    var path = process.MainModule?.FileName;
+                    if (string.IsNullOrWhiteSpace(path)
+                        || !path.StartsWith(installRoot, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+                }
+
+                if (!process.HasExited)
+                {
+                    process.Kill(true);
+                    process.WaitForExit(5000);
+                }
+            }
+            catch
+            {
+                // best effort
+            }
+            finally
+            {
+                process.Dispose();
+            }
+        }
+    }
+
+    private static void TryTerminateKnownDesktopAgentProcessesInInstallRoot(string installRoot)
+    {
+        var currentPid = Environment.ProcessId;
+        foreach (var process in Process.GetProcesses())
+        {
+            try
+            {
+                if (process.Id == currentPid)
+                {
+                    continue;
+                }
+
+                var path = process.MainModule?.FileName;
+                if (string.IsNullOrWhiteSpace(path))
+                {
+                    continue;
+                }
+
+                if (!path.StartsWith(installRoot, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var name = process.ProcessName;
+                if (string.Equals(name, "Update", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (!name.StartsWith("DesktopAgent", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (!process.HasExited)
+                {
+                    process.Kill(true);
+                    process.WaitForExit(5000);
+                }
+            }
+            catch
+            {
+                // best effort
+            }
+            finally
+            {
+                process.Dispose();
+            }
         }
     }
 
@@ -1478,6 +1615,7 @@ public partial class App : Application
         IReadOnlyList<string> blockers = Array.Empty<string>();
         while (DateTimeOffset.UtcNow < deadline)
         {
+            TryTerminateKnownDesktopAgentProcessesInInstallRoot(installRoot);
             blockers = GetProcessesInInstallRoot(installRoot);
             if (blockers.Count == 0)
             {
@@ -1488,6 +1626,22 @@ public partial class App : Application
         }
 
         return blockers;
+    }
+
+    private static void TryForceTerminateInstallRootProcesses(string installRoot)
+    {
+        for (var i = 0; i < 3; i++)
+        {
+            TryTerminateProcessesInInstallRoot(installRoot);
+            TryTerminateKnownDesktopAgentProcessesInInstallRoot(installRoot);
+            var blockers = GetProcessesInInstallRoot(installRoot);
+            if (blockers.Count == 0)
+            {
+                return;
+            }
+
+            Thread.Sleep(350);
+        }
     }
 
     private static IReadOnlyList<string> GetProcessesInInstallRoot(string installRoot)
@@ -1519,7 +1673,7 @@ public partial class App : Application
                     continue;
                 }
 
-                found.Add($"{process.ProcessName}:{process.Id}");
+                found.Add($"{process.ProcessName}:{process.Id}:{path}");
             }
             catch
             {
