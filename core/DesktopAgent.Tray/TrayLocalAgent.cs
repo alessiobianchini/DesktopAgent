@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Net;
 using System.Net.Http;
 using System.Net.Http.Json;
 using System.Reflection;
@@ -17,7 +18,7 @@ namespace DesktopAgent.Tray;
 
 internal sealed class TrayLocalAgent : IDisposable
 {
-    private const string SupportedCommandsHelp = "Available commands: status, kill, reset kill, lock status, lock on <current window|app>, unlock, profile <safe|balanced|power>, arm, disarm, simulate presence, require presence, list apps [query] [allowed], goals, goal add <text>, goal run <id>, goal done <id>, goal remove <id>, goal priority <id> <low|normal|high>, goal auto <id> <on|off>, goal scheduler on|off|every <sec>, continue goal, memory, run <intent>, dry-run <intent>, translate <text> to <language> (or 'translate to <language>: <text>'). Plugin intents: file write/read/list/append/search, take screenshot [for each screen|single screen], record screen [and audio] for <duration>, start recording [screen] [with/without audio], stop recording, jiggle mouse for <duration>.";
+    private const string SupportedCommandsHelp = "Available commands: status, kill, reset kill, lock status, lock on <current window|app>, unlock, profile <safe|balanced|power>, arm, disarm, simulate presence, require presence, list apps [query] [allowed], goals, goal add <text>, goal run <id>, goal done <id>, goal remove <id>, goal priority <id> <low|normal|high>, goal auto <id> <on|off>, goal scheduler on|off|every <sec>, continue goal, memory, run <intent>, dry-run <intent>, translate <text> to <language> (or 'translate to <language>: <text>'), order intake [<email text>], order preview, order clear, order fill <url>. Plugin intents: file write/read/list/append/search, take screenshot [for each screen|single screen], record screen [and audio] for <duration>, start recording [screen] [with/without audio], stop recording, jiggle mouse for <duration>.";
     private const int GoalPriorityLow = 0;
     private const int GoalPriorityNormal = 1;
     private const int GoalPriorityHigh = 2;
@@ -58,6 +59,8 @@ internal sealed class TrayLocalAgent : IDisposable
 
     private ContextLockState _contextLock = ContextLockState.None;
     private DateTimeOffset _lastGoalSchedulerSweepUtc = DateTimeOffset.MinValue;
+    private bool _awaitingOrderEmailInput;
+    private OrderDraft? _latestOrderDraft;
 
     public TrayLocalAgent(string adapterEndpoint, TimeSpan timeout, string? configPath)
     {
@@ -166,6 +169,12 @@ internal sealed class TrayLocalAgent : IDisposable
             return await BuildPlanConfirmationAsync(clarificationResponse.Intent, dryRun: false, cancellationToken);
         }
         _pendingClarification = null;
+
+        var orderResponse = await TryHandleOrderIntakeAsync(text, normalized, cancellationToken);
+        if (orderResponse != null)
+        {
+            return orderResponse;
+        }
 
         if (normalized is "kill" or "kill switch" or "panic" or "panic stop" or "stop now" or "abort")
         {
@@ -1195,10 +1204,1123 @@ internal sealed class TrayLocalAgent : IDisposable
                     "Mode: LLM interpreter");
             }
 
+            var orderSuggestion = await TryHandleOrderIntakeAsync(suggestion, suggestion.Trim().ToLowerInvariant(), cancellationToken);
+            if (orderSuggestion != null)
+            {
+                return orderSuggestion;
+            }
+
             return WebChatResponse.Simple($"I couldn't map that safely. AI suggestion: {suggestion}\nIf it's correct, send that command.");
         }
 
         return WebChatResponse.Simple(SupportedCommandsHelp);
+    }
+
+    private async Task<WebChatResponse?> TryHandleOrderIntakeAsync(string text, string normalized, CancellationToken cancellationToken)
+    {
+        if (_awaitingOrderEmailInput && normalized is "cancel" or "annulla" or "stop")
+        {
+            _awaitingOrderEmailInput = false;
+            return WebChatResponse.Simple("Order intake cancelled.");
+        }
+
+        if (normalized is "order preview" or "preview order" or "mostra ordine")
+        {
+            if (_latestOrderDraft == null)
+            {
+                return WebChatResponse.Simple("No order draft available. Use `order intake` first.");
+            }
+
+            return WebChatResponse.WithSteps(
+                $"Order draft [{_latestOrderDraft.Id}]",
+                _latestOrderDraft.SummaryLines,
+                _latestOrderDraft.PayloadJson,
+                "Mode: Order intake");
+        }
+
+        if (normalized is "order clear" or "clear order")
+        {
+            _latestOrderDraft = null;
+            _awaitingOrderEmailInput = false;
+            return WebChatResponse.Simple("Order draft cleared.");
+        }
+
+        if (normalized.StartsWith("order fill", StringComparison.Ordinal)
+            || normalized.StartsWith("fill order", StringComparison.Ordinal)
+            || normalized.StartsWith("compila ordine", StringComparison.Ordinal)
+            || normalized.StartsWith("compila il form", StringComparison.Ordinal))
+        {
+            var url = ExtractFirstUrl(text);
+            if (string.IsNullOrWhiteSpace(url))
+            {
+                return WebChatResponse.Simple("Missing target URL. Use `order fill <url>`.");
+            }
+
+            return await BuildOrderFillConfirmationAsync(url, cancellationToken);
+        }
+
+        if (normalized.StartsWith("order intake", StringComparison.Ordinal))
+        {
+            var payload = text.Length > "order intake".Length
+                ? text["order intake".Length..].Trim().TrimStart(':')
+                : string.Empty;
+
+            if (string.IsNullOrWhiteSpace(payload))
+            {
+                _awaitingOrderEmailInput = true;
+                return WebChatResponse.Simple("Paste the order email text/message, and I will extract structured fields.");
+            }
+
+            return await ExtractOrderDraftAsync(payload, cancellationToken);
+        }
+
+        var hasNaturalOrderFillRequest = TryParseNaturalOrderFillRequest(text, out var naturalUrl, out var inlineOrderText);
+
+        if (_awaitingOrderEmailInput
+            && !IsReservedControlCommand(normalized)
+            && !hasNaturalOrderFillRequest)
+        {
+            return await ExtractOrderDraftAsync(text, cancellationToken);
+        }
+
+        if (hasNaturalOrderFillRequest && !string.IsNullOrWhiteSpace(naturalUrl))
+        {
+            if (!string.IsNullOrWhiteSpace(inlineOrderText))
+            {
+                var extracted = await ExtractOrderDraftAsync(inlineOrderText, cancellationToken);
+                if (_latestOrderDraft == null)
+                {
+                    return extracted;
+                }
+            }
+
+            return await BuildOrderFillConfirmationAsync(naturalUrl, cancellationToken);
+        }
+
+        if (!IsDirectIntent(normalized)
+            && !TryParseTranslationIntent(text, out _)
+            && await TryRouteToOrderIntakeAsync(text, cancellationToken))
+        {
+            _awaitingOrderEmailInput = true;
+            return WebChatResponse.Simple("Got it. Paste the order email text/message and I will extract the fields for form filling.");
+        }
+
+        return null;
+    }
+
+    private static bool IsReservedControlCommand(string normalized)
+    {
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return false;
+        }
+
+        return normalized is "status" or "arm" or "disarm" or "kill" or "reset kill"
+            || normalized.StartsWith("run ", StringComparison.Ordinal)
+            || normalized.StartsWith("dry-run ", StringComparison.Ordinal)
+            || normalized.StartsWith("goal ", StringComparison.Ordinal)
+            || normalized.StartsWith("profile ", StringComparison.Ordinal)
+            || normalized.StartsWith("list apps", StringComparison.Ordinal)
+            || normalized.StartsWith("translate ", StringComparison.Ordinal);
+    }
+
+    private async Task<WebChatResponse> ExtractOrderDraftAsync(string rawText, CancellationToken cancellationToken)
+    {
+        if (!_config.LlmFallbackEnabled)
+        {
+            return WebChatResponse.Simple("LLM is disabled. Enable it to extract order fields from free text.");
+        }
+
+        var endpoint = _config.LlmFallback.Endpoint?.Trim();
+        if (string.IsNullOrWhiteSpace(endpoint) || !Uri.TryCreate(endpoint, UriKind.Absolute, out var uri))
+        {
+            return WebChatResponse.Simple("LLM endpoint is not configured or invalid.");
+        }
+
+        if (!uri.IsLoopback && !_config.AllowNonLoopbackLlmEndpoint)
+        {
+            return WebChatResponse.Simple("LLM endpoint must be local unless remote LLM is enabled.");
+        }
+
+        var provider = (_config.LlmFallback.Provider ?? "ollama").Trim().ToLowerInvariant();
+        uri = NormalizeLlmEndpoint(uri, provider);
+        var prompt = BuildOrderExtractionPrompt(rawText);
+        var maxTokens = Math.Clamp(Math.Max(512, _config.LlmFallback.MaxTokens * 4), 512, 4096);
+
+        try
+        {
+            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(Math.Max(10, _config.LlmFallback.TimeoutSeconds)) };
+            var raw = provider switch
+            {
+                "openai" => await CallOpenAiPromptAsync(client, uri, "You extract structured order data from email text. Return strict JSON only.", prompt, maxTokens, cancellationToken),
+                "llama.cpp" => await CallLlamaCppPromptAsync(client, uri, prompt, maxTokens, cancellationToken),
+                _ => await CallOllamaPromptAsync(client, uri, prompt, maxTokens, cancellationToken)
+            };
+
+            if (!TryParseOrderDraftJson(raw, out var payloadJson, out var summaryLines))
+            {
+                return WebChatResponse.Simple("I couldn't extract a valid order draft. Paste a fuller email text with customer/items/address.");
+            }
+
+            var draft = new OrderDraft(
+                Id: Guid.NewGuid().ToString("N")[..8],
+                CreatedAtUtc: DateTimeOffset.UtcNow,
+                RawText: rawText,
+                PayloadJson: payloadJson,
+                SummaryLines: summaryLines);
+
+            _latestOrderDraft = draft;
+            _awaitingOrderEmailInput = false;
+
+            await WriteAuditAsync("order_draft_extracted", "Order draft extracted from free text", cancellationToken, new
+            {
+                draftId = draft.Id,
+                preview = summaryLines.Take(6).ToArray()
+            });
+
+            return WebChatResponse.WithSteps(
+                $"Order draft extracted [{draft.Id}]. Review fields, then ask to fill your target form.",
+                summaryLines,
+                payloadJson,
+                "Mode: LLM order intake");
+        }
+        catch (Exception ex)
+        {
+            await WriteAuditAsync("order_draft_error", "Order draft extraction failed", cancellationToken, new { error = ex.Message });
+            return WebChatResponse.Simple($"Order extraction failed: {Compact(ex.Message, 140)}");
+        }
+    }
+
+    private async Task<WebChatResponse> BuildOrderFillConfirmationAsync(string targetUrl, CancellationToken cancellationToken)
+    {
+        if (_latestOrderDraft == null)
+        {
+            _awaitingOrderEmailInput = true;
+            return WebChatResponse.Simple("No order draft available. Paste the order email text first (or use `order intake <text>`), then run `order fill <url>`.");
+        }
+
+        if (!TryParseOrderPayload(_latestOrderDraft.PayloadJson, out var payload))
+        {
+            return WebChatResponse.Simple("Order draft is invalid. Run `order intake` again.");
+        }
+
+        var smart = await TryBuildSmartOrderFillPlanAsync(payload, targetUrl, cancellationToken);
+        var plan = smart?.Plan ?? BuildOrderFillPlan(payload, targetUrl);
+        if (plan.Steps.Count <= 2)
+        {
+            return WebChatResponse.Simple("No fillable fields found in current order draft.");
+        }
+
+        var token = CreatePendingAction(PendingActionType.ExecutePlan, $"order-fill:{targetUrl}", plan, dryRun: false);
+        await WriteAuditAsync(
+            "order_fill_plan",
+            "Order fill plan generated",
+            cancellationToken,
+            new
+            {
+                draftId = _latestOrderDraft.Id,
+                url = targetUrl,
+                steps = plan.Steps.Count,
+                smart = smart != null,
+                mapped = smart?.MappedFields ?? 0,
+                discovered = smart?.DiscoveredFields ?? 0
+            });
+
+        var lines = PlanToLines(plan)
+            .Concat(new[]
+            {
+                $"Draft: {_latestOrderDraft.Id}",
+                smart == null
+                    ? "Mapping: fallback heuristics"
+                    : $"Mapping: smart ({smart.MappedFields}/{smart.DiscoveredFields} fields)"
+            })
+            .ToList();
+        return WebChatResponse.ConfirmWithSteps(
+            $"Order draft ready. Fill form at {targetUrl}? (Submit action is not included.)",
+            token,
+            lines,
+            PlanToJson(plan),
+            smart == null ? "Mode: Order autofill" : "Mode: Order autofill (smart)");
+    }
+
+    private async Task<SmartOrderFillPlan?> TryBuildSmartOrderFillPlanAsync(
+        OrderDraftPayload payload,
+        string targetUrl,
+        CancellationToken cancellationToken)
+    {
+        var discovered = await TryDiscoverFormFieldsFromUrlAsync(targetUrl, cancellationToken);
+        if (discovered.Count == 0)
+        {
+            return null;
+        }
+
+        var values = BuildOrderValueMap(payload);
+        if (values.Count == 0)
+        {
+            return null;
+        }
+
+        var mapped = await MapOrderValuesToDiscoveredFieldsAsync(values, discovered, cancellationToken);
+        if (mapped.Count == 0)
+        {
+            return null;
+        }
+
+        var plan = new ActionPlan { Intent = $"order fill smart {targetUrl}" };
+        plan.Steps.Add(new PlanStep
+        {
+            Type = ActionType.OpenUrl,
+            Target = targetUrl
+        });
+        plan.Steps.Add(new PlanStep
+        {
+            Type = ActionType.WaitFor,
+            WaitFor = TimeSpan.FromMilliseconds(1200)
+        });
+
+        foreach (var pair in values)
+        {
+            if (!mapped.TryGetValue(pair.Key, out var field) || string.IsNullOrWhiteSpace(pair.Value))
+            {
+                continue;
+            }
+
+            AddDiscoveredFieldSetValueCandidates(plan, pair.Key, pair.Value, field);
+            AddOptionalSetValueCandidates(plan, pair.Value, pair.Key, GetDefaultOrderFieldHints(pair.Key));
+        }
+
+        if (plan.Steps.Count <= 2)
+        {
+            return null;
+        }
+
+        return new SmartOrderFillPlan(plan, mapped.Count, discovered.Count);
+    }
+
+    private static void AddDiscoveredFieldSetValueCandidates(ActionPlan plan, string group, string value, DiscoveredFormField field)
+    {
+        if (!string.IsNullOrWhiteSpace(field.AutomationId))
+        {
+            plan.Steps.Add(new PlanStep
+            {
+                Type = ActionType.SetValue,
+                Selector = new Selector
+                {
+                    AutomationId = field.AutomationId,
+                    NameContains = field.BestTextHint
+                },
+                Text = value,
+                Note = $"optional-group:{group};optional"
+            });
+        }
+
+        if (!string.IsNullOrWhiteSpace(field.BestTextHint))
+        {
+            plan.Steps.Add(new PlanStep
+            {
+                Type = ActionType.SetValue,
+                Selector = new Selector { NameContains = field.BestTextHint },
+                Text = value,
+                Note = $"optional-group:{group};optional"
+            });
+        }
+    }
+
+    private static ActionPlan BuildOrderFillPlan(OrderDraftPayload payload, string targetUrl)
+    {
+        var plan = new ActionPlan { Intent = $"order fill {targetUrl}" };
+        plan.Steps.Add(new PlanStep
+        {
+            Type = ActionType.OpenUrl,
+            Target = targetUrl
+        });
+        plan.Steps.Add(new PlanStep
+        {
+            Type = ActionType.WaitFor,
+            WaitFor = TimeSpan.FromMilliseconds(1200)
+        });
+
+        AddOptionalSetValueCandidates(
+            plan,
+            payload.Customer?.Name,
+            "customer_name",
+            GetDefaultOrderFieldHints("customer_name"));
+
+        AddOptionalSetValueCandidates(
+            plan,
+            payload.Customer?.Email,
+            "customer_email",
+            GetDefaultOrderFieldHints("customer_email"));
+
+        AddOptionalSetValueCandidates(
+            plan,
+            payload.Customer?.Phone,
+            "customer_phone",
+            GetDefaultOrderFieldHints("customer_phone"));
+
+        AddOptionalSetValueCandidates(
+            plan,
+            payload.OrderNumber,
+            "order_number",
+            GetDefaultOrderFieldHints("order_number"));
+
+        AddOptionalSetValueCandidates(
+            plan,
+            payload.ShippingAddress,
+            "shipping_address",
+            GetDefaultOrderFieldHints("shipping_address"));
+
+        AddOptionalSetValueCandidates(
+            plan,
+            payload.BillingAddress,
+            "billing_address",
+            GetDefaultOrderFieldHints("billing_address"));
+
+        var notes = BuildOrderItemsSummary(payload.Items, payload.Notes);
+        AddOptionalSetValueCandidates(
+            plan,
+            notes,
+            "order_notes",
+            GetDefaultOrderFieldHints("order_notes"));
+
+        return plan;
+    }
+
+    private static string[] GetDefaultOrderFieldHints(string key)
+    {
+        return key switch
+        {
+            "customer_name" => new[] { "customer name", "full name", "name", "nome" },
+            "customer_email" => new[] { "customer email", "email", "e-mail", "mail" },
+            "customer_phone" => new[] { "phone", "telephone", "telefono", "mobile" },
+            "order_number" => new[] { "order number", "order id", "order no", "numero ordine" },
+            "shipping_address" => new[] { "shipping address", "delivery address", "ship to", "indirizzo spedizione" },
+            "billing_address" => new[] { "billing address", "invoice address", "bill to", "indirizzo fatturazione" },
+            "order_notes" => new[] { "order notes", "notes", "message", "comment", "additional info", "note" },
+            _ => Array.Empty<string>()
+        };
+    }
+
+    private static void AddOptionalSetValueCandidates(ActionPlan plan, string? value, string group, params string[] fieldHints)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return;
+        }
+
+        foreach (var hint in fieldHints.Where(h => !string.IsNullOrWhiteSpace(h)).Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            plan.Steps.Add(new PlanStep
+            {
+                Type = ActionType.SetValue,
+                Selector = new Selector { NameContains = hint },
+                Text = value,
+                Note = $"optional-group:{group};optional"
+            });
+        }
+    }
+
+    private static string? BuildOrderItemsSummary(List<OrderItemPayload>? items, string? notes)
+    {
+        var lines = new List<string>();
+        if (items != null && items.Count > 0)
+        {
+            foreach (var item in items.Take(6))
+            {
+                var qty = item.Qty.HasValue ? item.Qty.Value.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture) : "1";
+                var name = string.IsNullOrWhiteSpace(item.Name) ? item.Sku ?? "item" : item.Name;
+                if (!string.IsNullOrWhiteSpace(name))
+                {
+                    lines.Add($"{qty} x {name}");
+                }
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(notes))
+        {
+            lines.Add(notes.Trim());
+        }
+
+        return lines.Count == 0 ? null : string.Join("; ", lines);
+    }
+
+    private static Dictionary<string, string> BuildOrderValueMap(OrderDraftPayload payload)
+    {
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        AddMap(map, "customer_name", payload.Customer?.Name);
+        AddMap(map, "customer_email", payload.Customer?.Email);
+        AddMap(map, "customer_phone", payload.Customer?.Phone);
+        AddMap(map, "order_number", payload.OrderNumber);
+        AddMap(map, "shipping_address", payload.ShippingAddress);
+        AddMap(map, "billing_address", payload.BillingAddress);
+        AddMap(map, "order_notes", BuildOrderItemsSummary(payload.Items, payload.Notes));
+        return map;
+    }
+
+    private static void AddMap(Dictionary<string, string> map, string key, string? value)
+    {
+        var text = value?.Trim();
+        if (!string.IsNullOrWhiteSpace(text))
+        {
+            map[key] = text;
+        }
+    }
+
+    private async Task<IReadOnlyDictionary<string, DiscoveredFormField>> MapOrderValuesToDiscoveredFieldsAsync(
+        IReadOnlyDictionary<string, string> values,
+        IReadOnlyList<DiscoveredFormField> fields,
+        CancellationToken cancellationToken)
+    {
+        var llmMapped = await TryMapFieldsWithLlmAsync(values.Keys.ToList(), fields, cancellationToken);
+        if (llmMapped.Count > 0)
+        {
+            return llmMapped;
+        }
+
+        return MapFieldsDeterministically(values.Keys.ToList(), fields);
+    }
+
+    private IReadOnlyDictionary<string, DiscoveredFormField> MapFieldsDeterministically(
+        IReadOnlyList<string> orderKeys,
+        IReadOnlyList<DiscoveredFormField> fields)
+    {
+        var result = new Dictionary<string, DiscoveredFormField>(StringComparer.OrdinalIgnoreCase);
+        var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var key in orderKeys)
+        {
+            var keywords = GetDefaultOrderFieldHints(key);
+            if (keywords.Length == 0)
+            {
+                continue;
+            }
+
+            var best = fields
+                .Where(field => !used.Contains(field.Key))
+                .Select(field => new { Field = field, Score = ScoreField(field, keywords) })
+                .Where(item => item.Score > 0)
+                .OrderByDescending(item => item.Score)
+                .ThenByDescending(item => item.Field.BestTextHint.Length)
+                .FirstOrDefault();
+            if (best == null)
+            {
+                continue;
+            }
+
+            result[key] = best.Field;
+            used.Add(best.Field.Key);
+        }
+
+        return result;
+    }
+
+    private static int ScoreField(DiscoveredFormField field, IReadOnlyList<string> keywords)
+    {
+        if (keywords.Count == 0)
+        {
+            return 0;
+        }
+
+        var text = $"{field.BestTextHint} {field.AutomationId} {field.Name} {field.Placeholder}".ToLowerInvariant();
+        var score = 0;
+        foreach (var keyword in keywords.Where(k => !string.IsNullOrWhiteSpace(k)))
+        {
+            var token = keyword.ToLowerInvariant();
+            if (text.Equals(token, StringComparison.Ordinal))
+            {
+                score += 8;
+                continue;
+            }
+
+            if (text.Contains(token, StringComparison.Ordinal))
+            {
+                score += 4;
+                continue;
+            }
+
+            var compactToken = token.Replace(" ", string.Empty, StringComparison.Ordinal);
+            if (!string.IsNullOrWhiteSpace(compactToken)
+                && text.Replace(" ", string.Empty, StringComparison.Ordinal).Contains(compactToken, StringComparison.Ordinal))
+            {
+                score += 2;
+            }
+        }
+
+        return score;
+    }
+
+    private async Task<IReadOnlyDictionary<string, DiscoveredFormField>> TryMapFieldsWithLlmAsync(
+        IReadOnlyList<string> orderKeys,
+        IReadOnlyList<DiscoveredFormField> fields,
+        CancellationToken cancellationToken)
+    {
+        if (!_config.LlmFallbackEnabled || fields.Count == 0 || orderKeys.Count == 0)
+        {
+            return new Dictionary<string, DiscoveredFormField>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        var endpoint = _config.LlmFallback.Endpoint?.Trim();
+        if (string.IsNullOrWhiteSpace(endpoint) || !Uri.TryCreate(endpoint, UriKind.Absolute, out var uri))
+        {
+            return new Dictionary<string, DiscoveredFormField>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        if (!uri.IsLoopback && !_config.AllowNonLoopbackLlmEndpoint)
+        {
+            return new Dictionary<string, DiscoveredFormField>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        var provider = (_config.LlmFallback.Provider ?? "ollama").Trim().ToLowerInvariant();
+        uri = NormalizeLlmEndpoint(uri, provider);
+        var prompt = BuildOrderFieldMappingPrompt(orderKeys, fields);
+
+        try
+        {
+            using var client = new HttpClient { Timeout = _httpTimeout };
+            var raw = provider switch
+            {
+                "openai" => await CallOpenAiPromptAsync(client, uri, "Map form fields to order keys. Return strict JSON only.", prompt, 256, cancellationToken),
+                "llama.cpp" => await CallLlamaCppPromptAsync(client, uri, prompt, 256, cancellationToken),
+                _ => await CallOllamaPromptAsync(client, uri, prompt, 256, cancellationToken)
+            };
+
+            var json = TryExtractJsonObject(raw ?? string.Empty);
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return new Dictionary<string, DiscoveredFormField>(StringComparer.OrdinalIgnoreCase);
+            }
+
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                return new Dictionary<string, DiscoveredFormField>(StringComparer.OrdinalIgnoreCase);
+            }
+
+            var byKey = fields.ToDictionary(field => field.Key, StringComparer.OrdinalIgnoreCase);
+            var mapped = new Dictionary<string, DiscoveredFormField>(StringComparer.OrdinalIgnoreCase);
+            foreach (var property in doc.RootElement.EnumerateObject())
+            {
+                var orderKey = property.Name;
+                var fieldKey = property.Value.ValueKind == JsonValueKind.String
+                    ? property.Value.GetString()
+                    : null;
+                if (string.IsNullOrWhiteSpace(fieldKey))
+                {
+                    continue;
+                }
+
+                if (!orderKeys.Contains(orderKey, StringComparer.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (byKey.TryGetValue(fieldKey, out var field))
+                {
+                    mapped[orderKey] = field;
+                }
+            }
+
+            return mapped;
+        }
+        catch
+        {
+            return new Dictionary<string, DiscoveredFormField>(StringComparer.OrdinalIgnoreCase);
+        }
+    }
+
+    private static string BuildOrderFieldMappingPrompt(IReadOnlyList<string> orderKeys, IReadOnlyList<DiscoveredFormField> fields)
+    {
+        var fieldLines = fields
+            .Take(80)
+            .Select(field => $"- key={field.Key} | hint={field.BestTextHint} | id={field.AutomationId} | name={field.Name} | type={field.Type} | placeholder={field.Placeholder}");
+
+        return
+            "Map order keys to discovered form fields.\n" +
+            "Return STRICT JSON object only where each property key is an order key and value is one field key.\n" +
+            "Use only keys from the provided field list.\n" +
+            "Do not invent keys.\n" +
+            "Order keys:\n" +
+            string.Join(", ", orderKeys) + "\n" +
+            "Fields:\n" +
+            string.Join("\n", fieldLines) + "\n" +
+            "Output example:\n" +
+            "{\"customer_name\":\"field_1\",\"customer_email\":\"field_2\"}";
+    }
+
+    private async Task<IReadOnlyList<DiscoveredFormField>> TryDiscoverFormFieldsFromUrlAsync(string targetUrl, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var client = new HttpClient { Timeout = _httpTimeout };
+            using var response = await client.GetAsync(targetUrl, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                return Array.Empty<DiscoveredFormField>();
+            }
+
+            var contentType = response.Content.Headers.ContentType?.MediaType ?? string.Empty;
+            if (!contentType.Contains("html", StringComparison.OrdinalIgnoreCase))
+            {
+                return Array.Empty<DiscoveredFormField>();
+            }
+
+            var html = await response.Content.ReadAsStringAsync(cancellationToken);
+            return ParseDiscoveredFormFields(html);
+        }
+        catch
+        {
+            return Array.Empty<DiscoveredFormField>();
+        }
+    }
+
+    private static IReadOnlyList<DiscoveredFormField> ParseDiscoveredFormFields(string html)
+    {
+        if (string.IsNullOrWhiteSpace(html))
+        {
+            return Array.Empty<DiscoveredFormField>();
+        }
+
+        var labels = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (Match labelMatch in Regex.Matches(
+                     html,
+                     "<label[^>]*for\\s*=\\s*['\"](?<for>[^'\"]+)['\"][^>]*>(?<text>[\\s\\S]*?)</label>",
+                     RegexOptions.IgnoreCase))
+        {
+            var forId = labelMatch.Groups["for"].Value.Trim();
+            var text = CleanHtmlText(labelMatch.Groups["text"].Value);
+            if (!string.IsNullOrWhiteSpace(forId) && !string.IsNullOrWhiteSpace(text))
+            {
+                labels[forId] = text;
+            }
+        }
+
+        var result = new List<DiscoveredFormField>();
+        var index = 0;
+        foreach (Match nodeMatch in Regex.Matches(html, "<(?<tag>input|textarea|select)\\b(?<attrs>[^>]*?)>", RegexOptions.IgnoreCase))
+        {
+            var tag = nodeMatch.Groups["tag"].Value.Trim().ToLowerInvariant();
+            var attrs = ParseHtmlAttributes(nodeMatch.Groups["attrs"].Value);
+            var type = attrs.TryGetValue("type", out var typeValue) ? typeValue.ToLowerInvariant() : tag;
+            if (type is "hidden" or "submit" or "button" or "checkbox" or "radio" or "file")
+            {
+                continue;
+            }
+
+            var id = attrs.TryGetValue("id", out var idValue) ? idValue : string.Empty;
+            var name = attrs.TryGetValue("name", out var nameValue) ? nameValue : string.Empty;
+            var placeholder = attrs.TryGetValue("placeholder", out var placeholderValue) ? placeholderValue : string.Empty;
+            var aria = attrs.TryGetValue("aria-label", out var ariaLabel) ? ariaLabel : string.Empty;
+            var autocomplete = attrs.TryGetValue("autocomplete", out var auto) ? auto : string.Empty;
+            labels.TryGetValue(id, out var labelText);
+            var bestText = FirstNonEmpty(labelText, aria, placeholder, name, id);
+            if (string.IsNullOrWhiteSpace(bestText))
+            {
+                continue;
+            }
+
+            index++;
+            result.Add(new DiscoveredFormField(
+                Key: $"field_{index}",
+                BestTextHint: bestText,
+                AutomationId: id,
+                Name: name,
+                Placeholder: placeholder,
+                Type: type,
+                AutoComplete: autocomplete));
+        }
+
+        return result;
+    }
+
+    private static Dictionary<string, string> ParseHtmlAttributes(string raw)
+    {
+        var attrs = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return attrs;
+        }
+
+        foreach (Match match in Regex.Matches(
+                     raw,
+                     "(?<name>[a-zA-Z_:][-a-zA-Z0-9_:.]*)\\s*=\\s*(?:\"(?<v1>[^\"]*)\"|'(?<v2>[^']*)'|(?<v3>[^\\s\"'>]+))",
+                     RegexOptions.IgnoreCase))
+        {
+            var name = match.Groups["name"].Value.Trim();
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                continue;
+            }
+
+            var value = match.Groups["v1"].Success
+                ? match.Groups["v1"].Value
+                : match.Groups["v2"].Success
+                    ? match.Groups["v2"].Value
+                    : match.Groups["v3"].Value;
+            attrs[name] = WebUtility.HtmlDecode(value ?? string.Empty).Trim();
+        }
+
+        return attrs;
+    }
+
+    private static string CleanHtmlText(string input)
+    {
+        if (string.IsNullOrWhiteSpace(input))
+        {
+            return string.Empty;
+        }
+
+        var noTags = Regex.Replace(input, "<[^>]+>", " ");
+        var decoded = WebUtility.HtmlDecode(noTags);
+        return Regex.Replace(decoded, "\\s+", " ").Trim();
+    }
+
+    private static string FirstNonEmpty(params string?[] values)
+    {
+        foreach (var value in values)
+        {
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return value.Trim();
+            }
+        }
+
+        return string.Empty;
+    }
+
+    private static bool TryParseOrderPayload(string payloadJson, out OrderDraftPayload payload)
+    {
+        payload = new OrderDraftPayload();
+        if (string.IsNullOrWhiteSpace(payloadJson))
+        {
+            return false;
+        }
+
+        try
+        {
+            var parsed = JsonSerializer.Deserialize<OrderDraftPayload>(payloadJson, JsonOptions);
+            if (parsed == null)
+            {
+                return false;
+            }
+
+            payload = parsed;
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool TryParseNaturalOrderFillRequest(string text, out string? url, out string? inlineOrderText)
+    {
+        url = null;
+        inlineOrderText = null;
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return false;
+        }
+
+        url = ExtractFirstUrl(text);
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            return false;
+        }
+
+        var lower = text.ToLowerInvariant();
+        var looksLikeFillRequest =
+            lower.Contains("fill", StringComparison.Ordinal)
+            || lower.Contains("compile", StringComparison.Ordinal)
+            || lower.Contains("compila", StringComparison.Ordinal)
+            || lower.Contains("form", StringComparison.Ordinal)
+            || lower.Contains("modulo", StringComparison.Ordinal)
+            || lower.Contains("ordine", StringComparison.Ordinal)
+            || lower.Contains("order", StringComparison.Ordinal);
+        if (!looksLikeFillRequest)
+        {
+            return false;
+        }
+
+        inlineOrderText = TryExtractInlineOrderText(text);
+        return true;
+    }
+
+    private static string? TryExtractInlineOrderText(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return null;
+        }
+
+        var quoteMatch = Regex.Match(text, "\"(?<body>[\\s\\S]{24,})\"", RegexOptions.Singleline);
+        if (quoteMatch.Success)
+        {
+            var body = quoteMatch.Groups["body"].Value.Trim();
+            if (!string.IsNullOrWhiteSpace(body))
+            {
+                return body;
+            }
+        }
+
+        var marker = text.IndexOf("mail:", StringComparison.OrdinalIgnoreCase);
+        var markerLength = 5;
+        if (marker < 0)
+        {
+            marker = text.IndexOf("email:", StringComparison.OrdinalIgnoreCase);
+            markerLength = 6;
+        }
+
+        if (marker < 0)
+        {
+            return null;
+        }
+
+        var bodyPart = text[(marker + markerLength)..].Trim();
+        var url = ExtractFirstUrl(bodyPart);
+        if (!string.IsNullOrWhiteSpace(url))
+        {
+            var idx = bodyPart.IndexOf(url, StringComparison.OrdinalIgnoreCase);
+            if (idx >= 0)
+            {
+                bodyPart = bodyPart[..idx].Trim();
+            }
+        }
+
+        return string.IsNullOrWhiteSpace(bodyPart) ? null : bodyPart;
+    }
+
+    private static string? ExtractFirstUrl(string input)
+    {
+        if (string.IsNullOrWhiteSpace(input))
+        {
+            return null;
+        }
+
+        var match = Regex.Match(input, "(?<url>(?:https?://|www\\.)[^\\s\"'<>]+)", RegexOptions.IgnoreCase);
+        if (!match.Success)
+        {
+            return null;
+        }
+
+        var raw = match.Groups["url"].Value.Trim().TrimEnd('.', ',', ';', ')', ']', '}');
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return null;
+        }
+
+        if (!raw.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+            && !raw.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        {
+            raw = $"https://{raw}";
+        }
+
+        return Uri.TryCreate(raw, UriKind.Absolute, out var uri) ? uri.ToString() : null;
+    }
+
+    private static string BuildOrderExtractionPrompt(string rawText)
+    {
+        return
+            "Extract structured order data from the following text.\n" +
+            "Return STRICT JSON only (no markdown), using this schema:\n" +
+            "{\n" +
+            "  \"orderNumber\": string|null,\n" +
+            "  \"orderDate\": string|null,\n" +
+            "  \"customer\": {\"name\": string|null, \"email\": string|null, \"phone\": string|null},\n" +
+            "  \"shippingAddress\": string|null,\n" +
+            "  \"billingAddress\": string|null,\n" +
+            "  \"items\": [{\"sku\": string|null, \"name\": string|null, \"qty\": number|null, \"unitPrice\": number|null, \"currency\": string|null}],\n" +
+            "  \"totals\": {\"subtotal\": number|null, \"shipping\": number|null, \"tax\": number|null, \"total\": number|null, \"currency\": string|null},\n" +
+            "  \"notes\": string|null\n" +
+            "}\n" +
+            "Use null when unknown. Keep items as empty array if none are found.\n" +
+            "INPUT:\n" +
+            rawText;
+    }
+
+    private static bool TryParseOrderDraftJson(string? raw, out string payloadJson, out IReadOnlyList<string> summaryLines)
+    {
+        payloadJson = string.Empty;
+        summaryLines = Array.Empty<string>();
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return false;
+        }
+
+        var jsonCandidate = TryExtractJsonObject(raw);
+        if (string.IsNullOrWhiteSpace(jsonCandidate))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(jsonCandidate);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                return false;
+            }
+
+            payloadJson = JsonSerializer.Serialize(doc.RootElement, JsonOptions);
+            summaryLines = BuildOrderSummary(doc.RootElement);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string? TryExtractJsonObject(string raw)
+    {
+        var text = raw.Trim();
+        if (text.StartsWith('{') && text.EndsWith('}'))
+        {
+            return text;
+        }
+
+        var start = text.IndexOf('{');
+        var end = text.LastIndexOf('}');
+        if (start < 0 || end <= start)
+        {
+            return null;
+        }
+
+        return text.Substring(start, end - start + 1);
+    }
+
+    private static IReadOnlyList<string> BuildOrderSummary(JsonElement root)
+    {
+        var lines = new List<string>();
+        AddSummaryLine(lines, "Order #", GetJsonString(root, "orderNumber"));
+        AddSummaryLine(lines, "Order date", GetJsonString(root, "orderDate"));
+
+        if (root.TryGetProperty("customer", out var customer) && customer.ValueKind == JsonValueKind.Object)
+        {
+            AddSummaryLine(lines, "Customer", GetJsonString(customer, "name"));
+            AddSummaryLine(lines, "Email", GetJsonString(customer, "email"));
+            AddSummaryLine(lines, "Phone", GetJsonString(customer, "phone"));
+        }
+
+        AddSummaryLine(lines, "Shipping", GetJsonString(root, "shippingAddress"));
+        AddSummaryLine(lines, "Billing", GetJsonString(root, "billingAddress"));
+
+        if (root.TryGetProperty("items", out var items) && items.ValueKind == JsonValueKind.Array)
+        {
+            var index = 0;
+            foreach (var item in items.EnumerateArray())
+            {
+                index++;
+                var name = item.TryGetProperty("name", out var nameEl) ? nameEl.GetString() : null;
+                var sku = item.TryGetProperty("sku", out var skuEl) ? skuEl.GetString() : null;
+                var qty = item.TryGetProperty("qty", out var qtyEl) ? qtyEl.ToString() : null;
+                var label = !string.IsNullOrWhiteSpace(name) ? name : (!string.IsNullOrWhiteSpace(sku) ? sku : $"item {index}");
+                lines.Add($"Item {index}: {label} | qty={qty ?? "?"}");
+            }
+        }
+
+        if (root.TryGetProperty("totals", out var totals) && totals.ValueKind == JsonValueKind.Object)
+        {
+            AddSummaryLine(lines, "Total", totals.TryGetProperty("total", out var totalEl) ? totalEl.ToString() : null);
+            AddSummaryLine(lines, "Currency", GetJsonString(totals, "currency"));
+        }
+
+        AddSummaryLine(lines, "Notes", GetJsonString(root, "notes"));
+        if (lines.Count == 0)
+        {
+            lines.Add("No fields extracted.");
+        }
+
+        return lines;
+    }
+
+    private static void AddSummaryLine(List<string> lines, string label, string? value)
+    {
+        if (!string.IsNullOrWhiteSpace(value))
+        {
+            lines.Add($"{label}: {value}");
+        }
+    }
+
+    private static string? GetJsonString(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var prop))
+        {
+            return null;
+        }
+
+        return prop.ValueKind switch
+        {
+            JsonValueKind.String => prop.GetString(),
+            JsonValueKind.Number => prop.ToString(),
+            JsonValueKind.True => "true",
+            JsonValueKind.False => "false",
+            _ => null
+        };
+    }
+
+    private async Task<bool> TryRouteToOrderIntakeAsync(string userInput, CancellationToken cancellationToken)
+    {
+        if (!_config.LlmFallbackEnabled || string.IsNullOrWhiteSpace(userInput))
+        {
+            return false;
+        }
+
+        var endpoint = _config.LlmFallback.Endpoint?.Trim();
+        if (string.IsNullOrWhiteSpace(endpoint) || !Uri.TryCreate(endpoint, UriKind.Absolute, out var uri))
+        {
+            return false;
+        }
+
+        if (!uri.IsLoopback && !_config.AllowNonLoopbackLlmEndpoint)
+        {
+            return false;
+        }
+
+        var provider = (_config.LlmFallback.Provider ?? "ollama").Trim().ToLowerInvariant();
+        uri = NormalizeLlmEndpoint(uri, provider);
+        var prompt = BuildOrderRoutingPrompt(userInput);
+
+        try
+        {
+            using var client = new HttpClient { Timeout = _httpTimeout };
+            var raw = provider switch
+            {
+                "openai" => await CallOpenAiPromptAsync(client, uri, "You classify if a request is about processing order data from an email/message.", prompt, 96, cancellationToken),
+                "llama.cpp" => await CallLlamaCppPromptAsync(client, uri, prompt, 96, cancellationToken),
+                _ => await CallOllamaPromptAsync(client, uri, prompt, 96, cancellationToken)
+            };
+
+            var answer = (raw ?? string.Empty).Trim();
+            if (answer.StartsWith('{'))
+            {
+                var json = TryExtractJsonObject(answer);
+                if (!string.IsNullOrWhiteSpace(json))
+                {
+                    using var doc = JsonDocument.Parse(json);
+                    if (doc.RootElement.TryGetProperty("intent", out var intent))
+                    {
+                        var value = intent.GetString() ?? string.Empty;
+                        return value.Equals("order_intake", StringComparison.OrdinalIgnoreCase);
+                    }
+                }
+            }
+
+            return answer.Contains("order_intake", StringComparison.OrdinalIgnoreCase)
+                   || answer.Equals("YES", StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string BuildOrderRoutingPrompt(string userInput)
+    {
+        return
+            "Classify this user request. Return JSON only: {\"intent\":\"order_intake|order_fill|other\"}.\n" +
+            "Use order_intake when user asks to process incoming order details (often from an email/message).\n" +
+            "Use order_fill when user explicitly asks to compile/fill a form at a URL with order data.\n" +
+            "User request:\n" +
+            userInput;
     }
 
     private bool TryHandlePendingClarificationReply(string input, out ClarificationChoice? choice, out string? message)
@@ -2494,6 +3616,27 @@ internal sealed class TrayLocalAgent : IDisposable
         return doc.RootElement.TryGetProperty("response", out var result) ? result.GetString() : null;
     }
 
+    private async Task<string?> CallOllamaPromptAsync(HttpClient client, Uri endpoint, string prompt, int maxTokens, CancellationToken cancellationToken)
+    {
+        var payload = new
+        {
+            model = _config.LlmFallback.Model,
+            prompt,
+            stream = false,
+            options = new { temperature = 0.1, num_predict = maxTokens }
+        };
+
+        using var response = await client.PostAsJsonAsync(endpoint, payload, JsonOptions, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw await BuildLlmHttpExceptionAsync(response, cancellationToken);
+        }
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        return doc.RootElement.TryGetProperty("response", out var result) ? result.GetString() : null;
+    }
+
     private async Task<string?> CallOpenAiTranslationAsync(HttpClient client, Uri endpoint, string prompt, int maxTokens, CancellationToken cancellationToken)
     {
         var payload = new
@@ -2532,7 +3675,79 @@ internal sealed class TrayLocalAgent : IDisposable
         return first.TryGetProperty("text", out var text) ? text.GetString() : null;
     }
 
+    private async Task<string?> CallOpenAiPromptAsync(HttpClient client, Uri endpoint, string systemPrompt, string prompt, int maxTokens, CancellationToken cancellationToken)
+    {
+        var payload = new
+        {
+            model = _config.LlmFallback.Model,
+            messages = new[]
+            {
+                new { role = "system", content = systemPrompt },
+                new { role = "user", content = prompt }
+            },
+            temperature = 0.1,
+            max_tokens = maxTokens,
+            response_format = new { type = "json_object" }
+        };
+
+        using var response = await client.PostAsJsonAsync(endpoint, payload, JsonOptions, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw await BuildLlmHttpExceptionAsync(response, cancellationToken);
+        }
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        if (!doc.RootElement.TryGetProperty("choices", out var choices)
+            || choices.ValueKind != JsonValueKind.Array
+            || choices.GetArrayLength() == 0)
+        {
+            return null;
+        }
+
+        var first = choices[0];
+        if (first.TryGetProperty("message", out var message) && message.TryGetProperty("content", out var content))
+        {
+            return content.GetString();
+        }
+
+        return first.TryGetProperty("text", out var text) ? text.GetString() : null;
+    }
+
     private async Task<string?> CallLlamaCppTranslationAsync(HttpClient client, Uri endpoint, string prompt, int maxTokens, CancellationToken cancellationToken)
+    {
+        var payload = new
+        {
+            prompt,
+            n_predict = maxTokens,
+            temperature = 0.1
+        };
+
+        using var response = await client.PostAsJsonAsync(endpoint, payload, JsonOptions, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw await BuildLlmHttpExceptionAsync(response, cancellationToken);
+        }
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        if (doc.RootElement.TryGetProperty("content", out var content))
+        {
+            return content.GetString();
+        }
+
+        if (!doc.RootElement.TryGetProperty("choices", out var choices)
+            || choices.ValueKind != JsonValueKind.Array
+            || choices.GetArrayLength() == 0)
+        {
+            return null;
+        }
+
+        var first = choices[0];
+        return first.TryGetProperty("text", out var text) ? text.GetString() : null;
+    }
+
+    private async Task<string?> CallLlamaCppPromptAsync(HttpClient client, Uri endpoint, string prompt, int maxTokens, CancellationToken cancellationToken)
     {
         var payload = new
         {
@@ -2670,10 +3885,13 @@ internal sealed class TrayLocalAgent : IDisposable
             "- open <app>\n" +
             "- search <query> on <chrome|edge|firefox>\n" +
             "- translate <text> to <language>\n" +
+            "- order intake [<email text>] | order preview | order clear | order fill <url>\n" +
             "- take screenshot\n" +
             "- take screenshot single-screen\n" +
             "- record screen [and audio] for <duration>\n" +
             "- jiggle mouse for <duration>\n" +
+            "If user asks to process order details from an email/message and fill a form, map to 'order intake' first.\n" +
+            "If user already provides form URL and asks to compile/fill it from order content, map to 'order fill <url>'.\n" +
             "User request:\n" +
             userInput;
     }
@@ -3980,6 +5198,54 @@ internal sealed class TrayLocalAgent : IDisposable
     {
         public static RecoveryAttemptOutcome None { get; } = new(null, string.Empty);
     }
+
+    private sealed record OrderDraft(
+        string Id,
+        DateTimeOffset CreatedAtUtc,
+        string RawText,
+        string PayloadJson,
+        IReadOnlyList<string> SummaryLines);
+
+    private sealed class OrderDraftPayload
+    {
+        public string? OrderNumber { get; set; }
+        public string? OrderDate { get; set; }
+        public OrderCustomerPayload? Customer { get; set; }
+        public string? ShippingAddress { get; set; }
+        public string? BillingAddress { get; set; }
+        public List<OrderItemPayload>? Items { get; set; }
+        public string? Notes { get; set; }
+    }
+
+    private sealed class OrderCustomerPayload
+    {
+        public string? Name { get; set; }
+        public string? Email { get; set; }
+        public string? Phone { get; set; }
+    }
+
+    private sealed class OrderItemPayload
+    {
+        public string? Sku { get; set; }
+        public string? Name { get; set; }
+        public decimal? Qty { get; set; }
+        public decimal? UnitPrice { get; set; }
+        public string? Currency { get; set; }
+    }
+
+    private sealed record DiscoveredFormField(
+        string Key,
+        string BestTextHint,
+        string AutomationId,
+        string Name,
+        string Placeholder,
+        string Type,
+        string AutoComplete);
+
+    private sealed record SmartOrderFillPlan(
+        ActionPlan Plan,
+        int MappedFields,
+        int DiscoveredFields);
 
     private readonly record struct PlanSafetyResult(bool Allowed, bool AutoExecute, string Reason);
 

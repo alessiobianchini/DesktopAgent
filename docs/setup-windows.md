@@ -65,6 +65,28 @@ Configure allowed roots in:
 - `core/DesktopAgent.Cli/appsettings.json` (template)
 - `%LocalAppData%\DesktopAgent\agentsettings.json` (runtime tray config)
 
+## AI Order Intake (Manual Email Input)
+
+You can parse order details from pasted email/message text and keep a draft for form filling.
+
+Commands:
+```text
+order intake
+order preview
+order clear
+order fill <url>
+```
+
+Flow:
+1. Send `order intake`.
+2. Paste full email/message text.
+3. Agent extracts structured JSON (customer, addresses, items, totals, notes).
+4. Use `order preview` to review extracted fields.
+5. Use `order fill <url>` to run smart schema-agnostic autofill planning on target form (no auto-submit).
+
+Natural language routing:
+- Requests like "mi è arrivata una mail con un ordine, puoi compilare il form?" can be AI-mapped to the order intake flow even without explicit command keywords.
+
 ## Build Portable Package
 Create self-contained binaries under `dist/win-x64`:
 ```

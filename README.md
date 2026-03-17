@@ -13,6 +13,7 @@ DesktopAgent is a local, safety-first desktop automation agent with a cross-plat
 - Falls back to vision/OCR flows when UI tree is unavailable.
 - Supports natural-language commands (rule-based + optional local LLM rewrite).
 - Supports local file utilities: write/read/list/append/search (bounded by allowed roots).
+- Supports AI-assisted order intake from pasted email/message text (`order intake`, `order preview`, `order clear`) and safe form autofill plan generation (`order fill <url>`).
 - Tray Quick Chat includes command palette, AI command suggestions, loading state, and execution timeline.
 - Tray Quick Chat includes an editable **Plan Preview** panel (`Load Last`, `Validate`, `Dry-run Plan`, `Execute Plan`).
 - Optional plugin setup flow for FFmpeg/OCR (first-run wizard + manual retrigger from tray/config).
@@ -104,6 +105,17 @@ Examples:
 Notes:
 - File operations are constrained by `FilesystemAllowedRoots`.
 - File search supports plain text and wildcard patterns (`*`, `?`).
+
+## AI Order Intake (Manual Email Input)
+
+You can start from natural language (for example: "I got a new order email, help me fill the form"), or explicitly:
+- `order intake` and then paste the email/message text
+- `order preview`
+- `order clear`
+- `order fill <url>`
+
+The agent extracts a structured JSON draft (customer, addresses, items, totals, notes) using local/configured LLM.
+`order fill <url>` performs smart schema-agnostic mapping (discover form fields, map draft values, build safe optional fill candidates). It does not auto-submit.
 
 ## Configuration
 

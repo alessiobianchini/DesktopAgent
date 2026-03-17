@@ -299,6 +299,122 @@ public sealed class ExecutorAdvancedTests
         Assert.Equal(ActionType.OpenApp, result.Steps[0].Type);
     }
 
+    [Fact]
+    public async Task SetValue_UsesSelectorWhenElementIdMissing()
+    {
+        var client = new StubDesktopClient();
+        client.EnqueueActiveWindow(new WindowRef { Id = "w-form", AppId = "browser", Title = "Form" });
+        client.EnqueueActiveWindow(new WindowRef { Id = "w-form", AppId = "browser", Title = "Form" });
+        client.OnFind = selector =>
+        {
+            if (!string.Equals(selector.NameContains, "Customer name", StringComparison.OrdinalIgnoreCase))
+            {
+                return Array.Empty<ElementRef>();
+            }
+
+            return new[]
+            {
+                new ElementRef
+                {
+                    Id = "field-name",
+                    Name = "Customer name",
+                    Role = "textbox",
+                    Bounds = new Rect { X = 10, Y = 10, Width = 120, Height = 24 }
+                }
+            };
+        };
+
+        var executor = BuildExecutor(client, new AgentConfig
+        {
+            OcrEnabled = false,
+            ContextBindingEnabled = false,
+            FindRetryCount = 0,
+            FindRetryDelayMs = 0
+        });
+
+        var plan = new ActionPlan
+        {
+            Steps =
+            {
+                new PlanStep
+                {
+                    Type = ActionType.SetValue,
+                    Selector = new Selector { NameContains = "Customer name" },
+                    Text = "Alessio"
+                }
+            }
+        };
+
+        var result = await executor.ExecutePlanAsync(plan, dryRun: false, CancellationToken.None);
+
+        Assert.True(result.Success);
+        Assert.Equal("field-name", client.LastSetElementId);
+        Assert.Equal("Alessio", client.LastSetValue);
+    }
+
+    [Fact]
+    public async Task OptionalGroup_SkipsRemainingCandidatesAfterFirstSuccess()
+    {
+        var client = new StubDesktopClient();
+        client.EnqueueActiveWindow(new WindowRef { Id = "w-form", AppId = "browser", Title = "Form" });
+        client.EnqueueActiveWindow(new WindowRef { Id = "w-form", AppId = "browser", Title = "Form" });
+        client.EnqueueActiveWindow(new WindowRef { Id = "w-form", AppId = "browser", Title = "Form" });
+        client.OnFind = selector =>
+        {
+            if (string.Equals(selector.NameContains, "Email", StringComparison.OrdinalIgnoreCase))
+            {
+                return new[]
+                {
+                    new ElementRef
+                    {
+                        Id = "field-email",
+                        Name = "Email",
+                        Role = "textbox",
+                        Bounds = new Rect { X = 10, Y = 10, Width = 120, Height = 24 }
+                    }
+                };
+            }
+
+            return Array.Empty<ElementRef>();
+        };
+
+        var executor = BuildExecutor(client, new AgentConfig
+        {
+            OcrEnabled = false,
+            ContextBindingEnabled = false,
+            FindRetryCount = 0,
+            FindRetryDelayMs = 0
+        });
+
+        var plan = new ActionPlan
+        {
+            Steps =
+            {
+                new PlanStep
+                {
+                    Type = ActionType.SetValue,
+                    Selector = new Selector { NameContains = "Email" },
+                    Text = "a@b.com",
+                    Note = "optional-group:email;optional"
+                },
+                new PlanStep
+                {
+                    Type = ActionType.SetValue,
+                    Selector = new Selector { NameContains = "E-mail" },
+                    Text = "a@b.com",
+                    Note = "optional-group:email;optional"
+                }
+            }
+        };
+
+        var result = await executor.ExecutePlanAsync(plan, dryRun: false, CancellationToken.None);
+
+        Assert.True(result.Success);
+        Assert.Equal(1, client.SetValueCalls);
+        Assert.Equal(2, result.Steps.Count);
+        Assert.Contains("Skipped optional candidate", result.Steps[1].Message, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static Executor BuildExecutor(StubDesktopClient client, AgentConfig config)
     {
         var policy = new PolicyEngine(config);
@@ -323,6 +439,9 @@ public sealed class ExecutorAdvancedTests
         public Func<Selector, IReadOnlyList<ElementRef>>? OnFind { get; set; }
         public int FindCalls { get; private set; }
         public int ActiveWindowCalls { get; private set; }
+        public int SetValueCalls { get; private set; }
+        public string? LastSetElementId { get; private set; }
+        public string? LastSetValue { get; private set; }
 
         public void EnqueueActiveWindow(WindowRef window)
         {
@@ -352,7 +471,13 @@ public sealed class ExecutorAdvancedTests
         }
 
         public Task<ActionResult> InvokeElementAsync(string elementId, CancellationToken cancellationToken) => Task.FromResult(new ActionResult { Success = true, Message = "ok" });
-        public Task<ActionResult> SetElementValueAsync(string elementId, string value, CancellationToken cancellationToken) => Task.FromResult(new ActionResult { Success = true, Message = "ok" });
+        public Task<ActionResult> SetElementValueAsync(string elementId, string value, CancellationToken cancellationToken)
+        {
+            SetValueCalls++;
+            LastSetElementId = elementId;
+            LastSetValue = value;
+            return Task.FromResult(new ActionResult { Success = true, Message = "ok" });
+        }
         public Task<ActionResult> ClickPointAsync(int x, int y, CancellationToken cancellationToken) => Task.FromResult(new ActionResult { Success = true, Message = "ok" });
         public Task<ActionResult> TypeTextAsync(string text, CancellationToken cancellationToken) => Task.FromResult(new ActionResult { Success = true, Message = "ok" });
         public Task<ActionResult> KeyComboAsync(IEnumerable<string> keys, CancellationToken cancellationToken) => Task.FromResult(new ActionResult { Success = true, Message = "ok" });

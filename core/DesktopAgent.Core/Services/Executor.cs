@@ -64,10 +64,27 @@ public sealed class Executor : IExecutor
     {
         var result = new ExecutionResult { Success = true, Message = "Completed" };
         var binding = new RuntimeBinding();
+        var satisfiedOptionalGroups = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         for (var i = 0; i < plan.Steps.Count; i++)
         {
             var step = plan.Steps[i];
+            if (TryGetOptionalGroup(step, out var optionalGroup)
+                && !string.IsNullOrWhiteSpace(optionalGroup)
+                && satisfiedOptionalGroups.Contains(optionalGroup))
+            {
+                var skipped = new StepResult
+                {
+                    Index = i,
+                    Type = step.Type,
+                    Success = true,
+                    Message = $"Skipped optional candidate ({optionalGroup})"
+                };
+                result.Steps.Add(skipped);
+                await WriteAuditAsync("optional_skip", skipped.Message, step, cancellationToken);
+                continue;
+            }
+
             if (_killSwitch.IsTripped)
             {
                 var msg = $"Kill switch tripped: {_killSwitch.Reason}";
@@ -141,9 +158,22 @@ public sealed class Executor : IExecutor
 
             if (!stepResult.Success)
             {
+                if (IsOptionalStep(step))
+                {
+                    stepResult.Success = true;
+                    stepResult.Message = $"Optional step skipped: {stepResult.Message}";
+                    await WriteAuditAsync("optional_skip", stepResult.Message, step, cancellationToken);
+                    continue;
+                }
+
                 result.Success = false;
                 result.Message = stepResult.Message;
                 break;
+            }
+
+            if (TryGetOptionalGroup(step, out optionalGroup) && !string.IsNullOrWhiteSpace(optionalGroup))
+            {
+                satisfiedOptionalGroups.Add(optionalGroup);
             }
 
             await RefreshBindingAfterStepAsync(step, binding, cancellationToken);
@@ -185,11 +215,7 @@ public sealed class Executor : IExecutor
                         "Invoked",
                         cancellationToken);
                 case ActionType.SetValue:
-                    return await ExecuteActionWithPostCheckAsync(
-                        step,
-                        () => _client.SetElementValueAsync(step.ElementId ?? string.Empty, step.Text ?? string.Empty, cancellationToken),
-                        "Value set",
-                        cancellationToken);
+                    return await ExecuteSetValueAsync(step, cancellationToken);
                 case ActionType.ReadText:
                     return await ExecuteReadTextAsync(cancellationToken);
                 case ActionType.CaptureScreen:
@@ -1598,6 +1624,67 @@ public sealed class Executor : IExecutor
 
         var post = await VerifyPostConditionAsync(step, selector, preWindow, preCount, targetRole, cancellationToken);
         return BuildPostCheckedResult(result.Success, successMessage, null, post, _config.PostCheckStrict);
+    }
+
+    private async Task<StepResult> ExecuteSetValueAsync(PlanStep step, CancellationToken cancellationToken)
+    {
+        if (!string.IsNullOrWhiteSpace(step.ElementId))
+        {
+            return await ExecuteActionWithPostCheckAsync(
+                step,
+                () => _client.SetElementValueAsync(step.ElementId ?? string.Empty, step.Text ?? string.Empty, cancellationToken),
+                "Value set",
+                cancellationToken);
+        }
+
+        var selector = BuildEffectiveSelector(step);
+        if (IsSelectorEmpty(selector))
+        {
+            return new StepResult { Success = false, Message = "SetValue requires ElementId or selector" };
+        }
+
+        var elements = await FindElementsWithRetryAsync(selector, cancellationToken);
+        elements = RankElements(elements, selector, step.Type);
+        if (elements.Count == 0)
+        {
+            return new StepResult { Success = false, Message = "No target field found for SetValue" };
+        }
+
+        var target = elements[0];
+        var value = step.Text ?? string.Empty;
+        var preWindow = await _client.GetActiveWindowAsync(cancellationToken);
+        var result = await _client.SetElementValueAsync(target.Id, value, cancellationToken);
+        if (!result.Success)
+        {
+            if (target.Bounds is { Width: > 0, Height: > 0 })
+            {
+                var (x, y) = Center(target.Bounds);
+                var click = await _client.ClickPointAsync(x, y, cancellationToken);
+                if (click.Success)
+                {
+                    var typed = await _client.TypeTextAsync(value, cancellationToken);
+                    if (typed.Success)
+                    {
+                        return new StepResult
+                        {
+                            Success = true,
+                            Message = "Value typed",
+                            Data = target
+                        };
+                    }
+                }
+            }
+
+            return new StepResult
+            {
+                Success = false,
+                Message = string.IsNullOrWhiteSpace(result.Message) ? "SetValue failed" : result.Message,
+                Data = target
+            };
+        }
+
+        var post = await VerifyPostConditionAsync(step, selector, preWindow, elements.Count, target.Role, cancellationToken);
+        return BuildPostCheckedResult(true, "Value set", target, post, _config.PostCheckStrict);
     }
 
     private async Task<ResolvePointResult> ResolveActionPointAsync(PlanStep step, CancellationToken cancellationToken)
@@ -3462,6 +3549,40 @@ public sealed class Executor : IExecutor
                 step.ExpectedWindowId
             }
         }, cancellationToken);
+    }
+
+    private static bool IsOptionalStep(PlanStep step)
+    {
+        return !string.IsNullOrWhiteSpace(step.Note)
+               && step.Note.Contains("optional", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool TryGetOptionalGroup(PlanStep step, out string group)
+    {
+        group = string.Empty;
+        var note = step.Note ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(note))
+        {
+            return false;
+        }
+
+        var parts = note.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        foreach (var part in parts)
+        {
+            if (!part.StartsWith("optional-group:", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var value = part["optional-group:".Length..].Trim();
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                group = value;
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private sealed class RuntimeBinding

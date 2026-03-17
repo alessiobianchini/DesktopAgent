@@ -3671,6 +3671,9 @@ internal partial class QuickChatWindow : Window
             "- run \"file list .\"",
             "- run \"file search report in docs\"",
             "- run \"cerca file bolletta in .\"",
+            "- order intake",
+            "- order preview / order clear",
+            "- order fill <url>",
             "",
             "## Plan Preview (Chat)",
             "- Shows the JSON plan generated from your request.",
@@ -3720,7 +3723,14 @@ internal partial class QuickChatWindow : Window
             "- Syntax: file search <query> [in <path>]",
             "- Also supports: search file <query> [in <path>] / cerca file <query> [in <path>]",
             "- Wildcards supported in query: * and ?",
-            "- Results are limited and recursively searched under the selected path."
+            "- Results are limited and recursively searched under the selected path.",
+            "",
+            "## Order Intake (AI)",
+            "- You can ask naturally, e.g. 'mi e arrivata una mail ordine, compila il form'.",
+            "- AI routing can map this to an order intake flow, even without the 'order' keyword command.",
+            "- Use `order intake` and then paste the email text to extract structured fields.",
+            "- Use `order preview` to review extracted data and `order clear` to reset.",
+            "- Use `order fill <url>` to discover form fields and run smart safe autofill candidates (never auto-submit)."
         };
 
         return string.Join(Environment.NewLine, lines);
