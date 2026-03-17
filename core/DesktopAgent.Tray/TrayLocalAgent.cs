@@ -82,9 +82,7 @@ internal sealed class TrayLocalAgent : IDisposable
         _desktopClient = new DesktopGrpcClient(_config.AdapterEndpoint, _loggerFactory.CreateLogger<DesktopGrpcClient>());
         _auditLog = new JsonlAuditLog(_config);
         _killSwitch = new KillSwitch();
-        _ocrEngine = _config.OcrEnabled
-            ? new TesseractOcrEngine(_config.Ocr.TesseractPath, _loggerFactory.CreateLogger<TesseractOcrEngine>())
-            : new OcrEngineStub();
+        _ocrEngine = OcrEngineFactory.Create(_config, _loggerFactory);
         _contextProvider = new ContextProvider(_desktopClient, _ocrEngine, _config, _loggerFactory.CreateLogger<ContextProvider>());
         _appResolver = new AppResolver(_config, new LocalAppCatalog(_config));
         _planner = new SimplePlanner(new FallbackIntentInterpreter(
@@ -1404,8 +1402,17 @@ internal sealed class TrayLocalAgent : IDisposable
             return WebChatResponse.Simple("Order draft is invalid. Run `order intake` again.");
         }
 
-        var smart = await TryBuildSmartOrderFillPlanAsync(payload, targetUrl, cancellationToken);
-        var plan = smart?.Plan ?? BuildOrderFillPlan(payload, targetUrl);
+        SmartOrderFillPlan? smart = null;
+        ActionPlan plan;
+        if (IsGoogleFormsUrl(targetUrl))
+        {
+            plan = BuildGoogleFormsInteractionPlan(payload, targetUrl);
+        }
+        else
+        {
+            smart = await TryBuildSmartOrderFillPlanAsync(payload, targetUrl, cancellationToken);
+            plan = smart?.Plan ?? BuildOrderFillPlan(payload, targetUrl);
+        }
         if (plan.Steps.Count <= 2)
         {
             return WebChatResponse.Simple("No fillable fields found in current order draft.");
@@ -1423,14 +1430,17 @@ internal sealed class TrayLocalAgent : IDisposable
                 steps = plan.Steps.Count,
                 smart = smart != null,
                 mapped = smart?.MappedFields ?? 0,
-                discovered = smart?.DiscoveredFields ?? 0
+                discovered = smart?.DiscoveredFields ?? 0,
+                googleForms = IsGoogleFormsUrl(targetUrl)
             });
 
         var lines = PlanToLines(plan)
             .Concat(new[]
             {
                 $"Draft: {_latestOrderDraft.Id}",
-                smart == null
+                IsGoogleFormsUrl(targetUrl)
+                    ? "Mapping: google forms tab-fill mode"
+                    : smart == null
                     ? "Mapping: fallback heuristics"
                     : $"Mapping: smart ({smart.MappedFields}/{smart.DiscoveredFields} fields)"
             })
@@ -1440,7 +1450,111 @@ internal sealed class TrayLocalAgent : IDisposable
             token,
             lines,
             PlanToJson(plan),
-            smart == null ? "Mode: Order autofill" : "Mode: Order autofill (smart)");
+            IsGoogleFormsUrl(targetUrl)
+                ? "Mode: Order autofill (google forms)"
+                : smart == null
+                    ? "Mode: Order autofill"
+                    : "Mode: Order autofill (smart)");
+    }
+
+    private static bool IsGoogleFormsUrl(string targetUrl)
+    {
+        if (!Uri.TryCreate(targetUrl, UriKind.Absolute, out var uri))
+        {
+            return false;
+        }
+
+        var host = uri.Host.ToLowerInvariant();
+        return host.Contains("forms.gle", StringComparison.Ordinal)
+               || (host.Contains("docs.google.com", StringComparison.Ordinal)
+                   && uri.AbsolutePath.Contains("/forms", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static ActionPlan BuildGoogleFormsInteractionPlan(OrderDraftPayload payload, string targetUrl)
+    {
+        var plan = new ActionPlan { Intent = $"order fill google-forms {targetUrl}" };
+        plan.Steps.Add(new PlanStep
+        {
+            Type = ActionType.OpenUrl,
+            Target = targetUrl
+        });
+        plan.Steps.Add(new PlanStep
+        {
+            Type = ActionType.WaitFor,
+            WaitFor = TimeSpan.FromMilliseconds(1800)
+        });
+
+        var orderedValues = new List<(string Label, string Value)>();
+        if (!string.IsNullOrWhiteSpace(payload.Customer?.Name))
+        {
+            orderedValues.Add(("Name", payload.Customer.Name.Trim()));
+        }
+        if (!string.IsNullOrWhiteSpace(payload.Customer?.Email))
+        {
+            orderedValues.Add(("Email", payload.Customer.Email.Trim()));
+        }
+
+        var address = !string.IsNullOrWhiteSpace(payload.ShippingAddress)
+            ? payload.ShippingAddress
+            : payload.BillingAddress;
+        if (!string.IsNullOrWhiteSpace(address))
+        {
+            orderedValues.Add(("Address", address.Trim()));
+        }
+        if (!string.IsNullOrWhiteSpace(payload.Customer?.Phone))
+        {
+            orderedValues.Add(("Phone number", payload.Customer.Phone.Trim()));
+        }
+
+        var comments = BuildOrderItemsSummary(payload.Items, payload.Notes);
+        if (!string.IsNullOrWhiteSpace(comments))
+        {
+            orderedValues.Add(("Comments", comments.Trim()));
+        }
+
+        if (orderedValues.Count == 0)
+        {
+            return BuildOrderFillPlan(payload, targetUrl);
+        }
+
+        var first = orderedValues[0];
+        plan.Steps.Add(new PlanStep
+        {
+            Type = ActionType.Click,
+            Selector = new Selector { NameContains = first.Label }
+        });
+        plan.Steps.Add(new PlanStep
+        {
+            Type = ActionType.WaitFor,
+            WaitFor = TimeSpan.FromMilliseconds(160)
+        });
+        plan.Steps.Add(new PlanStep
+        {
+            Type = ActionType.TypeText,
+            Text = first.Value
+        });
+
+        for (var i = 1; i < orderedValues.Count; i++)
+        {
+            var value = orderedValues[i];
+            plan.Steps.Add(new PlanStep
+            {
+                Type = ActionType.KeyCombo,
+                Keys = new List<string> { "tab" }
+            });
+            plan.Steps.Add(new PlanStep
+            {
+                Type = ActionType.WaitFor,
+                WaitFor = TimeSpan.FromMilliseconds(90)
+            });
+            plan.Steps.Add(new PlanStep
+            {
+                Type = ActionType.TypeText,
+                Text = value.Value
+            });
+        }
+
+        return plan;
     }
 
     private async Task<SmartOrderFillPlan?> TryBuildSmartOrderFillPlanAsync(
@@ -1797,6 +1911,7 @@ internal sealed class TrayLocalAgent : IDisposable
 
             var byKey = fields.ToDictionary(field => field.Key, StringComparer.OrdinalIgnoreCase);
             var mapped = new Dictionary<string, DiscoveredFormField>(StringComparer.OrdinalIgnoreCase);
+            var usedFields = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var property in doc.RootElement.EnumerateObject())
             {
                 var orderKey = property.Name;
@@ -1813,7 +1928,7 @@ internal sealed class TrayLocalAgent : IDisposable
                     continue;
                 }
 
-                if (byKey.TryGetValue(fieldKey, out var field))
+                if (byKey.TryGetValue(fieldKey, out var field) && usedFields.Add(field.Key))
                 {
                     mapped[orderKey] = field;
                 }

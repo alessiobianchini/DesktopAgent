@@ -3867,24 +3867,101 @@ internal partial class QuickChatWindow : Window
 
     private static string? ResolveCommandPath(string command)
     {
+        if (string.IsNullOrWhiteSpace(command))
+        {
+            return null;
+        }
+
+        var trimmed = command.Trim();
+        if (Path.IsPathRooted(trimmed) && File.Exists(trimmed))
+        {
+            return trimmed;
+        }
+
         try
         {
             var checker = OperatingSystem.IsWindows() ? "where" : "which";
-            var result = RunProcessCapture(checker, command, 3000);
+            var result = RunProcessCapture(checker, trimmed, 3000);
             if (result.TimedOut || result.ExitCode != 0)
             {
-                return null;
+                return ResolveKnownCommandPath(trimmed);
             }
 
             var path = result.StdOut
                 .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
                 .Select(static line => line.Trim())
                 .FirstOrDefault(static line => !string.IsNullOrWhiteSpace(line));
-            return string.IsNullOrWhiteSpace(path) ? null : path;
+            if (!string.IsNullOrWhiteSpace(path))
+            {
+                return path;
+            }
+
+            return ResolveKnownCommandPath(trimmed);
         }
         catch
         {
-            return null;
+            return ResolveKnownCommandPath(trimmed);
+        }
+    }
+
+    private static string? ResolveKnownCommandPath(string command)
+    {
+        foreach (var candidate in GetKnownCommandCandidates(command))
+        {
+            if (!string.IsNullOrWhiteSpace(candidate) && File.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        return null;
+    }
+
+    private static IEnumerable<string> GetKnownCommandCandidates(string command)
+    {
+        var cmd = command.Trim().ToLowerInvariant();
+        if (OperatingSystem.IsWindows())
+        {
+            var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+            var programFilesX86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+            if (cmd is "tesseract" or "tesseract.exe")
+            {
+                if (!string.IsNullOrWhiteSpace(programFiles))
+                {
+                    yield return Path.Combine(programFiles, "Tesseract-OCR", "tesseract.exe");
+                }
+
+                if (!string.IsNullOrWhiteSpace(programFilesX86))
+                {
+                    yield return Path.Combine(programFilesX86, "Tesseract-OCR", "tesseract.exe");
+                }
+            }
+
+            if (cmd is "ffmpeg" or "ffmpeg.exe")
+            {
+                var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+                if (!string.IsNullOrWhiteSpace(localAppData))
+                {
+                    yield return Path.Combine(localAppData, "Microsoft", "WinGet", "Links", "ffmpeg.exe");
+                }
+            }
+        }
+        else if (OperatingSystem.IsMacOS())
+        {
+            if (cmd == "tesseract")
+            {
+                yield return "/opt/homebrew/bin/tesseract";
+                yield return "/usr/local/bin/tesseract";
+                yield return "/usr/bin/tesseract";
+            }
+        }
+        else
+        {
+            if (cmd == "tesseract")
+            {
+                yield return "/usr/bin/tesseract";
+                yield return "/usr/local/bin/tesseract";
+            }
         }
     }
 

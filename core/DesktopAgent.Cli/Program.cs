@@ -58,15 +58,9 @@ services.AddSingleton<IContextProvider, ContextProvider>();
 services.AddSingleton<IExecutor, Executor>();
 services.AddSingleton<AgentOrchestrator>();
 services.AddSingleton<IOcrEngine>(sp =>
-{
-    var logger = sp.GetRequiredService<ILogger<TesseractOcrEngine>>();
-    if (!agentConfig.OcrEnabled)
-    {
-        return new OcrEngineStub();
-    }
-
-    return new TesseractOcrEngine(agentConfig.Ocr.TesseractPath, logger);
-});
+    OcrEngineFactory.Create(
+        sp.GetRequiredService<AgentConfig>(),
+        sp.GetRequiredService<ILoggerFactory>()));
 
 var provider = services.BuildServiceProvider();
 var logger = provider.GetRequiredService<ILoggerFactory>().CreateLogger("Cli");

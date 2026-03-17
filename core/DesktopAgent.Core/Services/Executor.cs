@@ -1647,6 +1647,34 @@ public sealed class Executor : IExecutor
         elements = RankElements(elements, selector, step.Type);
         if (elements.Count == 0)
         {
+            if (_config.OcrEnabled && !string.IsNullOrWhiteSpace(selector.NameContains))
+            {
+                var find = await _contextProvider.FindByTextAsync(selector.NameContains, cancellationToken);
+                if (find.OcrMatches.Count > 0)
+                {
+                    var region = SelectBestOcrMatch(find.OcrMatches, selector.NameContains);
+                    var (x, y) = Center(region.Bounds);
+                    var click = await _client.ClickPointAsync(x, y, cancellationToken);
+                    if (click.Success)
+                    {
+                        var typed = await _client.TypeTextAsync(step.Text ?? string.Empty, cancellationToken);
+                        if (typed.Success)
+                        {
+                            return new StepResult
+                            {
+                                Success = true,
+                                Message = "Value typed via OCR",
+                                Data = region
+                            };
+                        }
+
+                        return new StepResult { Success = false, Message = typed.Message, Data = region };
+                    }
+
+                    return new StepResult { Success = false, Message = click.Message, Data = region };
+                }
+            }
+
             return new StepResult { Success = false, Message = "No target field found for SetValue" };
         }
 

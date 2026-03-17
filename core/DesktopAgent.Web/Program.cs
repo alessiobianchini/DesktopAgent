@@ -42,15 +42,9 @@ builder.Services.AddSingleton<IPolicyEngine, PolicyEngine>();
 builder.Services.AddSingleton<IRateLimiter>(_ => new SlidingWindowRateLimiter(() => agentConfig.MaxActionsPerSecond));
 builder.Services.AddSingleton<IKillSwitch, KillSwitch>();
 builder.Services.AddSingleton<IOcrEngine>(sp =>
-{
-    var logger = sp.GetRequiredService<ILogger<TesseractOcrEngine>>();
-    if (!agentConfig.OcrEnabled)
-    {
-        return new OcrEngineStub();
-    }
-
-    return new TesseractOcrEngine(agentConfig.Ocr.TesseractPath, logger);
-});
+    OcrEngineFactory.Create(
+        sp.GetRequiredService<AgentConfig>(),
+        sp.GetRequiredService<ILoggerFactory>()));
 builder.Services.AddSingleton<ChatActionStore>();
 builder.Services.AddSingleton<TargetMemoryStore>();
 builder.Services.AddSingleton<MacroRecorderStore>();

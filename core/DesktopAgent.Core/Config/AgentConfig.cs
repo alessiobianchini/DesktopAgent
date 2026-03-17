@@ -127,7 +127,7 @@ public sealed class PostCheckRules
 
 public sealed class OcrConfig
 {
-    public string Engine { get; set; } = "tesseract";
+    public string Engine { get; set; } = "auto";
     public string TesseractPath { get; set; } = "tesseract";
 }
 

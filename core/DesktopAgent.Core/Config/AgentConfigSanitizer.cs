@@ -25,6 +25,10 @@ public static class AgentConfigSanitizer
         config.LlmFallback.MinConfidence = Math.Clamp(config.LlmFallback.MinConfidence, 0.0, 1.0);
         config.LlmInterpretationMode = NormalizeLlmInterpretationMode(config.LlmInterpretationMode);
         config.ScreenRecordingAudioBackendPreference = NormalizeAudioBackendPreference(config.ScreenRecordingAudioBackendPreference);
+        config.Ocr.Engine = NormalizeOcrEngine(config.Ocr.Engine);
+        config.Ocr.TesseractPath = string.IsNullOrWhiteSpace(config.Ocr.TesseractPath)
+            ? "tesseract"
+            : config.Ocr.TesseractPath.Trim();
         config.ScreenRecordingAudioDevice = (config.ScreenRecordingAudioDevice ?? string.Empty).Trim();
         config.MediaOutputDirectory = string.IsNullOrWhiteSpace(config.MediaOutputDirectory)
             ? "media"
@@ -177,6 +181,18 @@ public static class AgentConfigSanitizer
         {
             "fallback" => "fallback",
             _ => "primary"
+        };
+    }
+
+    private static string NormalizeOcrEngine(string? value)
+    {
+        var normalized = (value ?? string.Empty).Trim().ToLowerInvariant();
+        return normalized switch
+        {
+            "tesseract" => "tesseract",
+            "ai" => "ai",
+            "auto" => "auto",
+            _ => "auto"
         };
     }
 }

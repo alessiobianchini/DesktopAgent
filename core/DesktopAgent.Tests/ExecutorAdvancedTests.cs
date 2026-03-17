@@ -415,12 +415,66 @@ public sealed class ExecutorAdvancedTests
         Assert.Contains("Skipped optional candidate", result.Steps[1].Message, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static Executor BuildExecutor(StubDesktopClient client, AgentConfig config)
+    [Fact]
+    public async Task SetValue_FallsBackToOcr_WhenUiElementNotFound()
+    {
+        var client = new StubDesktopClient();
+        client.EnqueueActiveWindow(new WindowRef { Id = "w-form", AppId = "browser", Title = "Form" });
+        client.EnqueueActiveWindow(new WindowRef { Id = "w-form", AppId = "browser", Title = "Form" });
+        client.OnFind = _ => Array.Empty<ElementRef>();
+
+        var context = new StubContextProvider
+        {
+            OnFindByText = _ => new FindResult
+            {
+                OcrMatches = new List<OcrTextRegion>
+                {
+                    new()
+                    {
+                        Text = "Name",
+                        Bounds = new Rect { X = 40, Y = 50, Width = 120, Height = 20 },
+                        Confidence = 0.9f
+                    }
+                }
+            }
+        };
+
+        var executor = BuildExecutor(client, new AgentConfig
+        {
+            OcrEnabled = true,
+            ContextBindingEnabled = false,
+            FindRetryCount = 0,
+            FindRetryDelayMs = 0
+        }, context);
+
+        var plan = new ActionPlan
+        {
+            Steps =
+            {
+                new PlanStep
+                {
+                    Type = ActionType.SetValue,
+                    Selector = new Selector { NameContains = "Name" },
+                    Text = "Alessio"
+                }
+            }
+        };
+
+        var result = await executor.ExecutePlanAsync(plan, dryRun: false, CancellationToken.None);
+
+        Assert.True(result.Success);
+        Assert.Equal(1, client.ClickPointCalls);
+        Assert.Equal(1, client.TypeTextCalls);
+        Assert.Equal("Alessio", client.LastTypedText);
+        Assert.Contains("OCR", result.Steps[0].Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static Executor BuildExecutor(StubDesktopClient client, AgentConfig config, StubContextProvider? contextProvider = null)
     {
         var policy = new PolicyEngine(config);
         return new Executor(
             client,
-            new StubContextProvider(),
+            contextProvider ?? new StubContextProvider(),
             new StubAppResolver(),
             policy,
             new StubRateLimiter(),
@@ -442,6 +496,9 @@ public sealed class ExecutorAdvancedTests
         public int SetValueCalls { get; private set; }
         public string? LastSetElementId { get; private set; }
         public string? LastSetValue { get; private set; }
+        public int ClickPointCalls { get; private set; }
+        public int TypeTextCalls { get; private set; }
+        public string? LastTypedText { get; private set; }
 
         public void EnqueueActiveWindow(WindowRef window)
         {
@@ -478,8 +535,17 @@ public sealed class ExecutorAdvancedTests
             LastSetValue = value;
             return Task.FromResult(new ActionResult { Success = true, Message = "ok" });
         }
-        public Task<ActionResult> ClickPointAsync(int x, int y, CancellationToken cancellationToken) => Task.FromResult(new ActionResult { Success = true, Message = "ok" });
-        public Task<ActionResult> TypeTextAsync(string text, CancellationToken cancellationToken) => Task.FromResult(new ActionResult { Success = true, Message = "ok" });
+        public Task<ActionResult> ClickPointAsync(int x, int y, CancellationToken cancellationToken)
+        {
+            ClickPointCalls++;
+            return Task.FromResult(new ActionResult { Success = true, Message = "ok" });
+        }
+        public Task<ActionResult> TypeTextAsync(string text, CancellationToken cancellationToken)
+        {
+            TypeTextCalls++;
+            LastTypedText = text;
+            return Task.FromResult(new ActionResult { Success = true, Message = "ok" });
+        }
         public Task<ActionResult> KeyComboAsync(IEnumerable<string> keys, CancellationToken cancellationToken) => Task.FromResult(new ActionResult { Success = true, Message = "ok" });
         public Task<ActionResult> OpenAppAsync(string appIdOrPath, CancellationToken cancellationToken) => Task.FromResult(new ActionResult { Success = true, Message = "ok" });
         public Task<ScreenshotResponse> CaptureScreenAsync(ScreenshotRequest request, CancellationToken cancellationToken) => Task.FromResult(new ScreenshotResponse());
@@ -492,8 +558,10 @@ public sealed class ExecutorAdvancedTests
 
     private sealed class StubContextProvider : IContextProvider
     {
+        public Func<string, FindResult>? OnFindByText { get; set; }
         public Task<ContextSnapshot> GetSnapshotAsync(CancellationToken cancellationToken) => Task.FromResult(new ContextSnapshot());
-        public Task<FindResult> FindByTextAsync(string text, CancellationToken cancellationToken) => Task.FromResult(new FindResult());
+        public Task<FindResult> FindByTextAsync(string text, CancellationToken cancellationToken)
+            => Task.FromResult(OnFindByText?.Invoke(text) ?? new FindResult());
     }
 
     private sealed class StubAppResolver : IAppResolver

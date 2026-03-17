@@ -25,5 +25,26 @@ public sealed class AgentConfigSanitizerTests
 
         Assert.Equal(expected, config.ScreenRecordingAudioBackendPreference);
     }
-}
 
+    [Theory]
+    [InlineData("tesseract", "tesseract")]
+    [InlineData("ai", "ai")]
+    [InlineData("AUTO", "auto")]
+    [InlineData("other", "auto")]
+    public void Normalize_OcrEngine_IsSanitized(string input, string expected)
+    {
+        var config = new AgentConfig
+        {
+            Ocr = new OcrConfig
+            {
+                Engine = input,
+                TesseractPath = ""
+            }
+        };
+
+        AgentConfigSanitizer.Normalize(config);
+
+        Assert.Equal(expected, config.Ocr.Engine);
+        Assert.Equal("tesseract", config.Ocr.TesseractPath);
+    }
+}
