@@ -1250,7 +1250,7 @@ app.MapPost("/api/chat", async (ChatRequest request, IDesktopAdapterClient clien
         return Results.Ok(ChatResponse.ConfirmWithSteps(prompt, token, PlanToLines(inferredPlan), PlanToJson(inferredPlan), GetModeLabel(inferredPlan)));
     }
 
-    return Results.Ok(ChatResponse.Simple("Available commands: status, kill, reset kill, lock status, lock on <current window|app>, unlock, profile <safe|balanced|power>, arm, disarm, simulate presence, require presence, list apps [query] [allowed], memory, click last, type in last <text>, start/stop recording, save recording <name>, run <intent>, dry-run <intent>, translate <text> to <language> (or 'translate to <language>: <text>'). Supported intents: open/run/start, find/click/type/press, double click/right click/drag, wait until <text> [for <seconds>], window actions (minimize/maximize/restore/switch/focus), scroll/page/home/end, browser back/forward/refresh/find in page, file write/read/list/append, open url/search (on specific browser), notify, clipboard history, jiggle mouse for <duration>, volume up/down/mute, brightness up/down, lock screen, take screenshot [for each screen|single screen]."));
+    return Results.Ok(ChatResponse.Simple("Available commands: status, kill, reset kill, lock status, lock on <current window|app>, unlock, profile <safe|balanced|power>, arm, disarm, simulate presence, require presence, list apps [query] [allowed], memory, click last, type in last <text>, start/stop recording, save recording <name>, run <intent>, dry-run <intent>, translate <text> to <language> (or 'translate to <language>: <text>'). Supported intents: open/run/start, find/click/type/press, double click/right click/drag, wait until <text> [for <seconds>], window actions (minimize/maximize/restore/switch/focus), scroll/page/home/end, browser back/forward/refresh/find in page, file write/read/list/append/search, open url/search (on specific browser), notify, clipboard history, jiggle mouse for <duration>, volume up/down/mute, brightness up/down, lock screen, take screenshot [for each screen|single screen]."));
 });
 
 app.MapPost("/api/confirm", async (ConfirmRequest request, IDesktopAdapterClient client, ChatActionStore store, IAuditLog auditLog, IServiceProvider sp, IKillSwitch killSwitch) =>
@@ -1601,7 +1601,32 @@ static string? BuildStepDataHint(StepResult step)
         case ActionType.FileList:
             if (element.ValueKind == JsonValueKind.Object && element.TryGetProperty("entries", out var entriesEl) && entriesEl.ValueKind == JsonValueKind.Array)
             {
-                var entries = entriesEl.EnumerateArray().Select(item => item.GetString()).Where(item => !string.IsNullOrWhiteSpace(item)).ToList();
+                var entries = new List<string>();
+                foreach (var item in entriesEl.EnumerateArray())
+                {
+                    if (item.ValueKind == JsonValueKind.String)
+                    {
+                        var value = item.GetString();
+                        if (!string.IsNullOrWhiteSpace(value))
+                        {
+                            entries.Add(value.Trim());
+                        }
+
+                        continue;
+                    }
+
+                    if (item.ValueKind == JsonValueKind.Object)
+                    {
+                        var name = item.TryGetProperty("name", out var nameEl) ? nameEl.GetString() : null;
+                        var path = item.TryGetProperty("path", out var pathEl) ? pathEl.GetString() : null;
+                        var chosen = !string.IsNullOrWhiteSpace(name) ? name : path;
+                        if (!string.IsNullOrWhiteSpace(chosen))
+                        {
+                            entries.Add(chosen.Trim());
+                        }
+                    }
+                }
+
                 var preview = string.Join(", ", entries.Take(5));
                 return entries.Count > 0
                     ? $"entries={entries.Count}: {preview}"

@@ -62,6 +62,18 @@ public sealed class ProfileAndPluginTests
         var urlPlan = interpreter.Interpret("open url https://example.com");
         Assert.Single(urlPlan.Steps);
         Assert.Equal(ActionType.OpenUrl, urlPlan.Steps[0].Type);
+
+        var fileSearchPlan = interpreter.Interpret("file search report in docs");
+        Assert.Single(fileSearchPlan.Steps);
+        Assert.Equal(ActionType.FileList, fileSearchPlan.Steps[0].Type);
+        Assert.Equal("docs", fileSearchPlan.Steps[0].Target);
+        Assert.Equal("report", fileSearchPlan.Steps[0].Text);
+
+        var italianFileSearchPlan = interpreter.Interpret("cerca file bolletta in .");
+        Assert.Single(italianFileSearchPlan.Steps);
+        Assert.Equal(ActionType.FileList, italianFileSearchPlan.Steps[0].Type);
+        Assert.Equal(".", italianFileSearchPlan.Steps[0].Target);
+        Assert.Equal("bolletta", italianFileSearchPlan.Steps[0].Text);
     }
 
     [Fact]

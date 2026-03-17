@@ -68,6 +68,7 @@ public sealed class RuleBasedIntentInterpreter : IIntentInterpreter
     private static readonly Regex FileWriteRegex = BuildFileWriteRegex();
     private static readonly Regex FileAppendRegex = BuildFileAppendRegex();
     private static readonly Regex FileReadRegex = BuildFileReadRegex();
+    private static readonly Regex FileSearchRegex = BuildFileSearchRegex();
     private static readonly Regex FileListRegex = BuildFileListRegex();
     private static readonly Regex SendTextToRecipientRegex = BuildSendTextToRecipientRegex();
     private static readonly Regex SendPronounRegex = BuildSendPronounRegex();
@@ -499,6 +500,12 @@ public sealed class RuleBasedIntentInterpreter : IIntentInterpreter
     private static Regex BuildFileListRegex()
     {
         var pattern = "^file\\s+(?:list|ls|elenca)\\s*(?<path>\"[^\"]+\"|'[^']+'|\\S+)?$";
+        return new Regex(pattern, RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    }
+
+    private static Regex BuildFileSearchRegex()
+    {
+        var pattern = "^(?:file\\s+(?:search|find|cerca|trova)|(?:search|find|cerca|trova)\\s+file)\\s+(?<query>.+?)(?:\\s+(?:in|under|nel|nella|sotto)\\s+(?<path>\"[^\"]+\"|'[^']+'|\\S+))?$";
         return new Regex(pattern, RegexOptions.IgnoreCase | RegexOptions.Compiled);
     }
 
@@ -1145,6 +1152,34 @@ public sealed class RuleBasedIntentInterpreter : IIntentInterpreter
         {
             var match = FileReadRegex.Match(input);
             return (new List<PlanStep> { new() { Type = ActionType.FileRead, Target = CleanQuoted(match.Groups["path"].Value) } }, true);
+        }
+
+        if (FileSearchRegex.IsMatch(input))
+        {
+            var match = FileSearchRegex.Match(input);
+            var query = CleanQuoted(match.Groups["query"].Value);
+            query = Regex.Replace(query, "\\s+(?:in|under|nel|nella|sotto)$", string.Empty, RegexOptions.IgnoreCase).Trim();
+            var path = CleanQuoted(match.Groups["path"].Value);
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                path = ".";
+            }
+
+            if (string.IsNullOrWhiteSpace(query))
+            {
+                return (new List<PlanStep>(), false);
+            }
+
+            return (new List<PlanStep>
+            {
+                new()
+                {
+                    Type = ActionType.FileList,
+                    Target = path,
+                    Text = query,
+                    Note = "file-search"
+                }
+            }, true);
         }
 
         if (FileListRegex.IsMatch(input))

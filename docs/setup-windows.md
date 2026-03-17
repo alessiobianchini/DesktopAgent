@@ -46,6 +46,25 @@ powershell -ExecutionPolicy Bypass -File scripts/start-windows.ps1 -ShowConsoles
 - The adapter starts disarmed. Run `arm` before any actions.
 - If UI automation fails due to permissions, run as administrator or check Windows security settings.
 
+## File Search
+DesktopAgent supports local file search commands (recursive):
+
+```text
+file search report
+file search *.pdf in "C:\Users\<you>\Documents"
+search file invoice in "D:\Work"
+cerca file bolletta in .
+```
+
+Behavior:
+- Search is bounded to `FilesystemAllowedRoots` (outside paths are blocked by policy).
+- `*` and `?` wildcards are supported.
+- Results are capped (first 200 matches).
+
+Configure allowed roots in:
+- `core/DesktopAgent.Cli/appsettings.json` (template)
+- `%LocalAppData%\DesktopAgent\agentsettings.json` (runtime tray config)
+
 ## Build Portable Package
 Create self-contained binaries under `dist/win-x64`:
 ```

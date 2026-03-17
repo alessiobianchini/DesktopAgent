@@ -173,7 +173,7 @@ public sealed class FallbackIntentInterpreter : IIntentInterpreter
 
         var commandStart = Regex.IsMatch(
             normalized,
-            "^(open|find|click|double click|right click|drag|type|press|save|save as|new tab|close tab|close window|minimize window|maximize window|restore window|switch window|focus|scroll|page up|page down|home|end|wait until|copy|paste|undo|redo|select all|open url|search|browser back|browser forward|refresh|find in page|notify|clipboard history|volume|brightness|lock screen|create new file|move mouse|jiggle mouse|record screen|start recording|stop recording|take screenshot|snapshot|apri|avvia|lancia|esegui|cerca|clicca|scrivi|digita|premi|registra|cattura)",
+            "^(open|find|click|double click|right click|drag|type|press|save|save as|new tab|close tab|close window|minimize window|maximize window|restore window|switch window|focus|scroll|page up|page down|home|end|wait until|copy|paste|undo|redo|select all|open url|search|browser back|browser forward|refresh|find in page|file|notify|clipboard history|volume|brightness|lock screen|create new file|move mouse|jiggle mouse|record screen|start recording|stop recording|take screenshot|snapshot|apri|avvia|lancia|esegui|cerca|clicca|scrivi|digita|premi|registra|cattura)",
             RegexOptions.IgnoreCase);
 
         return commandStart;

@@ -3668,6 +3668,9 @@ internal partial class QuickChatWindow : Window
             "- run \"record screen for 10 seconds\"",
             "- run \"start recording screen without audio\"",
             "- run \"stop recording\"",
+            "- run \"file list .\"",
+            "- run \"file search report in docs\"",
+            "- run \"cerca file bolletta in .\"",
             "",
             "## Plan Preview (Chat)",
             "- Shows the JSON plan generated from your request.",
@@ -3687,6 +3690,8 @@ internal partial class QuickChatWindow : Window
             "## Troubleshooting",
             "- 'Blocked: Active window not in allowlist':",
             "  Open Config and update AllowedApps, or clear the list to allow all apps.",
+            "- 'Path not allowed by filesystem allowlist':",
+            "  Open Config and extend FilesystemAllowedRoots with the target path.",
             "- 'Adapter unavailable':",
             "  Ensure adapter process is running on the configured endpoint.",
             "- 'LLM unavailable':",
@@ -3709,7 +3714,13 @@ internal partial class QuickChatWindow : Window
             "- Chat: quick actions + plan preview editor (load/validate/dry-run/execute)",
             "- Media: screenshots/recordings preview and open",
             "- Audit: action log",
-            "- Diagnostics: environment checks (ffmpeg, adapter, logs)"
+            "- Diagnostics: environment checks (ffmpeg, adapter, logs)",
+            "",
+            "## File Search",
+            "- Syntax: file search <query> [in <path>]",
+            "- Also supports: search file <query> [in <path>] / cerca file <query> [in <path>]",
+            "- Wildcards supported in query: * and ?",
+            "- Results are limited and recursively searched under the selected path."
         };
 
         return string.Join(Environment.NewLine, lines);

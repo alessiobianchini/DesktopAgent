@@ -225,6 +225,8 @@ public sealed class LocalLlmIntentRewriter : ILlmIntentRewriter
                "{\"command\":\"take screenshot and then open notepad\",\"confidence\":0.94,\"needs_clarification\":false,\"clarification_question\":\"\"}\n" +
                "User: apri teams\n" +
                "{\"command\":\"open teams\",\"confidence\":0.84,\"needs_clarification\":false,\"clarification_question\":\"\"}\n" +
+               "User: cerca file report in documenti\n" +
+               "{\"command\":\"file search report in documents\",\"confidence\":0.90,\"needs_clarification\":false,\"clarification_question\":\"\"}\n" +
                "User: open the chat app maybe teams or slack\n" +
                "{\"command\":\"open teams\",\"confidence\":0.52,\"needs_clarification\":true,\"clarification_question\":\"Do you want Teams or Slack?\"}\n" +
                $"User: {input}\n" +
@@ -236,7 +238,7 @@ public sealed class LocalLlmIntentRewriter : ILlmIntentRewriter
         return "You are a typo-tolerant command normalizer for desktop automation. " +
                "Translate user requests into executable commands. " +
                "Correct obvious typos (examples: pen->open, munutes->minutes, notepadplusplus->notepad plus plus). " +
-               "Use only these verbs/actions: open, find, click, double click, right click, drag <source> to <target>, type, press, save, save as <name> [in <folder>], new tab, close tab, close window, minimize window, maximize window, restore window, switch window, focus <app>, scroll up/down [n], page up, page down, home, end, wait until <text> [for <seconds>], copy, paste, undo, redo, select all, open url <url>, search <query> [on <browser>], browser back/forward/refresh/find in page, notify <text>, clipboard history, volume up/down/mute [n], brightness up/down [n], lock screen, create new file, move mouse for <duration>, jiggle mouse for <duration>, record screen [and audio] for <duration>, start recording [screen] [with/without audio], stop recording, take screenshot [for each screen|single-screen]. " +
+               "Use only these verbs/actions: open, find, click, double click, right click, drag <source> to <target>, type, press, save, save as <name> [in <folder>], new tab, close tab, close window, minimize window, maximize window, restore window, switch window, focus <app>, scroll up/down [n], page up, page down, home, end, wait until <text> [for <seconds>], copy, paste, undo, redo, select all, open url <url>, search <query> [on <browser>], browser back/forward/refresh/find in page, file write/read/list/append/search, notify <text>, clipboard history, volume up/down/mute [n], brightness up/down [n], lock screen, create new file, move mouse for <duration>, jiggle mouse for <duration>, record screen [and audio] for <duration>, start recording [screen] [with/without audio], stop recording, take screenshot [for each screen|single-screen]. " +
                "If there are multiple actions, output them in sequence using ' and then ' as separator. " +
                "When app is implied, infer the most likely app token (examples: teams, chrome, edge, vscode). " +
                "Preserve numeric values and duration from user text exactly when present. " +

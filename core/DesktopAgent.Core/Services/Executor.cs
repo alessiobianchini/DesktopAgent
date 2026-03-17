@@ -1194,6 +1194,25 @@ public sealed class Executor : IExecutor
                 return Task.FromResult(new StepResult { Success = false, Message = "Directory not found" });
             }
 
+            var searchQuery = (step.Text ?? string.Empty).Trim();
+            if (!string.IsNullOrWhiteSpace(searchQuery))
+            {
+                var matches = SearchFiles(fullPath, searchQuery, maxResults: 200, cancellationToken)
+                    .Select(path => new
+                    {
+                        name = Path.GetFileName(path),
+                        path
+                    })
+                    .ToList();
+
+                return Task.FromResult(new StepResult
+                {
+                    Success = true,
+                    Message = $"Found {matches.Count} file(s)",
+                    Data = new { path = fullPath, query = searchQuery, entries = matches }
+                });
+            }
+
             var entries = Directory.EnumerateFileSystemEntries(fullPath)
                 .Select(Path.GetFileName)
                 .Where(name => !string.IsNullOrWhiteSpace(name))
@@ -1210,6 +1229,80 @@ public sealed class Executor : IExecutor
         {
             return Task.FromResult(new StepResult { Success = false, Message = ex.Message });
         }
+    }
+
+    private static IEnumerable<string> SearchFiles(string rootPath, string query, int maxResults, CancellationToken cancellationToken)
+    {
+        var comparer = StringComparison.OrdinalIgnoreCase;
+        var wildcard = query.Contains('*') || query.Contains('?')
+            ? new Regex("^" + Regex.Escape(query).Replace("\\*", ".*").Replace("\\?", ".") + "$", RegexOptions.IgnoreCase | RegexOptions.Compiled)
+            : null;
+
+        var pending = new Stack<string>();
+        pending.Push(rootPath);
+        var results = new List<string>(Math.Min(maxResults, 200));
+
+        while (pending.Count > 0 && results.Count < maxResults)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var current = pending.Pop();
+
+            IEnumerable<string> files;
+            try
+            {
+                files = Directory.EnumerateFiles(current);
+            }
+            catch
+            {
+                continue;
+            }
+
+            foreach (var file in files)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var name = Path.GetFileName(file);
+                if (string.IsNullOrWhiteSpace(name))
+                {
+                    continue;
+                }
+
+                var matched = wildcard != null
+                    ? wildcard.IsMatch(name)
+                    : name.Contains(query, comparer) || file.Contains(query, comparer);
+                if (!matched)
+                {
+                    continue;
+                }
+
+                results.Add(file);
+                if (results.Count >= maxResults)
+                {
+                    break;
+                }
+            }
+
+            if (results.Count >= maxResults)
+            {
+                break;
+            }
+
+            IEnumerable<string> directories;
+            try
+            {
+                directories = Directory.EnumerateDirectories(current);
+            }
+            catch
+            {
+                continue;
+            }
+
+            foreach (var dir in directories)
+            {
+                pending.Push(dir);
+            }
+        }
+
+        return results;
     }
 
     private async Task<StepResult> ExecuteNotifyAsync(PlanStep step, CancellationToken cancellationToken)

@@ -12,6 +12,7 @@ DesktopAgent is a local, safety-first desktop automation agent with a cross-plat
 - Automates desktop actions through accessibility/UI tree when available.
 - Falls back to vision/OCR flows when UI tree is unavailable.
 - Supports natural-language commands (rule-based + optional local LLM rewrite).
+- Supports local file utilities: write/read/list/append/search (bounded by allowed roots).
 - Tray Quick Chat includes command palette, AI command suggestions, loading state, and execution timeline.
 - Tray Quick Chat includes an editable **Plan Preview** panel (`Load Last`, `Validate`, `Dry-run Plan`, `Execute Plan`).
 - Optional plugin setup flow for FFmpeg/OCR (first-run wizard + manual retrigger from tray/config).
@@ -91,6 +92,18 @@ Artifacts are available in each workflow run under **Actions -> Artifacts**.
 - `Execute Plan`: run edited plan (still subject to policy/confirmations).
 
 Note: plan JSON accepts both `steps` and `Steps` (case-insensitive validation in tray).
+
+## File Utilities
+
+Examples:
+- `run "file list ."`
+- `run "file read notes.txt"`
+- `run "file search report in docs"`
+- `run "cerca file bolletta in ."`
+
+Notes:
+- File operations are constrained by `FilesystemAllowedRoots`.
+- File search supports plain text and wildcard patterns (`*`, `?`).
 
 ## Configuration
 

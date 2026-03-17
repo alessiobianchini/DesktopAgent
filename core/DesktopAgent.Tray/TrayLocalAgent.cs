@@ -17,7 +17,7 @@ namespace DesktopAgent.Tray;
 
 internal sealed class TrayLocalAgent : IDisposable
 {
-    private const string SupportedCommandsHelp = "Available commands: status, kill, reset kill, lock status, lock on <current window|app>, unlock, profile <safe|balanced|power>, arm, disarm, simulate presence, require presence, list apps [query] [allowed], goals, goal add <text>, goal run <id>, goal done <id>, goal remove <id>, goal priority <id> <low|normal|high>, goal auto <id> <on|off>, goal scheduler on|off|every <sec>, continue goal, memory, run <intent>, dry-run <intent>, translate <text> to <language> (or 'translate to <language>: <text>'). Plugin intents: take screenshot [for each screen|single screen], record screen [and audio] for <duration>, start recording [screen] [with/without audio], stop recording, jiggle mouse for <duration>.";
+    private const string SupportedCommandsHelp = "Available commands: status, kill, reset kill, lock status, lock on <current window|app>, unlock, profile <safe|balanced|power>, arm, disarm, simulate presence, require presence, list apps [query] [allowed], goals, goal add <text>, goal run <id>, goal done <id>, goal remove <id>, goal priority <id> <low|normal|high>, goal auto <id> <on|off>, goal scheduler on|off|every <sec>, continue goal, memory, run <intent>, dry-run <intent>, translate <text> to <language> (or 'translate to <language>: <text>'). Plugin intents: file write/read/list/append/search, take screenshot [for each screen|single screen], record screen [and audio] for <duration>, start recording [screen] [with/without audio], stop recording, jiggle mouse for <duration>.";
     private const int GoalPriorityLow = 0;
     private const int GoalPriorityNormal = 1;
     private const int GoalPriorityHigh = 2;
