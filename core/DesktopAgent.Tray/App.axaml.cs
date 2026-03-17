@@ -1155,6 +1155,7 @@ public partial class App : Application
                     () => RunPluginWizardIfNeededAsync(force: true, _shutdown.Token),
                     () => CheckForUpdatesAsync(manual: true, _shutdown.Token),
                     ApplyPendingUpdate,
+                    ForceApplyPendingUpdate,
                     GetUpdateStatusLine,
                     GetChatUpdateBadge,
                     GetChatUpdateDetails,

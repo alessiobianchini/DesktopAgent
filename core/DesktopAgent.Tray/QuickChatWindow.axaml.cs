@@ -19,6 +19,7 @@ internal partial class QuickChatWindow : Window
     private readonly Func<Task>? _runFirstSetup;
     private readonly Func<Task>? _checkUpdatesNow;
     private readonly Action? _applyUpdateNow;
+    private readonly Action? _forceApplyUpdateNow;
     private readonly Func<string>? _getUpdateStatus;
     private readonly Func<ChatUpdateBadge>? _getChatUpdateBadge;
     private readonly Func<ChatUpdateDetails>? _getChatUpdateDetails;
@@ -133,6 +134,7 @@ internal partial class QuickChatWindow : Window
     private Button? _cfgRunFirstSetupButton;
     private Button? _cfgCheckUpdatesButton;
     private Button? _cfgApplyUpdateButton;
+    private Button? _cfgForceApplyUpdateButton;
     private TextBlock? _cfgUpdateStatusText;
     private TextBox? _cfgStatusBox;
 
@@ -265,6 +267,7 @@ internal partial class QuickChatWindow : Window
         Func<Task>? runFirstSetup = null,
         Func<Task>? checkUpdatesNow = null,
         Action? applyUpdateNow = null,
+        Action? forceApplyUpdateNow = null,
         Func<string>? getUpdateStatus = null,
         Func<ChatUpdateBadge>? getChatUpdateBadge = null,
         Func<ChatUpdateDetails>? getChatUpdateDetails = null,
@@ -275,6 +278,7 @@ internal partial class QuickChatWindow : Window
         _runFirstSetup = runFirstSetup;
         _checkUpdatesNow = checkUpdatesNow;
         _applyUpdateNow = applyUpdateNow;
+        _forceApplyUpdateNow = forceApplyUpdateNow;
         _getUpdateStatus = getUpdateStatus;
         _getChatUpdateBadge = getChatUpdateBadge;
         _getChatUpdateDetails = getChatUpdateDetails;
@@ -385,6 +389,7 @@ internal partial class QuickChatWindow : Window
         _cfgRunFirstSetupButton = this.FindControl<Button>("CfgRunFirstSetupButton");
         _cfgCheckUpdatesButton = this.FindControl<Button>("CfgCheckUpdatesButton");
         _cfgApplyUpdateButton = this.FindControl<Button>("CfgApplyUpdateButton");
+        _cfgForceApplyUpdateButton = this.FindControl<Button>("CfgForceApplyUpdateButton");
         _cfgUpdateStatusText = this.FindControl<TextBlock>("CfgUpdateStatusText");
         _cfgStatusBox = this.FindControl<TextBox>("CfgStatusBox");
 
@@ -672,6 +677,10 @@ internal partial class QuickChatWindow : Window
         if (_cfgApplyUpdateButton != null)
         {
             _cfgApplyUpdateButton.Click += (_, _) => ApplyUpdateFromConfig();
+        }
+        if (_cfgForceApplyUpdateButton != null)
+        {
+            _cfgForceApplyUpdateButton.Click += (_, _) => ForceApplyUpdateFromConfig();
         }
         if (_cfgAudioRefreshButton != null)
         {
@@ -1002,6 +1011,11 @@ internal partial class QuickChatWindow : Window
         AddRecentCommand(normalized);
         MaybeRecordMacroCommand(normalized);
 
+        if (await TryHandleLocalTrayCommandAsync(normalized))
+        {
+            return;
+        }
+
         _activeRequestCts = CancellationTokenSource.CreateLinkedTokenSource(_pollingCts.Token);
         var requestToken = _activeRequestCts.Token;
 
@@ -1039,6 +1053,73 @@ internal partial class QuickChatWindow : Window
                 await SendMessageAsync(next);
             }
         }
+    }
+
+    private async Task<bool> TryHandleLocalTrayCommandAsync(string command)
+    {
+        static bool IsMatch(string text, params string[] candidates)
+        {
+            foreach (var candidate in candidates)
+            {
+                if (string.Equals(text, candidate, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        var normalized = command.Trim();
+        if (!IsMatch(normalized,
+                "force update now",
+                "force update",
+                "force apply update",
+                "apply update force",
+                "forza aggiornamento",
+                "forza update"))
+        {
+            return false;
+        }
+
+        AppendUser(normalized);
+        SetTimeline(new[] { "[..] Running local tray update command..." });
+        SetBusy(true);
+
+        try
+        {
+            AppendSystem("Local command: force update (check + apply).");
+            if (_checkUpdatesNow != null)
+            {
+                AppendSystem("Checking updates...");
+                await _checkUpdatesNow();
+            }
+
+            if (_forceApplyUpdateNow != null)
+            {
+                AppendSystem("Force applying downloaded update (kill blockers)...");
+                _forceApplyUpdateNow();
+                AppendSystem("Force apply requested.");
+            }
+            else
+            {
+                AppendSystem("Force apply update is not available.");
+            }
+
+            RefreshUpdateStatusInConfig();
+            RefreshChatUpdateBadge();
+        }
+        catch (Exception ex)
+        {
+            AppendSystem($"Force update failed: {ex.Message}");
+        }
+        finally
+        {
+            SetBusy(false);
+            await RefreshStatusAsync();
+        }
+
+        return true;
     }
 
     private async Task ConfirmAsync(bool approve)
@@ -2358,6 +2439,35 @@ internal partial class QuickChatWindow : Window
         }
     }
 
+    private async void ForceApplyUpdateFromConfig()
+    {
+        try
+        {
+            AppendConfigStatus("Force apply update requested...");
+            if (_checkUpdatesNow != null)
+            {
+                await _checkUpdatesNow();
+            }
+
+            if (_forceApplyUpdateNow != null)
+            {
+                _forceApplyUpdateNow();
+                AppendConfigStatus("Force apply requested.");
+            }
+            else
+            {
+                AppendConfigStatus("Force apply update is not available.");
+            }
+
+            RefreshUpdateStatusInConfig();
+            RefreshChatUpdateBadge();
+        }
+        catch (Exception ex)
+        {
+            AppendConfigStatus($"Force apply update failed: {ex.Message}");
+        }
+    }
+
     private void RefreshUpdateStatusInConfig()
     {
         if (_cfgUpdateStatusText == null)
@@ -2371,6 +2481,12 @@ internal partial class QuickChatWindow : Window
         {
             var canApply = _getChatUpdateBadge?.Invoke().CanApply ?? false;
             _cfgApplyUpdateButton.IsEnabled = canApply && !_busy;
+        }
+
+        if (_cfgForceApplyUpdateButton != null)
+        {
+            var canApply = _getChatUpdateBadge?.Invoke().CanApply ?? false;
+            _cfgForceApplyUpdateButton.IsEnabled = canApply && !_busy;
         }
     }
 
@@ -3347,7 +3463,7 @@ internal partial class QuickChatWindow : Window
             _reqPresenceButton, _killButton, _resetKillButton, _restartAdapterButton, _restartServerButton,
             _lockWindowButton, _lockAppButton, _unlockButton, _profileSafeButton,
             _profileBalancedButton, _profilePowerButton, _copyButton, _clearButton,
-            _cfgLoadButton, _cfgSaveButton, _cfgTestLlmButton, _cfgRunFirstSetupButton, _cfgCheckUpdatesButton, _cfgApplyUpdateButton, _cfgAudioRefreshButton, _cfgOpenDataFolderButton, _tasksRefreshButton, _tasksRunButton,
+            _cfgLoadButton, _cfgSaveButton, _cfgTestLlmButton, _cfgRunFirstSetupButton, _cfgCheckUpdatesButton, _cfgApplyUpdateButton, _cfgForceApplyUpdateButton, _cfgAudioRefreshButton, _cfgOpenDataFolderButton, _tasksRefreshButton, _tasksRunButton,
             _tasksDeleteButton, _taskSaveButton, _macroRecordToggleButton, _macroClearButton, _macroApplyEditButton, _macroRemoveStepButton,
             _macroMoveUpButton, _macroMoveDownButton, _macroAddWaitButton, _macroSaveTaskButton, _schedulesRefreshButton, _schedulesRunButton, _schedulesDeleteButton,
             _scheduleSaveButton, _goalsRefreshButton, _goalsToggleAutoButton, _goalsDoneButton,
@@ -3661,6 +3777,7 @@ internal partial class QuickChatWindow : Window
             "- status",
             "- arm / disarm",
             "- simulate presence / require presence",
+            "- force update now  (local tray command: check + force apply)",
             "- run \"open notepad and then type hello\"",
             "- run \"take screenshot\"",
             "- run \"take screenshot for each screen\"",
