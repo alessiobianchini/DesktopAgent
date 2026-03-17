@@ -1402,17 +1402,13 @@ internal sealed class TrayLocalAgent : IDisposable
             return WebChatResponse.Simple("Order draft is invalid. Run `order intake` again.");
         }
 
-        SmartOrderFillPlan? smart = null;
-        ActionPlan plan;
-        if (IsGoogleFormsUrl(targetUrl))
-        {
-            plan = BuildGoogleFormsInteractionPlan(payload, targetUrl);
-        }
-        else
-        {
-            smart = await TryBuildSmartOrderFillPlanAsync(payload, targetUrl, cancellationToken);
-            plan = smart?.Plan ?? BuildOrderFillPlan(payload, targetUrl);
-        }
+        var isGoogleForms = IsGoogleFormsUrl(targetUrl);
+        var smart = await TryBuildSmartOrderFillPlanAsync(payload, targetUrl, cancellationToken);
+        var usingGoogleTabFallback = isGoogleForms && smart == null;
+        ActionPlan plan = smart?.Plan
+            ?? (usingGoogleTabFallback
+                ? BuildGoogleFormsInteractionPlan(payload, targetUrl)
+                : BuildOrderFillPlan(payload, targetUrl));
         if (plan.Steps.Count <= 2)
         {
             return WebChatResponse.Simple("No fillable fields found in current order draft.");
@@ -1431,14 +1427,15 @@ internal sealed class TrayLocalAgent : IDisposable
                 smart = smart != null,
                 mapped = smart?.MappedFields ?? 0,
                 discovered = smart?.DiscoveredFields ?? 0,
-                googleForms = IsGoogleFormsUrl(targetUrl)
+                googleForms = isGoogleForms,
+                googleTabFallback = usingGoogleTabFallback
             });
 
         var lines = PlanToLines(plan)
             .Concat(new[]
             {
                 $"Draft: {_latestOrderDraft.Id}",
-                IsGoogleFormsUrl(targetUrl)
+                usingGoogleTabFallback
                     ? "Mapping: google forms tab-fill mode"
                     : smart == null
                     ? "Mapping: fallback heuristics"
@@ -1450,7 +1447,7 @@ internal sealed class TrayLocalAgent : IDisposable
             token,
             lines,
             PlanToJson(plan),
-            IsGoogleFormsUrl(targetUrl)
+            usingGoogleTabFallback
                 ? "Mode: Order autofill (google forms)"
                 : smart == null
                     ? "Mode: Order autofill"
@@ -1481,17 +1478,17 @@ internal sealed class TrayLocalAgent : IDisposable
         plan.Steps.Add(new PlanStep
         {
             Type = ActionType.WaitFor,
-            WaitFor = TimeSpan.FromMilliseconds(1800)
+            WaitFor = TimeSpan.FromMilliseconds(2200)
         });
 
-        var orderedValues = new List<(string Label, string Value)>();
+        var orderedValues = new List<(string Key, string Label, string Value)>();
         if (!string.IsNullOrWhiteSpace(payload.Customer?.Name))
         {
-            orderedValues.Add(("Name", payload.Customer.Name.Trim()));
+            orderedValues.Add(("customer_name", "Name", payload.Customer.Name.Trim()));
         }
         if (!string.IsNullOrWhiteSpace(payload.Customer?.Email))
         {
-            orderedValues.Add(("Email", payload.Customer.Email.Trim()));
+            orderedValues.Add(("customer_email", "Email", payload.Customer.Email.Trim()));
         }
 
         var address = !string.IsNullOrWhiteSpace(payload.ShippingAddress)
@@ -1499,17 +1496,17 @@ internal sealed class TrayLocalAgent : IDisposable
             : payload.BillingAddress;
         if (!string.IsNullOrWhiteSpace(address))
         {
-            orderedValues.Add(("Address", address.Trim()));
+            orderedValues.Add(("shipping_address", "Address", address.Trim()));
         }
         if (!string.IsNullOrWhiteSpace(payload.Customer?.Phone))
         {
-            orderedValues.Add(("Phone number", payload.Customer.Phone.Trim()));
+            orderedValues.Add(("customer_phone", "Phone number", payload.Customer.Phone.Trim()));
         }
 
         var comments = BuildOrderItemsSummary(payload.Items, payload.Notes);
         if (!string.IsNullOrWhiteSpace(comments))
         {
-            orderedValues.Add(("Comments", comments.Trim()));
+            orderedValues.Add(("order_notes", "Comments", comments.Trim()));
         }
 
         if (orderedValues.Count == 0)
@@ -1521,22 +1518,41 @@ internal sealed class TrayLocalAgent : IDisposable
         plan.Steps.Add(new PlanStep
         {
             Type = ActionType.Click,
-            Selector = new Selector { NameContains = first.Label }
+            Selector = new Selector { NameContains = first.Label },
+            Note = "optional-group:first_focus;optional"
+        });
+        plan.Steps.Add(new PlanStep
+        {
+            Type = ActionType.Click,
+            Selector = new Selector { NameContains = "Your answer" },
+            Note = "optional-group:first_focus;optional"
+        });
+        plan.Steps.Add(new PlanStep
+        {
+            Type = ActionType.KeyCombo,
+            Keys = new List<string> { "tab" },
+            Note = "optional-group:first_focus;optional"
         });
         plan.Steps.Add(new PlanStep
         {
             Type = ActionType.WaitFor,
-            WaitFor = TimeSpan.FromMilliseconds(160)
+            WaitFor = TimeSpan.FromMilliseconds(220)
         });
         plan.Steps.Add(new PlanStep
         {
             Type = ActionType.TypeText,
-            Text = first.Value
+            Text = first.Value,
+            Note = $"fill-field:{first.Key}"
         });
 
         for (var i = 1; i < orderedValues.Count; i++)
         {
             var value = orderedValues[i];
+            plan.Steps.Add(new PlanStep
+            {
+                Type = ActionType.WaitFor,
+                WaitFor = TimeSpan.FromMilliseconds(80)
+            });
             plan.Steps.Add(new PlanStep
             {
                 Type = ActionType.KeyCombo,
@@ -1545,12 +1561,13 @@ internal sealed class TrayLocalAgent : IDisposable
             plan.Steps.Add(new PlanStep
             {
                 Type = ActionType.WaitFor,
-                WaitFor = TimeSpan.FromMilliseconds(90)
+                WaitFor = TimeSpan.FromMilliseconds(140)
             });
             plan.Steps.Add(new PlanStep
             {
                 Type = ActionType.TypeText,
-                Text = value.Value
+                Text = value.Value,
+                Note = $"fill-field:{value.Key}"
             });
         }
 
@@ -1624,7 +1641,7 @@ internal sealed class TrayLocalAgent : IDisposable
                     NameContains = field.BestTextHint
                 },
                 Text = value,
-                Note = $"optional-group:{group};optional"
+                Note = $"optional-group:{group};optional;fill-field:{group}"
             });
         }
 
@@ -1635,7 +1652,7 @@ internal sealed class TrayLocalAgent : IDisposable
                 Type = ActionType.SetValue,
                 Selector = new Selector { NameContains = field.BestTextHint },
                 Text = value,
-                Note = $"optional-group:{group};optional"
+                Note = $"optional-group:{group};optional;fill-field:{group}"
             });
         }
     }
@@ -1729,7 +1746,7 @@ internal sealed class TrayLocalAgent : IDisposable
                 Type = ActionType.SetValue,
                 Selector = new Selector { NameContains = hint },
                 Text = value,
-                Note = $"optional-group:{group};optional"
+                Note = $"optional-group:{group};optional;fill-field:{group}"
             });
         }
     }
@@ -2643,7 +2660,16 @@ internal sealed class TrayLocalAgent : IDisposable
         {
             reply = $"{reply} {recoveryNote}";
         }
-        return new WebIntentResponse(reply, false, null, null, ExecutionToLines(result), PlanToJson(plan), GetModeLabel(plan));
+
+        var lines = ExecutionToLines(result).ToList();
+        var orderFillReport = BuildOrderFillExecutionReport(source, plan, result);
+        if (orderFillReport != null)
+        {
+            reply = $"{reply} {orderFillReport.Summary}";
+            lines.AddRange(orderFillReport.Lines);
+        }
+
+        return new WebIntentResponse(reply, false, null, null, lines, PlanToJson(plan), GetModeLabel(plan));
     }
 
     private async Task<WebLlmStatus> GetLlmStatusAsync(CancellationToken cancellationToken)
@@ -3535,6 +3561,159 @@ internal sealed class TrayLocalAgent : IDisposable
             lines.Add(line);
         }
         return lines;
+    }
+
+    private static OrderFillExecutionReport? BuildOrderFillExecutionReport(string source, ActionPlan plan, ExecutionResult result)
+    {
+        if (!source.StartsWith("order-fill:", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var fieldToStepIndexes = new Dictionary<string, List<int>>(StringComparer.OrdinalIgnoreCase);
+        for (var i = 0; i < plan.Steps.Count; i++)
+        {
+            if (!TryGetFillFieldKey(plan.Steps[i], out var fieldKey))
+            {
+                continue;
+            }
+
+            if (!fieldToStepIndexes.TryGetValue(fieldKey, out var indexes))
+            {
+                indexes = new List<int>();
+                fieldToStepIndexes[fieldKey] = indexes;
+            }
+
+            indexes.Add(i);
+        }
+
+        if (fieldToStepIndexes.Count == 0)
+        {
+            return null;
+        }
+
+        var resultByIndex = result.Steps
+            .GroupBy(step => step.Index)
+            .ToDictionary(group => group.Key, group => group.ToList());
+
+        var filled = new List<string>();
+        var missing = new List<string>();
+        foreach (var field in fieldToStepIndexes.OrderBy(static item => item.Value.Min()))
+        {
+            var hasFilledStep = field.Value.Any(index =>
+                resultByIndex.TryGetValue(index, out var steps)
+                && steps.Any(IsEffectiveFillStepSuccess));
+
+            var label = GetOrderFieldDisplayName(field.Key);
+            if (hasFilledStep)
+            {
+                filled.Add(label);
+            }
+            else
+            {
+                missing.Add(label);
+            }
+        }
+
+        var total = filled.Count + missing.Count;
+        var summary = total == 0
+            ? "Form fill report unavailable."
+            : $"Form fill: {filled.Count}/{total} fields filled."
+              + (missing.Count > 0 ? $" Missing: {string.Join(", ", missing)}." : string.Empty);
+
+        var lines = new List<string>
+        {
+            $"Order fill report: {filled.Count}/{total} fields filled"
+        };
+        if (filled.Count > 0)
+        {
+            lines.Add($"Filled: {string.Join(", ", filled)}");
+        }
+        if (missing.Count > 0)
+        {
+            lines.Add($"Missing: {string.Join(", ", missing)}");
+        }
+
+        return new OrderFillExecutionReport(summary, lines);
+    }
+
+    private static bool IsEffectiveFillStepSuccess(StepResult step)
+    {
+        if (!step.Success)
+        {
+            return false;
+        }
+
+        if (step.Message.Contains("Optional step skipped", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return step.Type is ActionType.SetValue or ActionType.TypeText;
+    }
+
+    private static bool TryGetFillFieldKey(PlanStep step, out string key)
+    {
+        key = string.Empty;
+        var note = step.Note ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(note))
+        {
+            return false;
+        }
+
+        var parts = note.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        foreach (var part in parts)
+        {
+            if (!part.StartsWith("fill-field:", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var value = part["fill-field:".Length..].Trim();
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                continue;
+            }
+
+            key = value;
+            return true;
+        }
+
+        // Backward compatibility with older plans that only used optional groups.
+        foreach (var part in parts)
+        {
+            if (!part.StartsWith("optional-group:", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var value = part["optional-group:".Length..].Trim();
+            if (string.IsNullOrWhiteSpace(value)
+                || value.Equals("first_focus", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            key = value;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static string GetOrderFieldDisplayName(string key)
+    {
+        return key.ToLowerInvariant() switch
+        {
+            "customer_name" => "Name",
+            "customer_email" => "Email",
+            "customer_phone" => "Phone",
+            "order_number" => "Order number",
+            "shipping_address" => "Shipping address",
+            "billing_address" => "Billing address",
+            "order_notes" => "Comments",
+            _ => key.Replace('_', ' ')
+        };
     }
 
     private static string ToInlineJson(object data, int maxChars)
@@ -5313,6 +5492,8 @@ internal sealed class TrayLocalAgent : IDisposable
     {
         public static RecoveryAttemptOutcome None { get; } = new(null, string.Empty);
     }
+
+    private sealed record OrderFillExecutionReport(string Summary, IReadOnlyList<string> Lines);
 
     private sealed record OrderDraft(
         string Id,
