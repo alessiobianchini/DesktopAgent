@@ -1403,16 +1403,20 @@ internal sealed class TrayLocalAgent : IDisposable
         }
 
         var isGoogleForms = IsGoogleFormsUrl(targetUrl);
-        var smart = await TryBuildSmartOrderFillPlanAsync(payload, targetUrl, cancellationToken);
         var googleOrderedValues = isGoogleForms ? BuildGoogleFormsOrderedValues(payload) : new List<(string Key, string Label, string Value)>();
-        var usingGoogleTabFallback = isGoogleForms && ShouldPreferGoogleFormsTabFill(smart, googleOrderedValues.Count);
-        ActionPlan plan = smart?.Plan
-            ?? (usingGoogleTabFallback
-                ? BuildGoogleFormsInteractionPlan(payload, targetUrl, googleOrderedValues)
-                : BuildOrderFillPlan(payload, targetUrl));
-        if (usingGoogleTabFallback && smart != null)
+        SmartOrderFillPlan? smart = null;
+        var usingGoogleTabFallback = isGoogleForms;
+        ActionPlan plan;
+        if (isGoogleForms)
         {
-            plan.Intent = $"{plan.Intent} [fallback:smart {smart.MappedFields}/{smart.DiscoveredFields}]";
+            // Google Forms UI tree is usually not reliable via desktop accessibility.
+            // Always prefer deterministic keyboard tab-fill for MVP reliability.
+            plan = BuildGoogleFormsInteractionPlan(payload, targetUrl, googleOrderedValues);
+        }
+        else
+        {
+            smart = await TryBuildSmartOrderFillPlanAsync(payload, targetUrl, cancellationToken);
+            plan = smart?.Plan ?? BuildOrderFillPlan(payload, targetUrl);
         }
         if (plan.Steps.Count <= 2)
         {
@@ -1441,9 +1445,7 @@ internal sealed class TrayLocalAgent : IDisposable
             .Concat(new[]
             {
                 $"Draft: {_latestOrderDraft.Id}",
-                usingGoogleTabFallback && smart != null
-                    ? $"Mapping: google forms tab-fill mode (fallback from smart {smart.MappedFields}/{smart.DiscoveredFields})"
-                : usingGoogleTabFallback
+                usingGoogleTabFallback
                     ? "Mapping: google forms tab-fill mode"
                     : smart == null
                     ? "Mapping: fallback heuristics"
@@ -1590,22 +1592,6 @@ internal sealed class TrayLocalAgent : IDisposable
         }
 
         return orderedValues;
-    }
-
-    private static bool ShouldPreferGoogleFormsTabFill(SmartOrderFillPlan? smart, int googleOrderedValuesCount)
-    {
-        if (smart == null)
-        {
-            return true;
-        }
-
-        if (googleOrderedValuesCount <= 0)
-        {
-            return false;
-        }
-
-        var minimumReliableMappedFields = Math.Min(googleOrderedValuesCount, 3);
-        return smart.MappedFields < minimumReliableMappedFields;
     }
 
     private async Task<SmartOrderFillPlan?> TryBuildSmartOrderFillPlanAsync(
