@@ -1357,7 +1357,20 @@ internal sealed class TrayLocalAgent : IDisposable
 
             if (!TryParseOrderDraftJson(raw, out var payloadJson, out var summaryLines))
             {
-                return WebChatResponse.Simple("I couldn't extract a valid order draft. Paste a fuller email text with customer/items/address.");
+                if (!TryBuildOrderDraftFromTextHeuristics(rawText, out var fallbackPayloadJson, out var fallbackSummaryLines))
+                {
+                    return WebChatResponse.Simple("I couldn't extract a valid order draft. Paste a fuller email text with customer/items/address.");
+                }
+
+                payloadJson = fallbackPayloadJson;
+                summaryLines = fallbackSummaryLines;
+            }
+            else if (TryParseOrderPayload(payloadJson, out var parsedPayload))
+            {
+                // Merge deterministic regex extraction to fill gaps from LLM output.
+                EnrichOrderPayloadFromText(parsedPayload, rawText);
+                payloadJson = JsonSerializer.Serialize(parsedPayload, JsonOptions);
+                summaryLines = BuildOrderSummary(parsedPayload);
             }
 
             var draft = new OrderDraft(
@@ -2382,6 +2395,243 @@ internal sealed class TrayLocalAgent : IDisposable
         }
 
         return lines;
+    }
+
+    private static IReadOnlyList<string> BuildOrderSummary(OrderDraftPayload payload)
+    {
+        var lines = new List<string>();
+        AddSummaryLine(lines, "Order #", payload.OrderNumber);
+        AddSummaryLine(lines, "Order date", payload.OrderDate);
+        AddSummaryLine(lines, "Customer", payload.Customer?.Name);
+        AddSummaryLine(lines, "Email", payload.Customer?.Email);
+        AddSummaryLine(lines, "Phone", payload.Customer?.Phone);
+        AddSummaryLine(lines, "Shipping", payload.ShippingAddress);
+        AddSummaryLine(lines, "Billing", payload.BillingAddress);
+
+        if (payload.Items is { Count: > 0 })
+        {
+            var index = 0;
+            foreach (var item in payload.Items)
+            {
+                index++;
+                var name = !string.IsNullOrWhiteSpace(item.Name) ? item.Name : item.Sku;
+                var qty = item.Qty?.ToString() ?? "?";
+                if (!string.IsNullOrWhiteSpace(name))
+                {
+                    lines.Add($"Item {index}: {name} | qty={qty}");
+                }
+            }
+        }
+
+        AddSummaryLine(lines, "Notes", payload.Notes);
+        if (lines.Count == 0)
+        {
+            lines.Add("No fields extracted.");
+        }
+
+        return lines;
+    }
+
+    private static bool TryBuildOrderDraftFromTextHeuristics(string rawText, out string payloadJson, out IReadOnlyList<string> summaryLines)
+    {
+        var payload = new OrderDraftPayload
+        {
+            Customer = new OrderCustomerPayload(),
+            Items = new List<OrderItemPayload>()
+        };
+
+        EnrichOrderPayloadFromText(payload, rawText);
+
+        var hasAny = !string.IsNullOrWhiteSpace(payload.OrderNumber)
+                     || !string.IsNullOrWhiteSpace(payload.Customer?.Name)
+                     || !string.IsNullOrWhiteSpace(payload.Customer?.Email)
+                     || !string.IsNullOrWhiteSpace(payload.Customer?.Phone)
+                     || !string.IsNullOrWhiteSpace(payload.ShippingAddress)
+                     || !string.IsNullOrWhiteSpace(payload.BillingAddress)
+                     || !string.IsNullOrWhiteSpace(payload.Notes);
+
+        if (!hasAny)
+        {
+            payloadJson = string.Empty;
+            summaryLines = Array.Empty<string>();
+            return false;
+        }
+
+        payloadJson = JsonSerializer.Serialize(payload, JsonOptions);
+        summaryLines = BuildOrderSummary(payload);
+        return true;
+    }
+
+    private static void EnrichOrderPayloadFromText(OrderDraftPayload payload, string rawText)
+    {
+        if (payload.Customer == null)
+        {
+            payload.Customer = new OrderCustomerPayload();
+        }
+
+        var text = rawText ?? string.Empty;
+
+        if (string.IsNullOrWhiteSpace(payload.OrderNumber)
+            && TryExtractOrderNumber(text, out var orderNumber))
+        {
+            payload.OrderNumber = orderNumber;
+        }
+
+        if (string.IsNullOrWhiteSpace(payload.Customer.Email)
+            && TryExtractEmail(text, out var email))
+        {
+            payload.Customer.Email = email;
+        }
+
+        if (string.IsNullOrWhiteSpace(payload.Customer.Phone)
+            && TryExtractPhone(text, out var phone))
+        {
+            payload.Customer.Phone = phone;
+        }
+
+        if (string.IsNullOrWhiteSpace(payload.Customer.Name))
+        {
+            var name = TryExtractLabeledValue(text, "cliente", "customer", "name", "nome");
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                payload.Customer.Name = name;
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(payload.ShippingAddress)
+            && string.IsNullOrWhiteSpace(payload.BillingAddress))
+        {
+            var address = TryExtractLabeledValue(text, "indirizzo", "address", "shipping address", "delivery address");
+            if (!string.IsNullOrWhiteSpace(address))
+            {
+                payload.ShippingAddress = address;
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(payload.Notes))
+        {
+            var notes = TryExtractLabeledValue(text, "note", "notes", "commenti", "comments", "comment");
+            if (!string.IsNullOrWhiteSpace(notes))
+            {
+                payload.Notes = notes;
+            }
+        }
+    }
+
+    private static bool TryExtractOrderNumber(string text, out string value)
+    {
+        value = string.Empty;
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return false;
+        }
+
+        var patterns = new[]
+        {
+            @"(?i)\b(?:ordine|order)\s*(?:n\.?|no\.?|number|numero|id|#)?\s*[:#-]?\s*(?<v>[A-Z0-9][A-Z0-9._/-]{2,})",
+            @"(?i)\b(?<v>TEST-\d{4}-\d{3,})\b"
+        };
+
+        foreach (var pattern in patterns)
+        {
+            var match = Regex.Match(text, pattern, RegexOptions.CultureInvariant);
+            if (!match.Success)
+            {
+                continue;
+            }
+
+            value = CleanExtractedValue(match.Groups["v"].Value);
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool TryExtractEmail(string text, out string value)
+    {
+        value = string.Empty;
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return false;
+        }
+
+        var match = Regex.Match(text, @"(?i)(?<v>[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,})", RegexOptions.CultureInvariant);
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        value = CleanExtractedValue(match.Groups["v"].Value);
+        return !string.IsNullOrWhiteSpace(value);
+    }
+
+    private static bool TryExtractPhone(string text, out string value)
+    {
+        value = string.Empty;
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return false;
+        }
+
+        var labeled = TryExtractLabeledValue(text, "telefono", "phone", "mobile", "cell");
+        if (!string.IsNullOrWhiteSpace(labeled))
+        {
+            value = labeled;
+            return true;
+        }
+
+        var match = Regex.Match(text, @"(?<v>\+?\d[\d\s().-]{6,}\d)", RegexOptions.CultureInvariant);
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        value = CleanExtractedValue(match.Groups["v"].Value);
+        return !string.IsNullOrWhiteSpace(value);
+    }
+
+    private static string? TryExtractLabeledValue(string text, params string[] labels)
+    {
+        if (string.IsNullOrWhiteSpace(text) || labels.Length == 0)
+        {
+            return null;
+        }
+
+        var escapedLabels = labels
+            .Where(static label => !string.IsNullOrWhiteSpace(label))
+            .Select(Regex.Escape)
+            .ToArray();
+        if (escapedLabels.Length == 0)
+        {
+            return null;
+        }
+
+        var blocker = "(?:cliente|customer|name|nome|email|e-mail|telefono|phone|mobile|indirizzo|address|shipping address|delivery address|note|notes|commenti|comments?)";
+        var pattern = $@"(?is)\b(?:{string.Join("|", escapedLabels)})\b\s*[:\-]?\s*(?<v>.+?)(?=(?:\b{blocker}\b\s*[:\-])|[\r\n]|$)";
+        var match = Regex.Match(text, pattern, RegexOptions.CultureInvariant);
+        if (!match.Success)
+        {
+            return null;
+        }
+
+        var value = CleanExtractedValue(match.Groups["v"].Value);
+        return string.IsNullOrWhiteSpace(value) ? null : value;
+    }
+
+    private static string CleanExtractedValue(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        var text = value.Trim();
+        text = text.Trim('"', '\'', ' ', '\t', '\r', '\n', '.', ';', ',', ':');
+        text = Regex.Replace(text, @"\s{2,}", " ");
+        return text.Trim();
     }
 
     private static void AddSummaryLine(List<string> lines, string label, string? value)
