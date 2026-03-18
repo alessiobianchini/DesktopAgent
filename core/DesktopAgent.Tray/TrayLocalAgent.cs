@@ -1517,7 +1517,20 @@ internal sealed class TrayLocalAgent : IDisposable
         plan.Steps.Add(new PlanStep
         {
             Type = ActionType.Click,
-            Selector = new Selector { NameContains = "Name" }
+            Selector = new Selector { NameContains = "Name" },
+            Note = "optional-group:first_focus;optional"
+        });
+        plan.Steps.Add(new PlanStep
+        {
+            Type = ActionType.Click,
+            Selector = new Selector { NameContains = "Your answer" },
+            Note = "optional-group:first_focus;optional"
+        });
+        plan.Steps.Add(new PlanStep
+        {
+            Type = ActionType.KeyCombo,
+            Keys = new List<string> { "tab" },
+            Note = "optional-group:first_focus;optional"
         });
         plan.Steps.Add(new PlanStep
         {
@@ -2729,7 +2742,7 @@ internal sealed class TrayLocalAgent : IDisposable
         }
 
         var blocker = "(?:cliente|customer|name|nome|email|e-mail|telefono|phone|mobile|indirizzo|address|shipping address|delivery address|note|notes|commenti|comments?)";
-        var pattern = $@"(?is)\b(?:{string.Join("|", escapedLabels)})\b\s*[:\-]?\s*(?<v>.+?)(?=(?:\b{blocker}\b\s*[:\-])|[\r\n]|$)";
+        var pattern = $@"(?is)\b(?:{string.Join("|", escapedLabels)})\b\s*[:\-]?\s*(?<v>.+?)(?=(?:\b{blocker}\b(?:\s*[:\-]|\s))|[\r\n]|$)";
         var match = Regex.Match(text, pattern, RegexOptions.CultureInvariant);
         if (!match.Success)
         {
