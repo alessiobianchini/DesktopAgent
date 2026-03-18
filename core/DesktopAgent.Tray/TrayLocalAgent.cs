@@ -1404,11 +1404,16 @@ internal sealed class TrayLocalAgent : IDisposable
 
         var isGoogleForms = IsGoogleFormsUrl(targetUrl);
         var smart = await TryBuildSmartOrderFillPlanAsync(payload, targetUrl, cancellationToken);
-        var usingGoogleTabFallback = isGoogleForms && smart == null;
+        var googleOrderedValues = isGoogleForms ? BuildGoogleFormsOrderedValues(payload) : new List<(string Key, string Label, string Value)>();
+        var usingGoogleTabFallback = isGoogleForms && ShouldPreferGoogleFormsTabFill(smart, googleOrderedValues.Count);
         ActionPlan plan = smart?.Plan
             ?? (usingGoogleTabFallback
-                ? BuildGoogleFormsInteractionPlan(payload, targetUrl)
+                ? BuildGoogleFormsInteractionPlan(payload, targetUrl, googleOrderedValues)
                 : BuildOrderFillPlan(payload, targetUrl));
+        if (usingGoogleTabFallback && smart != null)
+        {
+            plan.Intent = $"{plan.Intent} [fallback:smart {smart.MappedFields}/{smart.DiscoveredFields}]";
+        }
         if (plan.Steps.Count <= 2)
         {
             return WebChatResponse.Simple("No fillable fields found in current order draft.");
@@ -1428,14 +1433,17 @@ internal sealed class TrayLocalAgent : IDisposable
                 mapped = smart?.MappedFields ?? 0,
                 discovered = smart?.DiscoveredFields ?? 0,
                 googleForms = isGoogleForms,
-                googleTabFallback = usingGoogleTabFallback
+                googleTabFallback = usingGoogleTabFallback,
+                googleValues = googleOrderedValues.Count
             });
 
         var lines = PlanToLines(plan)
             .Concat(new[]
             {
                 $"Draft: {_latestOrderDraft.Id}",
-                usingGoogleTabFallback
+                usingGoogleTabFallback && smart != null
+                    ? $"Mapping: google forms tab-fill mode (fallback from smart {smart.MappedFields}/{smart.DiscoveredFields})"
+                : usingGoogleTabFallback
                     ? "Mapping: google forms tab-fill mode"
                     : smart == null
                     ? "Mapping: fallback heuristics"
@@ -1467,7 +1475,10 @@ internal sealed class TrayLocalAgent : IDisposable
                    && uri.AbsolutePath.Contains("/forms", StringComparison.OrdinalIgnoreCase));
     }
 
-    private static ActionPlan BuildGoogleFormsInteractionPlan(OrderDraftPayload payload, string targetUrl)
+    private static ActionPlan BuildGoogleFormsInteractionPlan(
+        OrderDraftPayload payload,
+        string targetUrl,
+        List<(string Key, string Label, string Value)>? orderedValues = null)
     {
         var plan = new ActionPlan { Intent = $"order fill google-forms {targetUrl}" };
         plan.Steps.Add(new PlanStep
@@ -1481,33 +1492,7 @@ internal sealed class TrayLocalAgent : IDisposable
             WaitFor = TimeSpan.FromMilliseconds(2200)
         });
 
-        var orderedValues = new List<(string Key, string Label, string Value)>();
-        if (!string.IsNullOrWhiteSpace(payload.Customer?.Name))
-        {
-            orderedValues.Add(("customer_name", "Name", payload.Customer.Name.Trim()));
-        }
-        if (!string.IsNullOrWhiteSpace(payload.Customer?.Email))
-        {
-            orderedValues.Add(("customer_email", "Email", payload.Customer.Email.Trim()));
-        }
-
-        var address = !string.IsNullOrWhiteSpace(payload.ShippingAddress)
-            ? payload.ShippingAddress
-            : payload.BillingAddress;
-        if (!string.IsNullOrWhiteSpace(address))
-        {
-            orderedValues.Add(("shipping_address", "Address", address.Trim()));
-        }
-        if (!string.IsNullOrWhiteSpace(payload.Customer?.Phone))
-        {
-            orderedValues.Add(("customer_phone", "Phone number", payload.Customer.Phone.Trim()));
-        }
-
-        var comments = BuildOrderItemsSummary(payload.Items, payload.Notes);
-        if (!string.IsNullOrWhiteSpace(comments))
-        {
-            orderedValues.Add(("order_notes", "Comments", comments.Trim()));
-        }
+        orderedValues ??= BuildGoogleFormsOrderedValues(payload);
 
         if (orderedValues.Count == 0)
         {
@@ -1572,6 +1557,55 @@ internal sealed class TrayLocalAgent : IDisposable
         }
 
         return plan;
+    }
+
+    private static List<(string Key, string Label, string Value)> BuildGoogleFormsOrderedValues(OrderDraftPayload payload)
+    {
+        var orderedValues = new List<(string Key, string Label, string Value)>();
+        if (!string.IsNullOrWhiteSpace(payload.Customer?.Name))
+        {
+            orderedValues.Add(("customer_name", "Name", payload.Customer.Name.Trim()));
+        }
+        if (!string.IsNullOrWhiteSpace(payload.Customer?.Email))
+        {
+            orderedValues.Add(("customer_email", "Email", payload.Customer.Email.Trim()));
+        }
+
+        var address = !string.IsNullOrWhiteSpace(payload.ShippingAddress)
+            ? payload.ShippingAddress
+            : payload.BillingAddress;
+        if (!string.IsNullOrWhiteSpace(address))
+        {
+            orderedValues.Add(("shipping_address", "Address", address.Trim()));
+        }
+        if (!string.IsNullOrWhiteSpace(payload.Customer?.Phone))
+        {
+            orderedValues.Add(("customer_phone", "Phone number", payload.Customer.Phone.Trim()));
+        }
+
+        var comments = BuildOrderItemsSummary(payload.Items, payload.Notes);
+        if (!string.IsNullOrWhiteSpace(comments))
+        {
+            orderedValues.Add(("order_notes", "Comments", comments.Trim()));
+        }
+
+        return orderedValues;
+    }
+
+    private static bool ShouldPreferGoogleFormsTabFill(SmartOrderFillPlan? smart, int googleOrderedValuesCount)
+    {
+        if (smart == null)
+        {
+            return true;
+        }
+
+        if (googleOrderedValuesCount <= 0)
+        {
+            return false;
+        }
+
+        var minimumReliableMappedFields = Math.Min(googleOrderedValuesCount, 3);
+        return smart.MappedFields < minimumReliableMappedFields;
     }
 
     private async Task<SmartOrderFillPlan?> TryBuildSmartOrderFillPlanAsync(
