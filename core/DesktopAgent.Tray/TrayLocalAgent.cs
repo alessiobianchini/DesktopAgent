@@ -1514,40 +1514,42 @@ internal sealed class TrayLocalAgent : IDisposable
             return BuildOrderFillPlan(payload, targetUrl);
         }
 
-        var first = orderedValues[0];
         plan.Steps.Add(new PlanStep
         {
             Type = ActionType.Click,
-            Selector = new Selector { NameContains = first.Label },
-            Note = "optional-group:first_focus;optional"
-        });
-        plan.Steps.Add(new PlanStep
-        {
-            Type = ActionType.Click,
-            Selector = new Selector { NameContains = "Your answer" },
-            Note = "optional-group:first_focus;optional"
-        });
-        plan.Steps.Add(new PlanStep
-        {
-            Type = ActionType.KeyCombo,
-            Keys = new List<string> { "tab" },
-            Note = "optional-group:first_focus;optional"
+            Selector = new Selector { NameContains = "Name" }
         });
         plan.Steps.Add(new PlanStep
         {
             Type = ActionType.WaitFor,
-            WaitFor = TimeSpan.FromMilliseconds(220)
-        });
-        plan.Steps.Add(new PlanStep
-        {
-            Type = ActionType.TypeText,
-            Text = first.Value,
-            Note = $"fill-field:{first.Key}"
+            WaitFor = TimeSpan.FromMilliseconds(180)
         });
 
-        for (var i = 1; i < orderedValues.Count; i++)
+        var selectAllKeys = GetSelectAllKeys();
+        for (var i = 0; i < orderedValues.Count; i++)
         {
             var value = orderedValues[i];
+
+            if (!string.IsNullOrWhiteSpace(value.Value))
+            {
+                plan.Steps.Add(new PlanStep
+                {
+                    Type = ActionType.KeyCombo,
+                    Keys = selectAllKeys
+                });
+                plan.Steps.Add(new PlanStep
+                {
+                    Type = ActionType.TypeText,
+                    Text = value.Value,
+                    Note = $"fill-field:{value.Key}"
+                });
+            }
+
+            if (i >= orderedValues.Count - 1)
+            {
+                continue;
+            }
+
             plan.Steps.Add(new PlanStep
             {
                 Type = ActionType.WaitFor,
@@ -1561,13 +1563,7 @@ internal sealed class TrayLocalAgent : IDisposable
             plan.Steps.Add(new PlanStep
             {
                 Type = ActionType.WaitFor,
-                WaitFor = TimeSpan.FromMilliseconds(140)
-            });
-            plan.Steps.Add(new PlanStep
-            {
-                Type = ActionType.TypeText,
-                Text = value.Value,
-                Note = $"fill-field:{value.Key}"
+                WaitFor = TimeSpan.FromMilliseconds(130)
             });
         }
 
@@ -1576,35 +1572,158 @@ internal sealed class TrayLocalAgent : IDisposable
 
     private static List<(string Key, string Label, string Value)> BuildGoogleFormsOrderedValues(OrderDraftPayload payload)
     {
-        var orderedValues = new List<(string Key, string Label, string Value)>();
-        if (!string.IsNullOrWhiteSpace(payload.Customer?.Name))
+        var map = BuildCanonicalGoogleFormsValueMap(payload);
+        return new List<(string Key, string Label, string Value)>
         {
-            orderedValues.Add(("customer_name", "Name", payload.Customer.Name.Trim()));
-        }
-        if (!string.IsNullOrWhiteSpace(payload.Customer?.Email))
+            ("customer_name", "Name", map.GetValueOrDefault("customer_name", string.Empty)),
+            ("customer_email", "Email", map.GetValueOrDefault("customer_email", string.Empty)),
+            ("shipping_address", "Address", map.GetValueOrDefault("shipping_address", string.Empty)),
+            ("customer_phone", "Phone number", map.GetValueOrDefault("customer_phone", string.Empty)),
+            ("order_notes", "Comments", map.GetValueOrDefault("order_notes", string.Empty))
+        };
+    }
+
+    private static Dictionary<string, string> BuildCanonicalGoogleFormsValueMap(OrderDraftPayload payload)
+    {
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var candidates = new List<string>();
+
+        AddCandidate(candidates, payload.Customer?.Name);
+        AddCandidate(candidates, payload.Customer?.Email);
+        AddCandidate(candidates, payload.Customer?.Phone);
+        AddCandidate(candidates, payload.ShippingAddress);
+        AddCandidate(candidates, payload.BillingAddress);
+        AddCandidate(candidates, payload.Notes);
+        AddCandidate(candidates, BuildOrderItemsSummary(payload.Items, payload.Notes));
+
+        var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        var email = PickCandidate(candidates, IsLikelyEmail, used, payload.Customer?.Email);
+        var phone = PickCandidate(candidates, IsLikelyPhone, used, payload.Customer?.Phone);
+        var address = PickCandidate(candidates, IsLikelyAddress, used, payload.ShippingAddress, payload.BillingAddress);
+        var name = PickCandidate(candidates, IsLikelyPersonName, used, payload.Customer?.Name);
+        var comments = PickCandidate(candidates, IsLikelyCommentText, used, payload.Notes, BuildOrderItemsSummary(payload.Items, payload.Notes));
+
+        AddMap(result, "customer_name", name);
+        AddMap(result, "customer_email", email);
+        AddMap(result, "shipping_address", address);
+        AddMap(result, "customer_phone", phone);
+        AddMap(result, "order_notes", comments);
+
+        return result;
+    }
+
+    private static void AddCandidate(List<string> candidates, string? value)
+    {
+        var text = value?.Trim();
+        if (string.IsNullOrWhiteSpace(text))
         {
-            orderedValues.Add(("customer_email", "Email", payload.Customer.Email.Trim()));
+            return;
         }
 
-        var address = !string.IsNullOrWhiteSpace(payload.ShippingAddress)
-            ? payload.ShippingAddress
-            : payload.BillingAddress;
-        if (!string.IsNullOrWhiteSpace(address))
+        if (!candidates.Any(existing => existing.Equals(text, StringComparison.OrdinalIgnoreCase)))
         {
-            orderedValues.Add(("shipping_address", "Address", address.Trim()));
+            candidates.Add(text);
         }
-        if (!string.IsNullOrWhiteSpace(payload.Customer?.Phone))
+    }
+
+    private static string? PickCandidate(
+        IReadOnlyList<string> candidates,
+        Func<string, bool> predicate,
+        HashSet<string> used,
+        params string?[] preferred)
+    {
+        foreach (var pref in preferred)
         {
-            orderedValues.Add(("customer_phone", "Phone number", payload.Customer.Phone.Trim()));
+            var text = pref?.Trim();
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                continue;
+            }
+
+            if (used.Contains(text) || !predicate(text))
+            {
+                continue;
+            }
+
+            used.Add(text);
+            return text;
         }
 
-        var comments = BuildOrderItemsSummary(payload.Items, payload.Notes);
-        if (!string.IsNullOrWhiteSpace(comments))
+        foreach (var candidate in candidates)
         {
-            orderedValues.Add(("order_notes", "Comments", comments.Trim()));
+            if (used.Contains(candidate) || !predicate(candidate))
+            {
+                continue;
+            }
+
+            used.Add(candidate);
+            return candidate;
         }
 
-        return orderedValues;
+        return null;
+    }
+
+    private static bool IsLikelyEmail(string value)
+        => Regex.IsMatch(value, @"(?i)^[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}$", RegexOptions.CultureInvariant);
+
+    private static bool IsLikelyPhone(string value)
+        => Regex.IsMatch(value, @"^\+?\d[\d\s().-]{6,}\d$", RegexOptions.CultureInvariant);
+
+    private static bool IsLikelyAddress(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        var text = value.Trim();
+        if (Regex.IsMatch(text, @"\b(via|viale|piazza|corso|street|st\.|road|rd\.|avenue|ave\.)\b", RegexOptions.IgnoreCase))
+        {
+            return true;
+        }
+
+        return Regex.IsMatch(text, @"\d{1,5}.*\b[A-Za-z]{2,}", RegexOptions.CultureInvariant)
+               && text.Contains(',', StringComparison.Ordinal);
+    }
+
+    private static bool IsLikelyPersonName(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        if (IsLikelyEmail(value) || IsLikelyPhone(value) || IsLikelyAddress(value))
+        {
+            return false;
+        }
+
+        return Regex.IsMatch(value.Trim(), @"^[\p{L}'-]+(?:\s+[\p{L}'-]+){1,3}$", RegexOptions.CultureInvariant);
+    }
+
+    private static bool IsLikelyCommentText(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        if (IsLikelyEmail(value) || IsLikelyPhone(value))
+        {
+            return false;
+        }
+
+        return value.Contains("comment", StringComparison.OrdinalIgnoreCase)
+               || value.Contains("note", StringComparison.OrdinalIgnoreCase)
+               || value.Length >= 16;
+    }
+
+    private static List<string> GetSelectAllKeys()
+    {
+        return OperatingSystem.IsMacOS()
+            ? new List<string> { "cmd", "a" }
+            : new List<string> { "ctrl", "a" };
     }
 
     private async Task<SmartOrderFillPlan?> TryBuildSmartOrderFillPlanAsync(
