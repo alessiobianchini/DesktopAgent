@@ -29,7 +29,7 @@ public sealed class AgentConfig
     public bool RequireConfirmation { get; set; } = true;
     public int MaxActionsPerSecond { get; set; } = 3;
     public bool MonitoringEnabled { get; set; } = false;
-    public bool OcrEnabled { get; set; } = false;
+    public bool OcrEnabled { get; set; } = true;
     public bool QuizSafeModeEnabled { get; set; } = true;
     public string AuditLogPath { get; set; } = "audit.log.jsonl";
     public string MediaOutputDirectory { get; set; } = "media";

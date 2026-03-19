@@ -1415,6 +1415,8 @@ internal sealed class TrayLocalAgent : IDisposable
             return WebChatResponse.Simple("Order draft is invalid. Run `order intake` again.");
         }
 
+        payload = NormalizeOrderPayloadForFormFill(payload, _latestOrderDraft.RawText);
+
         var isGoogleForms = IsGoogleFormsUrl(targetUrl);
         var googleOrderedValues = isGoogleForms ? BuildGoogleFormsOrderedValues(payload) : new List<(string Key, string Label, string Value)>();
         SmartOrderFillPlan? smart = null;
@@ -1514,23 +1516,11 @@ internal sealed class TrayLocalAgent : IDisposable
             return BuildOrderFillPlan(payload, targetUrl);
         }
 
+        // Focus first input explicitly (first "Your answer" is usually Name on Google Forms).
         plan.Steps.Add(new PlanStep
         {
             Type = ActionType.Click,
-            Selector = new Selector { NameContains = "Name" },
-            Note = "optional-group:first_focus;optional"
-        });
-        plan.Steps.Add(new PlanStep
-        {
-            Type = ActionType.Click,
-            Selector = new Selector { NameContains = "Your answer" },
-            Note = "optional-group:first_focus;optional"
-        });
-        plan.Steps.Add(new PlanStep
-        {
-            Type = ActionType.KeyCombo,
-            Keys = new List<string> { "tab" },
-            Note = "optional-group:first_focus;optional"
+            Selector = new Selector { NameContains = "Your answer" }
         });
         plan.Steps.Add(new PlanStep
         {
@@ -1539,26 +1529,22 @@ internal sealed class TrayLocalAgent : IDisposable
         });
 
         var selectAllKeys = GetSelectAllKeys();
-        for (var i = 0; i < orderedValues.Count; i++)
+        var filled = orderedValues.Where(static item => !string.IsNullOrWhiteSpace(item.Value)).ToList();
+        for (var i = 0; i < filled.Count; i++)
         {
-            var value = orderedValues[i];
-
-            if (!string.IsNullOrWhiteSpace(value.Value))
+            var value = filled[i];
+            plan.Steps.Add(new PlanStep
             {
-                plan.Steps.Add(new PlanStep
-                {
-                    Type = ActionType.KeyCombo,
-                    Keys = selectAllKeys
-                });
-                plan.Steps.Add(new PlanStep
-                {
-                    Type = ActionType.TypeText,
-                    Text = value.Value,
-                    Note = $"fill-field:{value.Key}"
-                });
-            }
-
-            if (i >= orderedValues.Count - 1)
+                Type = ActionType.KeyCombo,
+                Keys = selectAllKeys
+            });
+            plan.Steps.Add(new PlanStep
+            {
+                Type = ActionType.TypeText,
+                Text = value.Value,
+                Note = $"fill-field:{value.Key}"
+            });
+            if (i >= filled.Count - 1)
             {
                 continue;
             }
@@ -1624,6 +1610,86 @@ internal sealed class TrayLocalAgent : IDisposable
         AddMap(result, "order_notes", comments);
 
         return result;
+    }
+
+    private static OrderDraftPayload NormalizeOrderPayloadForFormFill(OrderDraftPayload payload, string rawText)
+    {
+        var normalized = new OrderDraftPayload
+        {
+            OrderNumber = payload.OrderNumber,
+            OrderDate = payload.OrderDate,
+            Customer = new OrderCustomerPayload
+            {
+                Name = payload.Customer?.Name,
+                Email = payload.Customer?.Email,
+                Phone = payload.Customer?.Phone
+            },
+            ShippingAddress = payload.ShippingAddress,
+            BillingAddress = payload.BillingAddress,
+            Notes = payload.Notes,
+            Items = payload.Items ?? new List<OrderItemPayload>()
+        };
+
+        if (string.IsNullOrWhiteSpace(rawText))
+        {
+            return normalized;
+        }
+
+        if (TryExtractOrderNumber(rawText, out var orderNumber))
+        {
+            normalized.OrderNumber = orderNumber;
+        }
+
+        if (TryExtractEmail(rawText, out var email))
+        {
+            normalized.Customer!.Email = email;
+        }
+
+        if (TryExtractPhone(rawText, out var phone))
+        {
+            normalized.Customer!.Phone = phone;
+        }
+
+        var extractedName = TryExtractLabeledValue(rawText, "cliente", "customer", "name", "nome");
+        if (!string.IsNullOrWhiteSpace(extractedName))
+        {
+            normalized.Customer!.Name = CleanExtractedValue(extractedName);
+        }
+        else
+        {
+            normalized.Customer!.Name = SanitizeCombinedPersonField(normalized.Customer!.Name);
+        }
+
+        var extractedAddress = TryExtractLabeledValue(rawText, "indirizzo", "address", "shipping address", "delivery address");
+        if (!string.IsNullOrWhiteSpace(extractedAddress))
+        {
+            normalized.ShippingAddress = CleanExtractedValue(extractedAddress);
+        }
+
+        var extractedNotes = TryExtractLabeledValue(rawText, "note", "notes", "commenti", "comments", "comment");
+        if (!string.IsNullOrWhiteSpace(extractedNotes))
+        {
+            normalized.Notes = CleanExtractedValue(extractedNotes);
+        }
+
+        return normalized;
+    }
+
+    private static string? SanitizeCombinedPersonField(string? value)
+    {
+        var text = value?.Trim();
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return value;
+        }
+
+        var marker = Regex.Match(text, @"(?i)\b(email|e-mail|telefono|phone|indirizzo|address|note|notes|commenti|comments?)\b");
+        if (marker.Success && marker.Index > 0)
+        {
+            text = text[..marker.Index].Trim(' ', '.', ',', ';', ':');
+        }
+
+        return text;
     }
 
     private static void AddCandidate(List<string> candidates, string? value)
