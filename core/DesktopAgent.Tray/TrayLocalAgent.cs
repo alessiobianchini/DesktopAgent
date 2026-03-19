@@ -1520,12 +1520,26 @@ internal sealed class TrayLocalAgent : IDisposable
         plan.Steps.Add(new PlanStep
         {
             Type = ActionType.Click,
-            Selector = new Selector { NameContains = "Your answer" }
+            Selector = new Selector { NameContains = "Your answer" },
+            Note = "optional-group:first_focus;optional"
+        });
+        plan.Steps.Add(new PlanStep
+        {
+            Type = ActionType.Click,
+            Selector = new Selector { NameContains = "Name" },
+            Note = "optional-group:first_focus;optional"
+        });
+        plan.Steps.Add(new PlanStep
+        {
+            Type = ActionType.KeyCombo,
+            Keys = new List<string> { "tab" },
+            Note = "optional-group:first_focus;optional"
         });
         plan.Steps.Add(new PlanStep
         {
             Type = ActionType.WaitFor,
-            WaitFor = TimeSpan.FromMilliseconds(180)
+            WaitFor = TimeSpan.FromMilliseconds(220),
+            Note = "requires-group:first_focus"
         });
 
         var selectAllKeys = GetSelectAllKeys();
@@ -1536,13 +1550,14 @@ internal sealed class TrayLocalAgent : IDisposable
             plan.Steps.Add(new PlanStep
             {
                 Type = ActionType.KeyCombo,
-                Keys = selectAllKeys
+                Keys = selectAllKeys,
+                Note = "requires-group:first_focus"
             });
             plan.Steps.Add(new PlanStep
             {
                 Type = ActionType.TypeText,
                 Text = value.Value,
-                Note = $"fill-field:{value.Key}"
+                Note = $"optional-group:field-{value.Key};optional;requires-group:first_focus;fill-field:{value.Key}"
             });
             if (i >= filled.Count - 1)
             {
@@ -1552,17 +1567,20 @@ internal sealed class TrayLocalAgent : IDisposable
             plan.Steps.Add(new PlanStep
             {
                 Type = ActionType.WaitFor,
-                WaitFor = TimeSpan.FromMilliseconds(80)
+                WaitFor = TimeSpan.FromMilliseconds(80),
+                Note = "requires-group:first_focus"
             });
             plan.Steps.Add(new PlanStep
             {
                 Type = ActionType.KeyCombo,
-                Keys = new List<string> { "tab" }
+                Keys = new List<string> { "tab" },
+                Note = "requires-group:first_focus"
             });
             plan.Steps.Add(new PlanStep
             {
                 Type = ActionType.WaitFor,
-                WaitFor = TimeSpan.FromMilliseconds(130)
+                WaitFor = TimeSpan.FromMilliseconds(130),
+                Note = "requires-group:first_focus"
             });
         }
 
@@ -4113,6 +4131,11 @@ internal sealed class TrayLocalAgent : IDisposable
         }
 
         if (step.Message.Contains("Optional step skipped", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (step.Message.Contains("missing required group", StringComparison.OrdinalIgnoreCase))
         {
             return false;
         }

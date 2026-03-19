@@ -85,6 +85,22 @@ public sealed class Executor : IExecutor
                 continue;
             }
 
+            if (TryGetRequiredGroup(step, out var requiredGroup)
+                && !string.IsNullOrWhiteSpace(requiredGroup)
+                && !satisfiedOptionalGroups.Contains(requiredGroup))
+            {
+                var skipped = new StepResult
+                {
+                    Index = i,
+                    Type = step.Type,
+                    Success = true,
+                    Message = $"Skipped step (missing required group: {requiredGroup})"
+                };
+                result.Steps.Add(skipped);
+                await WriteAuditAsync("required_skip", skipped.Message, step, cancellationToken);
+                continue;
+            }
+
             if (_killSwitch.IsTripped)
             {
                 var msg = $"Kill switch tripped: {_killSwitch.Reason}";
@@ -3603,6 +3619,34 @@ public sealed class Executor : IExecutor
             }
 
             var value = part["optional-group:".Length..].Trim();
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                group = value;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool TryGetRequiredGroup(PlanStep step, out string group)
+    {
+        group = string.Empty;
+        var note = step.Note ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(note))
+        {
+            return false;
+        }
+
+        var parts = note.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        foreach (var part in parts)
+        {
+            if (!part.StartsWith("requires-group:", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var value = part["requires-group:".Length..].Trim();
             if (!string.IsNullOrWhiteSpace(value))
             {
                 group = value;
