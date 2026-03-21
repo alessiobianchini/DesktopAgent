@@ -1418,7 +1418,9 @@ internal sealed class TrayLocalAgent : IDisposable
         payload = NormalizeOrderPayloadForFormFill(payload, _latestOrderDraft.RawText);
 
         var isGoogleForms = IsGoogleFormsUrl(targetUrl);
-        var googleOrderedValues = isGoogleForms ? BuildGoogleFormsOrderedValues(payload) : new List<(string Key, string Label, string Value)>();
+        var googleOrderedValues = isGoogleForms
+            ? await BuildGoogleFormsOrderedValuesAsync(payload, _latestOrderDraft.RawText, targetUrl, cancellationToken)
+            : new List<(string Key, string Label, string Value)>();
         SmartOrderFillPlan? smart = null;
         var usingGoogleTabFallback = isGoogleForms;
         ActionPlan plan;
@@ -1516,54 +1518,51 @@ internal sealed class TrayLocalAgent : IDisposable
             return BuildOrderFillPlan(payload, targetUrl);
         }
 
-        // Focus first input explicitly (first "Your answer" is usually Name on Google Forms).
+        // Focus the first answer textbox explicitly.
+        // Using role=Edit avoids clicking question labels, which can shift field alignment.
         plan.Steps.Add(new PlanStep
         {
             Type = ActionType.Click,
-            Selector = new Selector { NameContains = "Your answer" },
+            Selector = new Selector { Role = "edit", NameContains = "Your answer", Index = 0 },
             Note = "optional-group:first_focus;optional"
         });
         plan.Steps.Add(new PlanStep
         {
             Type = ActionType.Click,
-            Selector = new Selector { NameContains = "Name" },
-            Note = "optional-group:first_focus;optional"
-        });
-        plan.Steps.Add(new PlanStep
-        {
-            Type = ActionType.KeyCombo,
-            Keys = new List<string> { "tab" },
+            Selector = new Selector { Role = "edit", NameContains = "Risposta", Index = 0 },
             Note = "optional-group:first_focus;optional"
         });
         plan.Steps.Add(new PlanStep
         {
             Type = ActionType.WaitFor,
-            WaitFor = TimeSpan.FromMilliseconds(220),
+            WaitFor = TimeSpan.FromMilliseconds(180),
             Note = "requires-group:first_focus"
         });
 
         var selectAllKeys = GetSelectAllKeys();
-        var filled = orderedValues.Where(static item => !string.IsNullOrWhiteSpace(item.Value)).ToList();
-        for (var i = 0; i < filled.Count; i++)
+        for (var i = 0; i < orderedValues.Count; i++)
         {
-            var value = filled[i];
-            plan.Steps.Add(new PlanStep
+            var value = orderedValues[i];
+            if (!string.IsNullOrWhiteSpace(value.Value))
             {
-                Type = ActionType.KeyCombo,
-                Keys = selectAllKeys,
-                Note = "requires-group:first_focus"
-            });
-            plan.Steps.Add(new PlanStep
-            {
-                Type = ActionType.TypeText,
-                Text = value.Value,
-                Note = $"optional-group:field-{value.Key};optional;requires-group:first_focus;fill-field:{value.Key}"
-            });
-            if (i >= filled.Count - 1)
+                plan.Steps.Add(new PlanStep
+                {
+                    Type = ActionType.KeyCombo,
+                    Keys = selectAllKeys,
+                    Note = "requires-group:first_focus"
+                });
+                plan.Steps.Add(new PlanStep
+                {
+                    Type = ActionType.TypeText,
+                    Text = value.Value,
+                    Note = $"optional-group:field-{value.Key};optional;requires-group:first_focus;fill-field:{value.Key}"
+                });
+            }
+
+            if (i >= orderedValues.Count - 1)
             {
                 continue;
             }
-
             plan.Steps.Add(new PlanStep
             {
                 Type = ActionType.WaitFor,
@@ -1587,17 +1586,155 @@ internal sealed class TrayLocalAgent : IDisposable
         return plan;
     }
 
-    private static List<(string Key, string Label, string Value)> BuildGoogleFormsOrderedValues(OrderDraftPayload payload)
+    private async Task<List<(string Key, string Label, string Value)>> BuildGoogleFormsOrderedValuesAsync(
+        OrderDraftPayload payload,
+        string? rawText,
+        string targetUrl,
+        CancellationToken cancellationToken)
+    {
+        var heuristic = BuildGoogleFormsOrderedValues(payload, rawText);
+        var discovered = await TryDiscoverFormFieldsFromUrlAsync(targetUrl, cancellationToken);
+        if (discovered.Count == 0)
+        {
+            return heuristic;
+        }
+
+        var values = BuildOrderValueMap(payload);
+        if (values.Count == 0)
+        {
+            return heuristic;
+        }
+
+        var mapped = await MapOrderValuesToDiscoveredFieldsAsync(values, discovered, cancellationToken);
+        if (mapped.Count == 0)
+        {
+            return heuristic;
+        }
+
+        var mappedByFieldKey = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var pair in mapped)
+        {
+            mappedByFieldKey[pair.Value.Key] = pair.Key;
+        }
+
+        var ordered = new List<(string Key, string Label, string Value)>();
+        var usedOrderKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var maxSlots = Math.Min(12, discovered.Count);
+        for (var i = 0; i < maxSlots; i++)
+        {
+            var field = discovered[i];
+            if (!mappedByFieldKey.TryGetValue(field.Key, out var orderKey))
+            {
+                ordered.Add(($"skip_{i + 1}", field.BestTextHint, string.Empty));
+                continue;
+            }
+
+            if (!values.TryGetValue(orderKey, out var value) || string.IsNullOrWhiteSpace(value))
+            {
+                ordered.Add((orderKey, field.BestTextHint, string.Empty));
+                continue;
+            }
+
+            usedOrderKeys.Add(orderKey);
+            ordered.Add((orderKey, field.BestTextHint, value));
+        }
+
+        foreach (var fallback in heuristic)
+        {
+            if (string.IsNullOrWhiteSpace(fallback.Value))
+            {
+                continue;
+            }
+
+            if (usedOrderKeys.Add(fallback.Key))
+            {
+                ordered.Add(fallback);
+            }
+        }
+
+        return ordered.Count > 0 ? ordered : heuristic;
+    }
+
+    private static List<(string Key, string Label, string Value)> BuildGoogleFormsOrderedValues(OrderDraftPayload payload, string? rawText = null)
     {
         var map = BuildCanonicalGoogleFormsValueMap(payload);
+        var raw = ExtractGoogleFormsSlotsFromRawText(rawText);
+
+        var name = PickPreferredSlotValue("customer_name", raw, map, IsLikelyPersonName);
+        var email = PickPreferredSlotValue("customer_email", raw, map, IsLikelyEmail);
+        var address = PickPreferredSlotValue("shipping_address", raw, map, IsLikelyAddress);
+        var phone = PickPreferredSlotValue("customer_phone", raw, map, IsLikelyPhone);
+        var comments = PickPreferredSlotValue("order_notes", raw, map, static _ => true);
+
         return new List<(string Key, string Label, string Value)>
         {
-            ("customer_name", "Name", map.GetValueOrDefault("customer_name", string.Empty)),
-            ("customer_email", "Email", map.GetValueOrDefault("customer_email", string.Empty)),
-            ("shipping_address", "Address", map.GetValueOrDefault("shipping_address", string.Empty)),
-            ("customer_phone", "Phone number", map.GetValueOrDefault("customer_phone", string.Empty)),
-            ("order_notes", "Comments", map.GetValueOrDefault("order_notes", string.Empty))
+            ("customer_name", "Name", name),
+            ("customer_email", "Email", email),
+            ("shipping_address", "Address", address),
+            ("customer_phone", "Phone number", phone),
+            ("order_notes", "Comments", comments)
         };
+    }
+
+    private static Dictionary<string, string> ExtractGoogleFormsSlotsFromRawText(string? rawText)
+    {
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var text = rawText ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return map;
+        }
+
+        var name = TryExtractLabeledValue(text, "cliente", "customer", "name", "nome");
+        var email = TryExtractLabeledValue(text, "email", "e-mail");
+        var phone = TryExtractLabeledValue(text, "telefono", "phone", "mobile", "cell");
+        var address = TryExtractLabeledValue(text, "indirizzo", "address", "shipping address", "delivery address");
+        var notes = TryExtractLabeledValue(text, "note", "notes", "commenti", "comments", "comment");
+
+        if (string.IsNullOrWhiteSpace(email) && TryExtractEmail(text, out var anyEmail))
+        {
+            email = anyEmail;
+        }
+
+        if (string.IsNullOrWhiteSpace(phone) && TryExtractPhone(text, out var anyPhone))
+        {
+            phone = anyPhone;
+        }
+
+        if (TryExtractOrderNumber(text, out var orderNumber))
+        {
+            map["order_number"] = orderNumber;
+        }
+
+        AddMap(map, "customer_name", name);
+        AddMap(map, "customer_email", email);
+        AddMap(map, "shipping_address", address);
+        AddMap(map, "customer_phone", phone);
+        AddMap(map, "order_notes", notes);
+        return map;
+    }
+
+    private static string PickPreferredSlotValue(
+        string key,
+        IReadOnlyDictionary<string, string> raw,
+        IReadOnlyDictionary<string, string> fallback,
+        Func<string, bool> validator)
+    {
+        if (raw.TryGetValue(key, out var rawValue)
+            && !string.IsNullOrWhiteSpace(rawValue)
+            && validator(rawValue))
+        {
+            return rawValue.Trim();
+        }
+
+        if (fallback.TryGetValue(key, out var fallbackValue)
+            && !string.IsNullOrWhiteSpace(fallbackValue)
+            && validator(fallbackValue))
+        {
+            return fallbackValue.Trim();
+        }
+
+        return string.Empty;
     }
 
     private static Dictionary<string, string> BuildCanonicalGoogleFormsValueMap(OrderDraftPayload payload)
@@ -2245,12 +2382,195 @@ internal sealed class TrayLocalAgent : IDisposable
             }
 
             var html = await response.Content.ReadAsStringAsync(cancellationToken);
-            return ParseDiscoveredFormFields(html);
+            var parsed = ParseDiscoveredFormFields(html);
+            if (parsed.Count > 0)
+            {
+                return parsed;
+            }
+
+            if (IsGoogleFormsUrl(targetUrl))
+            {
+                var llmDiscovered = await TryDiscoverFormFieldsWithLlmAsync(html, cancellationToken);
+                if (llmDiscovered.Count > 0)
+                {
+                    return llmDiscovered;
+                }
+            }
+
+            return Array.Empty<DiscoveredFormField>();
         }
         catch
         {
             return Array.Empty<DiscoveredFormField>();
         }
+    }
+
+    private async Task<IReadOnlyList<DiscoveredFormField>> TryDiscoverFormFieldsWithLlmAsync(string html, CancellationToken cancellationToken)
+    {
+        if (!_config.LlmFallbackEnabled || string.IsNullOrWhiteSpace(html))
+        {
+            return Array.Empty<DiscoveredFormField>();
+        }
+
+        var endpoint = _config.LlmFallback.Endpoint?.Trim();
+        if (string.IsNullOrWhiteSpace(endpoint) || !Uri.TryCreate(endpoint, UriKind.Absolute, out var uri))
+        {
+            return Array.Empty<DiscoveredFormField>();
+        }
+
+        if (!uri.IsLoopback && !_config.AllowNonLoopbackLlmEndpoint)
+        {
+            return Array.Empty<DiscoveredFormField>();
+        }
+
+        var provider = (_config.LlmFallback.Provider ?? "ollama").Trim().ToLowerInvariant();
+        uri = NormalizeLlmEndpoint(uri, provider);
+        var prompt = BuildFormFieldDiscoveryPrompt(html);
+
+        try
+        {
+            using var client = new HttpClient { Timeout = _httpTimeout };
+            var raw = provider switch
+            {
+                "openai" => await CallOpenAiPromptAsync(client, uri, "Extract visible form text fields from HTML. Return strict JSON only.", prompt, 512, cancellationToken),
+                "llama.cpp" => await CallLlamaCppPromptAsync(client, uri, prompt, 512, cancellationToken),
+                _ => await CallOllamaPromptAsync(client, uri, prompt, 512, cancellationToken)
+            };
+
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                return Array.Empty<DiscoveredFormField>();
+            }
+
+            var json = TryExtractJsonObject(raw);
+            JsonDocument? document = null;
+            if (!string.IsNullOrWhiteSpace(json))
+            {
+                document = JsonDocument.Parse(json);
+            }
+            else
+            {
+                var trimmed = raw.Trim();
+                var arrayStart = trimmed.IndexOf('[');
+                var arrayEnd = trimmed.LastIndexOf(']');
+                if (arrayStart >= 0 && arrayEnd > arrayStart)
+                {
+                    var arr = trimmed.Substring(arrayStart, arrayEnd - arrayStart + 1);
+                    document = JsonDocument.Parse(arr);
+                }
+            }
+
+            if (document == null)
+            {
+                return Array.Empty<DiscoveredFormField>();
+            }
+
+            using (document)
+            {
+                var fields = new List<DiscoveredFormField>();
+                var root = document.RootElement;
+                JsonElement arrayNode;
+                if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("fields", out var fieldsNode) && fieldsNode.ValueKind == JsonValueKind.Array)
+                {
+                    arrayNode = fieldsNode;
+                }
+                else if (root.ValueKind == JsonValueKind.Array)
+                {
+                    arrayNode = root;
+                }
+                else
+                {
+                    return Array.Empty<DiscoveredFormField>();
+                }
+
+                var index = 0;
+                foreach (var item in arrayNode.EnumerateArray())
+                {
+                    string label;
+                    string type = "text";
+                    string automationId = string.Empty;
+                    string name = string.Empty;
+                    string placeholder = string.Empty;
+                    string autoComplete = string.Empty;
+
+                    if (item.ValueKind == JsonValueKind.String)
+                    {
+                        label = item.GetString() ?? string.Empty;
+                    }
+                    else if (item.ValueKind == JsonValueKind.Object)
+                    {
+                        label =
+                            GetJsonString(item, "label")
+                            ?? GetJsonString(item, "name")
+                            ?? GetJsonString(item, "hint")
+                            ?? GetJsonString(item, "title")
+                            ?? string.Empty;
+                        type = GetJsonString(item, "type") ?? type;
+                        automationId = GetJsonString(item, "id") ?? string.Empty;
+                        name = GetJsonString(item, "fieldName") ?? string.Empty;
+                        placeholder = GetJsonString(item, "placeholder") ?? string.Empty;
+                        autoComplete = GetJsonString(item, "autocomplete") ?? string.Empty;
+                    }
+                    else
+                    {
+                        continue;
+                    }
+
+                    label = CleanHtmlText(label).Trim('*', ' ', ':');
+                    if (string.IsNullOrWhiteSpace(label))
+                    {
+                        continue;
+                    }
+
+                    index++;
+                    fields.Add(new DiscoveredFormField(
+                        Key: $"field_{index}",
+                        BestTextHint: label,
+                        AutomationId: automationId,
+                        Name: name,
+                        Placeholder: placeholder,
+                        Type: type,
+                        AutoComplete: autoComplete));
+                }
+
+                return fields;
+            }
+        }
+        catch
+        {
+            return Array.Empty<DiscoveredFormField>();
+        }
+    }
+
+    private static string BuildFormFieldDiscoveryPrompt(string html)
+    {
+        var relevantTags = Regex.Matches(
+                html,
+                "<(?<tag>input|textarea|select|div)\\b(?<attrs>[^>]*?(?:aria-label|placeholder|name=|id=|role=|contenteditable)[^>]*)>",
+                RegexOptions.IgnoreCase)
+            .Take(400)
+            .Select(static match => match.Value.Trim());
+        var snippet = string.Join("\n", relevantTags);
+        if (string.IsNullOrWhiteSpace(snippet))
+        {
+            snippet = html.Length <= 30000 ? html : html[..30000];
+        }
+        else if (snippet.Length > 30000)
+        {
+            snippet = snippet[..30000];
+        }
+
+        return
+            "Extract visible fillable text fields from this HTML snippet.\n" +
+            "Return STRICT JSON only in this format:\n" +
+            "{\"fields\":[{\"label\":\"Name\",\"type\":\"text\"}]}\n" +
+            "Rules:\n" +
+            "- preserve top-to-bottom visual order\n" +
+            "- include only fillable text fields (text/email/tel/textarea/contenteditable textbox)\n" +
+            "- exclude hidden, submit, button, checkbox, radio, search, login-only controls\n" +
+            "- keep labels concise (e.g., Name, Email, Address, Phone number, Comments)\n" +
+            "HTML snippet:\n" +
+            snippet;
     }
 
     private static IReadOnlyList<DiscoveredFormField> ParseDiscoveredFormFields(string html)
@@ -2276,10 +2596,22 @@ internal sealed class TrayLocalAgent : IDisposable
 
         var result = new List<DiscoveredFormField>();
         var index = 0;
-        foreach (Match nodeMatch in Regex.Matches(html, "<(?<tag>input|textarea|select)\\b(?<attrs>[^>]*?)>", RegexOptions.IgnoreCase))
+        foreach (Match nodeMatch in Regex.Matches(html, "<(?<tag>input|textarea|select|div)\\b(?<attrs>[^>]*?)>", RegexOptions.IgnoreCase))
         {
             var tag = nodeMatch.Groups["tag"].Value.Trim().ToLowerInvariant();
             var attrs = ParseHtmlAttributes(nodeMatch.Groups["attrs"].Value);
+            if (tag == "div")
+            {
+                var role = attrs.TryGetValue("role", out var roleValue) ? roleValue : string.Empty;
+                var editable = attrs.TryGetValue("contenteditable", out var editableValue) ? editableValue : string.Empty;
+                var isTextbox = role.Equals("textbox", StringComparison.OrdinalIgnoreCase)
+                                || editable.Equals("true", StringComparison.OrdinalIgnoreCase);
+                if (!isTextbox)
+                {
+                    continue;
+                }
+            }
+
             var type = attrs.TryGetValue("type", out var typeValue) ? typeValue.ToLowerInvariant() : tag;
             if (type is "hidden" or "submit" or "button" or "checkbox" or "radio" or "file")
             {
