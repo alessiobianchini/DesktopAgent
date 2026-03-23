@@ -1536,7 +1536,7 @@ internal sealed class TrayLocalAgent : IDisposable
         {
             Type = ActionType.WaitFor,
             WaitFor = TimeSpan.FromMilliseconds(180),
-            Note = "requires-group:first_focus"
+            Note = "optional-group:first_focus"
         });
 
         var selectAllKeys = GetSelectAllKeys();
@@ -1548,14 +1548,13 @@ internal sealed class TrayLocalAgent : IDisposable
                 plan.Steps.Add(new PlanStep
                 {
                     Type = ActionType.KeyCombo,
-                    Keys = selectAllKeys,
-                    Note = "requires-group:first_focus"
+                    Keys = selectAllKeys
                 });
                 plan.Steps.Add(new PlanStep
                 {
                     Type = ActionType.TypeText,
                     Text = value.Value,
-                    Note = $"optional-group:field-{value.Key};optional;requires-group:first_focus;fill-field:{value.Key}"
+                    Note = $"optional-group:field-{value.Key};optional;fill-field:{value.Key}"
                 });
             }
 
@@ -1566,20 +1565,17 @@ internal sealed class TrayLocalAgent : IDisposable
             plan.Steps.Add(new PlanStep
             {
                 Type = ActionType.WaitFor,
-                WaitFor = TimeSpan.FromMilliseconds(80),
-                Note = "requires-group:first_focus"
+                WaitFor = TimeSpan.FromMilliseconds(80)
             });
             plan.Steps.Add(new PlanStep
             {
                 Type = ActionType.KeyCombo,
-                Keys = new List<string> { "tab" },
-                Note = "requires-group:first_focus"
+                Keys = new List<string> { "tab" }
             });
             plan.Steps.Add(new PlanStep
             {
                 Type = ActionType.WaitFor,
-                WaitFor = TimeSpan.FromMilliseconds(130),
-                Note = "requires-group:first_focus"
+                WaitFor = TimeSpan.FromMilliseconds(130)
             });
         }
 
