@@ -56,6 +56,8 @@ internal sealed class TrayLocalAgent : IDisposable
     private readonly List<IntentMemoryEntry> _intentMemory = new();
     private readonly CancellationTokenSource _schedulerCts = new();
     private readonly Task _schedulerTask;
+    private readonly Dictionary<string, FormDiscoveryCacheEntry> _formDiscoveryCache = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly TimeSpan FormDiscoveryCacheTtl = TimeSpan.FromMinutes(10);
 
     private ContextLockState _contextLock = ContextLockState.None;
     private DateTimeOffset _lastGoalSchedulerSweepUtc = DateTimeOffset.MinValue;
@@ -1517,9 +1519,10 @@ internal sealed class TrayLocalAgent : IDisposable
         }
         else
         {
-            smart = await TryBuildSmartOrderFillPlanAsync(payload, targetUrl, includeGenericHintCandidates: true, cancellationToken);
+            smart = await TryBuildSmartOrderFillPlanAsync(payload, targetUrl, includeGenericHintCandidates: false, cancellationToken);
             plan = smart?.Plan ?? BuildOrderFillPlan(payload, targetUrl);
         }
+        EnsureSingleOpenUrlForOrderFillPlan(plan, targetUrl);
         if (plan.Steps.Count <= 2 && !usingGooglePrefillMode)
         {
             return WebChatResponse.Simple("No fillable fields found in current order draft.");
@@ -1620,6 +1623,72 @@ internal sealed class TrayLocalAgent : IDisposable
             WaitFor = TimeSpan.FromMilliseconds(1500)
         });
         return plan;
+    }
+
+    private static void EnsureSingleOpenUrlForOrderFillPlan(ActionPlan plan, string targetUrl)
+    {
+        if (plan.Steps.Count == 0)
+        {
+            return;
+        }
+
+        var openIndexes = plan.Steps
+            .Select((step, index) => new { step, index })
+            .Where(static item => item.step.Type == ActionType.OpenUrl)
+            .Select(static item => item.index)
+            .ToList();
+        if (openIndexes.Count <= 1)
+        {
+            return;
+        }
+
+        var normalizedTarget = NormalizeUrlForPlanComparison(targetUrl);
+        var keepIndex = openIndexes
+            .FirstOrDefault(index =>
+            {
+                var stepTarget = plan.Steps[index].Target ?? string.Empty;
+                return string.Equals(
+                    NormalizeUrlForPlanComparison(stepTarget),
+                    normalizedTarget,
+                    StringComparison.OrdinalIgnoreCase);
+            });
+        if (keepIndex == 0 && plan.Steps[0].Type != ActionType.OpenUrl)
+        {
+            keepIndex = openIndexes[0];
+        }
+
+        foreach (var index in openIndexes.OrderByDescending(static i => i))
+        {
+            if (index == keepIndex)
+            {
+                continue;
+            }
+
+            plan.Steps.RemoveAt(index);
+        }
+    }
+
+    private static string NormalizeUrlForPlanComparison(string? url)
+    {
+        var raw = (url ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return string.Empty;
+        }
+
+        if (!Uri.TryCreate(raw, UriKind.Absolute, out var uri))
+        {
+            return raw;
+        }
+
+        var host = uri.Host.ToLowerInvariant();
+        var path = uri.AbsolutePath.TrimEnd('/');
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            path = "/";
+        }
+
+        return $"{uri.Scheme.ToLowerInvariant()}://{host}{path}";
     }
 
     private static IEnumerable<string> BuildGoogleFormsMappingPreviewLines(IReadOnlyList<(string Key, string Label, string Value)> orderedValues)
@@ -2451,6 +2520,7 @@ internal sealed class TrayLocalAgent : IDisposable
                 continue;
             }
 
+            AddDiscoveredFieldClickAndTypeCandidates(plan, pair.Key, pair.Value, field);
             AddDiscoveredFieldSetValueCandidates(plan, pair.Key, pair.Value, field);
             if (includeGenericHintCandidates)
             {
@@ -2464,6 +2534,125 @@ internal sealed class TrayLocalAgent : IDisposable
         }
 
         return new SmartOrderFillPlan(plan, mapped.Count, discovered.Count);
+    }
+
+    private static void AddDiscoveredFieldClickAndTypeCandidates(ActionPlan plan, string group, string value, DiscoveredFormField field)
+    {
+        var focusGroup = $"focus_{group}";
+        var hints = BuildDiscoveredFieldClickHints(group, field);
+
+        if (!string.IsNullOrWhiteSpace(field.AutomationId))
+        {
+            plan.Steps.Add(new PlanStep
+            {
+                Type = ActionType.Click,
+                Selector = new Selector
+                {
+                    Role = "Edit",
+                    AutomationId = field.AutomationId,
+                    NameContains = field.BestTextHint
+                },
+                Note = $"optional-group:{focusGroup};optional"
+            });
+            plan.Steps.Add(new PlanStep
+            {
+                Type = ActionType.Click,
+                Selector = new Selector
+                {
+                    AutomationId = field.AutomationId,
+                    NameContains = field.BestTextHint
+                },
+                Note = $"optional-group:{focusGroup};optional"
+            });
+        }
+
+        foreach (var hint in hints)
+        {
+            plan.Steps.Add(new PlanStep
+            {
+                Type = ActionType.Click,
+                Selector = new Selector { Role = "Edit", NameContains = hint },
+                Note = $"optional-group:{focusGroup};optional"
+            });
+            plan.Steps.Add(new PlanStep
+            {
+                Type = ActionType.Click,
+                Selector = new Selector { NameContains = hint },
+                Note = $"optional-group:{focusGroup};optional"
+            });
+        }
+
+        plan.Steps.Add(new PlanStep
+        {
+            Type = ActionType.WaitFor,
+            WaitFor = TimeSpan.FromMilliseconds(90),
+            Note = $"requires-group:{focusGroup}"
+        });
+        plan.Steps.Add(new PlanStep
+        {
+            Type = ActionType.TypeText,
+            Text = value,
+            Note = $"optional-group:{group};optional;fill-field:{group};requires-group:{focusGroup}"
+        });
+        plan.Steps.Add(new PlanStep
+        {
+            Type = ActionType.WaitFor,
+            WaitFor = TimeSpan.FromMilliseconds(90),
+            Note = $"requires-group:{focusGroup}"
+        });
+    }
+
+    private static IReadOnlyList<string> BuildDiscoveredFieldClickHints(string orderKey, DiscoveredFormField field)
+    {
+        static bool LooksLikeHumanHint(string? raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                return false;
+            }
+
+            var text = raw.Trim();
+            if (text.Length < 2 || text.Length > 80)
+            {
+                return false;
+            }
+
+            if (text.StartsWith("entry.", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            return text.Any(char.IsLetter);
+        }
+
+        var hints = new List<string>();
+        void Add(string? raw)
+        {
+            var normalized = NormalizeGoogleFormsLabel(raw);
+            if (!LooksLikeHumanHint(normalized))
+            {
+                return;
+            }
+
+            if (hints.Any(existing => existing.Equals(normalized, StringComparison.OrdinalIgnoreCase)))
+            {
+                return;
+            }
+
+            hints.Add(normalized);
+        }
+
+        Add(field.BestTextHint);
+        Add(field.Placeholder);
+        Add(field.Name);
+        Add(ToReadableOrderKey(orderKey));
+
+        foreach (var fallback in GetDefaultOrderFieldHints(orderKey).Take(2))
+        {
+            Add(fallback);
+        }
+
+        return hints.Take(4).ToList();
     }
 
     private static void AddDiscoveredFieldSetValueCandidates(ActionPlan plan, string group, string value, DiscoveredFormField field)
@@ -2818,6 +3007,12 @@ internal sealed class TrayLocalAgent : IDisposable
 
     private async Task<IReadOnlyList<DiscoveredFormField>> TryDiscoverFormFieldsFromUrlAsync(string targetUrl, CancellationToken cancellationToken)
     {
+        var requestCacheKey = NormalizeFormDiscoveryCacheKey(targetUrl);
+        if (TryGetCachedFormDiscoveryFields(requestCacheKey, out var cached))
+        {
+            return cached;
+        }
+
         try
         {
             using var client = new HttpClient { Timeout = _httpTimeout };
@@ -2839,6 +3034,9 @@ internal sealed class TrayLocalAgent : IDisposable
                 var googleLoadData = ParseGoogleFormsLoadDataFields(html);
                 if (googleLoadData.Count > 0)
                 {
+                    CacheFormDiscoveryFields(requestCacheKey, googleLoadData);
+                    var resolvedGoogleKey = NormalizeFormDiscoveryCacheKey(response.RequestMessage?.RequestUri?.AbsoluteUri);
+                    CacheFormDiscoveryFields(resolvedGoogleKey, googleLoadData);
                     return googleLoadData;
                 }
             }
@@ -2846,16 +3044,19 @@ internal sealed class TrayLocalAgent : IDisposable
             var parsed = ParseDiscoveredFormFields(html);
             if (parsed.Count > 0)
             {
+                CacheFormDiscoveryFields(requestCacheKey, parsed);
+                var resolvedParsedKey = NormalizeFormDiscoveryCacheKey(response.RequestMessage?.RequestUri?.AbsoluteUri);
+                CacheFormDiscoveryFields(resolvedParsedKey, parsed);
                 return parsed;
             }
 
-            if (IsGoogleFormsUrl(targetUrl))
+            var llmDiscovered = await TryDiscoverFormFieldsWithLlmAsync(html, cancellationToken);
+            if (llmDiscovered.Count > 0)
             {
-                var llmDiscovered = await TryDiscoverFormFieldsWithLlmAsync(html, cancellationToken);
-                if (llmDiscovered.Count > 0)
-                {
-                    return llmDiscovered;
-                }
+                CacheFormDiscoveryFields(requestCacheKey, llmDiscovered);
+                var resolvedLlmKey = NormalizeFormDiscoveryCacheKey(response.RequestMessage?.RequestUri?.AbsoluteUri);
+                CacheFormDiscoveryFields(resolvedLlmKey, llmDiscovered);
+                return llmDiscovered;
             }
 
             return Array.Empty<DiscoveredFormField>();
@@ -2863,6 +3064,93 @@ internal sealed class TrayLocalAgent : IDisposable
         catch
         {
             return Array.Empty<DiscoveredFormField>();
+        }
+    }
+
+    private static string NormalizeFormDiscoveryCacheKey(string? targetUrl)
+    {
+        var raw = (targetUrl ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return string.Empty;
+        }
+
+        if (!Uri.TryCreate(raw, UriKind.Absolute, out var uri))
+        {
+            return raw.ToLowerInvariant();
+        }
+
+        var host = uri.Host.ToLowerInvariant();
+        var path = uri.AbsolutePath.TrimEnd('/');
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            path = "/";
+        }
+
+        var builder = new StringBuilder();
+        builder.Append(uri.Scheme.ToLowerInvariant());
+        builder.Append("://");
+        builder.Append(host);
+        builder.Append(path);
+        return builder.ToString();
+    }
+
+    private bool TryGetCachedFormDiscoveryFields(string cacheKey, out IReadOnlyList<DiscoveredFormField> fields)
+    {
+        fields = Array.Empty<DiscoveredFormField>();
+        if (string.IsNullOrWhiteSpace(cacheKey))
+        {
+            return false;
+        }
+
+        lock (_sync)
+        {
+            PruneFormDiscoveryCacheLocked();
+            if (!_formDiscoveryCache.TryGetValue(cacheKey, out var entry))
+            {
+                return false;
+            }
+
+            if (entry.Fields.Count == 0)
+            {
+                return false;
+            }
+
+            fields = entry.Fields;
+            return true;
+        }
+    }
+
+    private void CacheFormDiscoveryFields(string cacheKey, IReadOnlyList<DiscoveredFormField> fields)
+    {
+        if (string.IsNullOrWhiteSpace(cacheKey) || fields.Count == 0)
+        {
+            return;
+        }
+
+        var snapshot = fields.ToList();
+        lock (_sync)
+        {
+            PruneFormDiscoveryCacheLocked();
+            _formDiscoveryCache[cacheKey] = new FormDiscoveryCacheEntry(DateTimeOffset.UtcNow, snapshot);
+        }
+    }
+
+    private void PruneFormDiscoveryCacheLocked()
+    {
+        if (_formDiscoveryCache.Count == 0)
+        {
+            return;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var expiredKeys = _formDiscoveryCache
+            .Where(pair => now - pair.Value.CachedAtUtc > FormDiscoveryCacheTtl)
+            .Select(pair => pair.Key)
+            .ToList();
+        foreach (var key in expiredKeys)
+        {
+            _formDiscoveryCache.Remove(key);
         }
     }
 
@@ -4053,6 +4341,11 @@ internal sealed class TrayLocalAgent : IDisposable
         if (plan.Steps.Count == 0)
         {
             return new WebIntentResponse("Plan is empty.", false, null, null, null, PlanToJson(plan), GetModeLabel(plan));
+        }
+
+        if (TryGetOrderFillTargetUrl(source, out var orderFillUrl))
+        {
+            EnsureSingleOpenUrlForOrderFillPlan(plan, orderFillUrl);
         }
 
         string preflightNote = string.Empty;
@@ -7447,6 +7740,10 @@ internal sealed class TrayLocalAgent : IDisposable
         string Type,
         string AutoComplete,
         string EntryId = "");
+
+    private sealed record FormDiscoveryCacheEntry(
+        DateTimeOffset CachedAtUtc,
+        IReadOnlyList<DiscoveredFormField> Fields);
 
     private sealed record SmartOrderFillPlan(
         ActionPlan Plan,
