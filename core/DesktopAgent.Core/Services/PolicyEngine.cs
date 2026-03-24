@@ -35,7 +35,7 @@ public sealed class PolicyEngine : IPolicyEngine
         {
             if (!IsAllowedApp(activeWindow))
             {
-                return PolicyDecision.Deny("Active window not in allowlist");
+                return PolicyDecision.Deny(BuildAllowlistDenyReason(activeWindow));
             }
         }
 
@@ -124,6 +124,17 @@ public sealed class PolicyEngine : IPolicyEngine
 
         return _config.AllowedApps.Any(app => activeWindow.AppId.Contains(app, StringComparison.OrdinalIgnoreCase)
                                               || activeWindow.Title.Contains(app, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private string BuildAllowlistDenyReason(WindowRef? activeWindow)
+    {
+        var active = activeWindow == null
+            ? "unknown"
+            : $"{activeWindow.AppId} | {activeWindow.Title}";
+        var allowed = _config.AllowedApps.Count == 0
+            ? "<empty>"
+            : string.Join(", ", _config.AllowedApps.Take(8));
+        return $"Active window not in allowlist (active: {active}; allowed: {allowed})";
     }
 
     private bool RequiresAllowlistCheck(ActionType type)

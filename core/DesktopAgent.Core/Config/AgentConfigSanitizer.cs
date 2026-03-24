@@ -4,6 +4,16 @@ namespace DesktopAgent.Core.Config;
 
 public static class AgentConfigSanitizer
 {
+    private static readonly HashSet<string> LegacyStarterAllowlist = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "notepad",
+        "calculator",
+        "calc",
+        "terminal",
+        "cmd",
+        "powershell"
+    };
+
     public static void Normalize(AgentConfig config)
     {
         if (config == null)
@@ -12,6 +22,11 @@ public static class AgentConfigSanitizer
         }
 
         config.AllowedApps = CleanTokens(config.AllowedApps);
+        if (LooksLikeLegacyStarterAllowlist(config.AllowedApps))
+        {
+            // Keep modern default behavior: empty allowlist means "allow all apps".
+            config.AllowedApps.Clear();
+        }
         config.BlockedActionsKeywords = CleanTokens(config.BlockedActionsKeywords);
         config.DangerousKeyCombos = CleanTokens(config.DangerousKeyCombos);
         config.FilesystemAllowedRoots = CleanTokens(config.FilesystemAllowedRoots);
@@ -70,6 +85,16 @@ public static class AgentConfigSanitizer
             .Where(item => !string.IsNullOrWhiteSpace(item))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList()!;
+    }
+
+    private static bool LooksLikeLegacyStarterAllowlist(IReadOnlyCollection<string> items)
+    {
+        if (items.Count != LegacyStarterAllowlist.Count)
+        {
+            return false;
+        }
+
+        return items.All(item => LegacyStarterAllowlist.Contains(item));
     }
 
     private static List<string> NormalizeKeySequence(List<string>? keys, IReadOnlyList<string> fallback)

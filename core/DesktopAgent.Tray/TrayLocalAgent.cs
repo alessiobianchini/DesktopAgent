@@ -1326,17 +1326,53 @@ internal sealed class TrayLocalAgent : IDisposable
     {
         if (!_config.LlmFallbackEnabled)
         {
+            if (TryBuildOrderDraftFromTextHeuristics(rawText, out var heuristicPayload, out var heuristicSummary))
+            {
+                return await SaveOrderDraftAsync(
+                    rawText,
+                    heuristicPayload,
+                    heuristicSummary,
+                    modeLabel: "Mode: Heuristic order intake",
+                    auditEventType: "order_draft_extracted_heuristic",
+                    auditMessage: "Order draft extracted with heuristic fallback (LLM disabled)",
+                    cancellationToken);
+            }
+
             return WebChatResponse.Simple("LLM is disabled. Enable it to extract order fields from free text.");
         }
 
         var endpoint = _config.LlmFallback.Endpoint?.Trim();
         if (string.IsNullOrWhiteSpace(endpoint) || !Uri.TryCreate(endpoint, UriKind.Absolute, out var uri))
         {
+            if (TryBuildOrderDraftFromTextHeuristics(rawText, out var heuristicPayload, out var heuristicSummary))
+            {
+                return await SaveOrderDraftAsync(
+                    rawText,
+                    heuristicPayload,
+                    heuristicSummary,
+                    modeLabel: "Mode: Heuristic order intake",
+                    auditEventType: "order_draft_extracted_heuristic",
+                    auditMessage: "Order draft extracted with heuristic fallback (invalid LLM endpoint)",
+                    cancellationToken);
+            }
+
             return WebChatResponse.Simple("LLM endpoint is not configured or invalid.");
         }
 
         if (!uri.IsLoopback && !_config.AllowNonLoopbackLlmEndpoint)
         {
+            if (TryBuildOrderDraftFromTextHeuristics(rawText, out var heuristicPayload, out var heuristicSummary))
+            {
+                return await SaveOrderDraftAsync(
+                    rawText,
+                    heuristicPayload,
+                    heuristicSummary,
+                    modeLabel: "Mode: Heuristic order intake",
+                    auditEventType: "order_draft_extracted_heuristic",
+                    auditMessage: "Order draft extracted with heuristic fallback (non-loopback endpoint blocked)",
+                    cancellationToken);
+            }
+
             return WebChatResponse.Simple("LLM endpoint must be local unless remote LLM is enabled.");
         }
 
@@ -1373,33 +1409,65 @@ internal sealed class TrayLocalAgent : IDisposable
                 summaryLines = BuildOrderSummary(parsedPayload);
             }
 
-            var draft = new OrderDraft(
-                Id: Guid.NewGuid().ToString("N")[..8],
-                CreatedAtUtc: DateTimeOffset.UtcNow,
-                RawText: rawText,
-                PayloadJson: payloadJson,
-                SummaryLines: summaryLines);
-
-            _latestOrderDraft = draft;
-            _awaitingOrderEmailInput = false;
-
-            await WriteAuditAsync("order_draft_extracted", "Order draft extracted from free text", cancellationToken, new
-            {
-                draftId = draft.Id,
-                preview = summaryLines.Take(6).ToArray()
-            });
-
-            return WebChatResponse.WithSteps(
-                $"Order draft extracted [{draft.Id}]. Review fields, then ask to fill your target form.",
-                summaryLines,
+            return await SaveOrderDraftAsync(
+                rawText,
                 payloadJson,
-                "Mode: LLM order intake");
+                summaryLines,
+                modeLabel: "Mode: LLM order intake",
+                auditEventType: "order_draft_extracted",
+                auditMessage: "Order draft extracted from free text",
+                cancellationToken);
         }
         catch (Exception ex)
         {
+            if (TryBuildOrderDraftFromTextHeuristics(rawText, out var heuristicPayload, out var heuristicSummary))
+            {
+                await WriteAuditAsync("order_draft_error", "Order draft extraction failed; using heuristic fallback", cancellationToken, new { error = ex.Message });
+                return await SaveOrderDraftAsync(
+                    rawText,
+                    heuristicPayload,
+                    heuristicSummary,
+                    modeLabel: "Mode: Heuristic order intake",
+                    auditEventType: "order_draft_extracted_heuristic",
+                    auditMessage: "Order draft extracted with heuristic fallback after LLM failure",
+                    cancellationToken);
+            }
+
             await WriteAuditAsync("order_draft_error", "Order draft extraction failed", cancellationToken, new { error = ex.Message });
             return WebChatResponse.Simple($"Order extraction failed: {Compact(ex.Message, 140)}");
         }
+    }
+
+    private async Task<WebChatResponse> SaveOrderDraftAsync(
+        string rawText,
+        string payloadJson,
+        IReadOnlyList<string> summaryLines,
+        string modeLabel,
+        string auditEventType,
+        string auditMessage,
+        CancellationToken cancellationToken)
+    {
+        var draft = new OrderDraft(
+            Id: Guid.NewGuid().ToString("N")[..8],
+            CreatedAtUtc: DateTimeOffset.UtcNow,
+            RawText: rawText,
+            PayloadJson: payloadJson,
+            SummaryLines: summaryLines);
+
+        _latestOrderDraft = draft;
+        _awaitingOrderEmailInput = false;
+
+        await WriteAuditAsync(auditEventType, auditMessage, cancellationToken, new
+        {
+            draftId = draft.Id,
+            preview = summaryLines.Take(6).ToArray()
+        });
+
+        return WebChatResponse.WithSteps(
+            $"Order draft extracted [{draft.Id}]. Review fields, then ask to fill your target form.",
+            summaryLines,
+            payloadJson,
+            modeLabel);
     }
 
     private async Task<WebChatResponse> BuildOrderFillConfirmationAsync(string targetUrl, CancellationToken cancellationToken)
@@ -1418,24 +1486,41 @@ internal sealed class TrayLocalAgent : IDisposable
         payload = NormalizeOrderPayloadForFormFill(payload, _latestOrderDraft.RawText);
 
         var isGoogleForms = IsGoogleFormsUrl(targetUrl);
-        var googleOrderedValues = isGoogleForms
-            ? await BuildGoogleFormsOrderedValuesAsync(payload, _latestOrderDraft.RawText, targetUrl, cancellationToken)
-            : new List<(string Key, string Label, string Value)>();
+        var googleOrderedValues = new List<(string Key, string Label, string Value)>();
+        if (isGoogleForms)
+        {
+            googleOrderedValues = _config.LlmFallbackEnabled
+                ? await BuildGoogleFormsOrderedValuesWithLlmAsync(payload, _latestOrderDraft.RawText, targetUrl, cancellationToken)
+                : await BuildGoogleFormsOrderedValuesAsync(payload, _latestOrderDraft.RawText, targetUrl, cancellationToken);
+        }
         SmartOrderFillPlan? smart = null;
-        var usingGoogleTabFallback = isGoogleForms;
+        var usingGooglePrefillMode = false;
+        var usingGoogleLabelFallback = false;
+        var usingGoogleTabFallback = false;
         ActionPlan plan;
         if (isGoogleForms)
         {
-            // Google Forms UI tree is usually not reliable via desktop accessibility.
-            // Always prefer deterministic keyboard tab-fill for MVP reliability.
-            plan = BuildGoogleFormsInteractionPlan(payload, targetUrl, googleOrderedValues);
+            // Prefer URL-level prefill for Google Forms when entry ids are discoverable.
+            // This avoids fragile desktop interactions (focus/tab/click drift).
+            var prefillUrl = await TryBuildGoogleFormsPrefillUrlAsync(payload, targetUrl, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(prefillUrl))
+            {
+                usingGooglePrefillMode = true;
+                plan = BuildGoogleFormsPrefillPlan(prefillUrl);
+            }
+            else
+            {
+                // Fallback to deterministic UI fill if prefill is unavailable.
+                usingGoogleTabFallback = true;
+                plan = BuildGoogleFormsTabFillPlan(payload, targetUrl, googleOrderedValues);
+            }
         }
         else
         {
-            smart = await TryBuildSmartOrderFillPlanAsync(payload, targetUrl, cancellationToken);
+            smart = await TryBuildSmartOrderFillPlanAsync(payload, targetUrl, includeGenericHintCandidates: true, cancellationToken);
             plan = smart?.Plan ?? BuildOrderFillPlan(payload, targetUrl);
         }
-        if (plan.Steps.Count <= 2)
+        if (plan.Steps.Count <= 2 && !usingGooglePrefillMode)
         {
             return WebChatResponse.Simple("No fillable fields found in current order draft.");
         }
@@ -1454,31 +1539,138 @@ internal sealed class TrayLocalAgent : IDisposable
                 mapped = smart?.MappedFields ?? 0,
                 discovered = smart?.DiscoveredFields ?? 0,
                 googleForms = isGoogleForms,
+                googlePrefill = usingGooglePrefillMode,
                 googleTabFallback = usingGoogleTabFallback,
                 googleValues = googleOrderedValues.Count
             });
+
+        if (isGoogleForms)
+        {
+            await WriteAuditAsync(
+                "order_fill_mapping_preview",
+                "Google Forms mapping preview",
+                cancellationToken,
+                new
+                {
+                    draftId = _latestOrderDraft.Id,
+                    mapped = googleOrderedValues
+                        .Where(static item => !string.IsNullOrWhiteSpace(item.Value))
+                        .Take(10)
+                        .Select(item => new
+                        {
+                            key = item.Key,
+                            label = item.Label,
+                            preview = Compact(item.Value, 48)
+                        })
+                        .ToArray()
+                });
+        }
 
         var lines = PlanToLines(plan)
             .Concat(new[]
             {
                 $"Draft: {_latestOrderDraft.Id}",
-                usingGoogleTabFallback
+                usingGooglePrefillMode
+                    ? "Mapping: google forms prefill-url mode"
+                    : usingGoogleTabFallback
                     ? "Mapping: google forms tab-fill mode"
+                    : 
+                usingGoogleLabelFallback
+                    ? "Mapping: google forms label-fill mode"
+                    : isGoogleForms && smart != null
+                    ? $"Mapping: google forms smart ({smart.MappedFields}/{smart.DiscoveredFields} fields)"
                     : smart == null
                     ? "Mapping: fallback heuristics"
                     : $"Mapping: smart ({smart.MappedFields}/{smart.DiscoveredFields} fields)"
             })
             .ToList();
+
+        if (isGoogleForms)
+        {
+            lines.AddRange(BuildGoogleFormsMappingPreviewLines(googleOrderedValues));
+            lines.AddRange(BuildGoogleFormsAiStepSuggestionLines(googleOrderedValues));
+        }
         return WebChatResponse.ConfirmWithSteps(
             $"Order draft ready. Fill form at {targetUrl}? (Submit action is not included.)",
             token,
             lines,
             PlanToJson(plan),
-            usingGoogleTabFallback
-                ? "Mode: Order autofill (google forms)"
+            usingGooglePrefillMode
+                ? "Mode: Order autofill (google forms prefill-url)"
+                : usingGoogleTabFallback
+                ? "Mode: Order autofill (google forms tab-fill)"
+                : usingGoogleLabelFallback
+                ? "Mode: Order autofill (google forms label-fill)"
                 : smart == null
                     ? "Mode: Order autofill"
                     : "Mode: Order autofill (smart)");
+    }
+
+    private static ActionPlan BuildGoogleFormsPrefillPlan(string prefillUrl)
+    {
+        var plan = new ActionPlan { Intent = $"order fill google-forms prefill {prefillUrl}" };
+        plan.Steps.Add(new PlanStep
+        {
+            Type = ActionType.OpenUrl,
+            Target = prefillUrl
+        });
+        plan.Steps.Add(new PlanStep
+        {
+            Type = ActionType.WaitFor,
+            WaitFor = TimeSpan.FromMilliseconds(1500)
+        });
+        return plan;
+    }
+
+    private static IEnumerable<string> BuildGoogleFormsMappingPreviewLines(IReadOnlyList<(string Key, string Label, string Value)> orderedValues)
+    {
+        var filled = orderedValues
+            .Where(static item => !string.IsNullOrWhiteSpace(item.Value))
+            .Take(10)
+            .Select(static item => $"{ToReadableOrderKey(item.Key)} -> \"{item.Label}\": {Compact(item.Value, 42)}")
+            .ToList();
+        if (filled.Count == 0)
+        {
+            return new[] { "Mapping preview: no non-empty values found." };
+        }
+
+        return new[] { "Mapping preview:" }.Concat(filled);
+    }
+
+    private static IEnumerable<string> BuildGoogleFormsAiStepSuggestionLines(IReadOnlyList<(string Key, string Label, string Value)> orderedValues)
+    {
+        var nonEmpty = orderedValues
+            .Where(static item => !string.IsNullOrWhiteSpace(item.Value))
+            .Take(8)
+            .ToList();
+        if (nonEmpty.Count == 0)
+        {
+            return Array.Empty<string>();
+        }
+
+        var lines = new List<string> { "AI suggested steps:" };
+        for (var i = 0; i < nonEmpty.Count; i++)
+        {
+            var item = nonEmpty[i];
+            var field = string.IsNullOrWhiteSpace(item.Label) ? ToReadableOrderKey(item.Key) : item.Label;
+            lines.Add($"{i + 1}. Focus \"{field}\" and type {Compact(item.Value, 36)}");
+        }
+
+        return lines;
+    }
+
+    private static string ToReadableOrderKey(string key)
+    {
+        return key switch
+        {
+            "customer_name" => "Name",
+            "customer_email" => "Email",
+            "shipping_address" => "Shipping address",
+            "customer_phone" => "Phone",
+            "order_notes" => "Comments",
+            "order_number" => "Order number",
+            _ => key
+        };
     }
 
     private static bool IsGoogleFormsUrl(string targetUrl)
@@ -1518,71 +1710,223 @@ internal sealed class TrayLocalAgent : IDisposable
             return BuildOrderFillPlan(payload, targetUrl);
         }
 
-        // Focus the first answer textbox explicitly.
-        // Using role=Edit avoids clicking question labels, which can shift field alignment.
+        if (!orderedValues.Any(static value => !string.IsNullOrWhiteSpace(value.Value)))
+        {
+            return BuildOrderFillPlan(payload, targetUrl);
+        }
+
+        var orderedSlots = orderedValues
+            .Take(12)
+            .ToList();
+
+        foreach (var value in orderedSlots)
+        {
+            if (value.Key.StartsWith("skip_", StringComparison.OrdinalIgnoreCase)
+                || string.IsNullOrWhiteSpace(value.Value))
+            {
+                continue;
+            }
+
+            var key = value.Key.Trim();
+            var label = NormalizeGoogleFormsLabel(value.Label);
+            if (string.IsNullOrWhiteSpace(label))
+            {
+                label = ToReadableOrderKey(key);
+            }
+
+            plan.Steps.Add(new PlanStep
+            {
+                Type = ActionType.SetValue,
+                Selector = new Selector { Role = "edit", NameContains = label },
+                Text = value.Value,
+                Note = $"optional-group:{key};optional;fill-field:{key}"
+            });
+            plan.Steps.Add(new PlanStep
+            {
+                Type = ActionType.SetValue,
+                Selector = new Selector { NameContains = label },
+                Text = value.Value,
+                Note = $"optional-group:{key};optional;fill-field:{key}"
+            });
+
+            var canonicalLabel = ToReadableOrderKey(key);
+            if (!string.Equals(label, canonicalLabel, StringComparison.OrdinalIgnoreCase))
+            {
+                plan.Steps.Add(new PlanStep
+                {
+                    Type = ActionType.SetValue,
+                    Selector = new Selector { Role = "edit", NameContains = canonicalLabel },
+                    Text = value.Value,
+                    Note = $"optional-group:{key};optional;fill-field:{key}"
+                });
+                plan.Steps.Add(new PlanStep
+                {
+                    Type = ActionType.SetValue,
+                    Selector = new Selector { NameContains = canonicalLabel },
+                    Text = value.Value,
+                    Note = $"optional-group:{key};optional;fill-field:{key}"
+                });
+            }
+
+            plan.Steps.Add(new PlanStep
+            {
+                Type = ActionType.WaitFor,
+                WaitFor = TimeSpan.FromMilliseconds(120)
+            });
+        }
+
+        MarkPlanStepsNoContextBinding(plan);
+        return plan;
+    }
+
+    private static ActionPlan BuildGoogleFormsTabFillPlan(
+        OrderDraftPayload payload,
+        string targetUrl,
+        List<(string Key, string Label, string Value)>? orderedValues = null)
+    {
+        var plan = new ActionPlan { Intent = $"order fill google-forms tab {targetUrl}" };
         plan.Steps.Add(new PlanStep
         {
-            Type = ActionType.Click,
-            Selector = new Selector { Role = "edit", NameContains = "Your answer", Index = 0 },
-            Note = "optional-group:first_focus;optional"
-        });
-        plan.Steps.Add(new PlanStep
-        {
-            Type = ActionType.Click,
-            Selector = new Selector { Role = "edit", NameContains = "Risposta", Index = 0 },
-            Note = "optional-group:first_focus;optional"
+            Type = ActionType.OpenUrl,
+            Target = targetUrl
         });
         plan.Steps.Add(new PlanStep
         {
             Type = ActionType.WaitFor,
-            WaitFor = TimeSpan.FromMilliseconds(180),
-            Note = "optional-group:first_focus"
+            WaitFor = TimeSpan.FromMilliseconds(2200)
         });
 
-        var selectAllKeys = GetSelectAllKeys();
-        for (var i = 0; i < orderedValues.Count; i++)
+        orderedValues ??= BuildGoogleFormsOrderedValues(payload);
+        var orderedSlots = orderedValues
+            .Where(static value => !value.Key.StartsWith("skip_", StringComparison.OrdinalIgnoreCase)
+                                   && !string.IsNullOrWhiteSpace(value.Value))
+            .Take(12)
+            .ToList();
+        if (orderedSlots.Count == 0)
         {
-            var value = orderedValues[i];
-            if (!string.IsNullOrWhiteSpace(value.Value))
+            return BuildOrderFillPlan(payload, targetUrl);
+        }
+
+        foreach (var slot in orderedSlots)
+        {
+            var key = slot.Key.Trim();
+            var label = NormalizeGoogleFormsLabel(slot.Label);
+            if (string.IsNullOrWhiteSpace(label))
+            {
+                label = ToReadableOrderKey(key);
+            }
+
+            var canonicalLabel = ToReadableOrderKey(key);
+            var focusGroup = $"focus_{key}";
+
+            plan.Steps.Add(new PlanStep
+            {
+                Type = ActionType.Click,
+                Selector = new Selector { Role = "Edit", NameContains = label },
+                Note = $"optional-group:{focusGroup};optional"
+            });
+            plan.Steps.Add(new PlanStep
+            {
+                Type = ActionType.Click,
+                Selector = new Selector { NameContains = label },
+                Note = $"optional-group:{focusGroup};optional"
+            });
+
+            if (!string.Equals(label, canonicalLabel, StringComparison.OrdinalIgnoreCase))
             {
                 plan.Steps.Add(new PlanStep
                 {
-                    Type = ActionType.KeyCombo,
-                    Keys = selectAllKeys
+                    Type = ActionType.Click,
+                    Selector = new Selector { Role = "Edit", NameContains = canonicalLabel },
+                    Note = $"optional-group:{focusGroup};optional"
                 });
                 plan.Steps.Add(new PlanStep
                 {
-                    Type = ActionType.TypeText,
-                    Text = value.Value,
-                    Note = $"optional-group:field-{value.Key};optional;fill-field:{value.Key}"
+                    Type = ActionType.Click,
+                    Selector = new Selector { NameContains = canonicalLabel },
+                    Note = $"optional-group:{focusGroup};optional"
                 });
             }
 
-            if (i >= orderedValues.Count - 1)
-            {
-                continue;
-            }
             plan.Steps.Add(new PlanStep
             {
                 Type = ActionType.WaitFor,
-                WaitFor = TimeSpan.FromMilliseconds(80)
+                WaitFor = TimeSpan.FromMilliseconds(120),
+                Note = $"requires-group:{focusGroup}"
             });
             plan.Steps.Add(new PlanStep
             {
-                Type = ActionType.KeyCombo,
-                Keys = new List<string> { "tab" }
+                Type = ActionType.TypeText,
+                Text = slot.Value,
+                Note = $"optional-group:{key};optional;fill-field:{key};requires-group:{focusGroup}"
             });
             plan.Steps.Add(new PlanStep
             {
                 Type = ActionType.WaitFor,
-                WaitFor = TimeSpan.FromMilliseconds(130)
+                WaitFor = TimeSpan.FromMilliseconds(100),
+                Note = $"requires-group:{focusGroup}"
             });
         }
 
         return plan;
     }
 
+    private static string NormalizeGoogleFormsLabel(string? label)
+    {
+        var text = (label ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return string.Empty;
+        }
+
+        text = text.Trim('*', ':', '-', ' ');
+        text = Regex.Replace(text, "\\s+", " ").Trim();
+        if (text.Equals("your answer", StringComparison.OrdinalIgnoreCase))
+        {
+            return string.Empty;
+        }
+
+        return text;
+    }
+
     private async Task<List<(string Key, string Label, string Value)>> BuildGoogleFormsOrderedValuesAsync(
+        OrderDraftPayload payload,
+        string? rawText,
+        string targetUrl,
+        CancellationToken cancellationToken)
+    {
+        var heuristic = BuildGoogleFormsOrderedValues(payload, rawText);
+        var discovered = await TryDiscoverFormFieldsFromUrlAsync(targetUrl, cancellationToken);
+        if (discovered.Count == 0)
+        {
+            return heuristic;
+        }
+
+        var values = BuildOrderValueMap(payload);
+        if (values.Count == 0)
+        {
+            return heuristic;
+        }
+
+        // For Google Forms, prefer deterministic label-based mapping over LLM key mapping.
+        // This avoids unsafe shifts (e.g. phone -> name) when labels are generic/ambiguous.
+        var mapped = MapFieldsDeterministically(values.Keys.ToList(), discovered);
+        if (mapped.Count == 0)
+        {
+            return heuristic;
+        }
+
+        var ordered = BuildGoogleFormsOrderedValuesFromMapping(values, discovered, mapped, heuristic);
+
+        if (ordered.Count == 0)
+        {
+            return heuristic;
+        }
+
+        return IsConfidentGoogleFormsOrderedValues(ordered) ? ordered : heuristic;
+    }
+
+    private async Task<List<(string Key, string Label, string Value)>> BuildGoogleFormsOrderedValuesWithLlmAsync(
         OrderDraftPayload payload,
         string? rawText,
         string targetUrl,
@@ -1607,6 +1951,21 @@ internal sealed class TrayLocalAgent : IDisposable
             return heuristic;
         }
 
+        var ordered = BuildGoogleFormsOrderedValuesFromMapping(values, discovered, mapped, heuristic);
+        if (ordered.Count == 0)
+        {
+            return heuristic;
+        }
+
+        return IsConfidentGoogleFormsOrderedValues(ordered) ? ordered : heuristic;
+    }
+
+    private static List<(string Key, string Label, string Value)> BuildGoogleFormsOrderedValuesFromMapping(
+        IReadOnlyDictionary<string, string> values,
+        IReadOnlyList<DiscoveredFormField> discovered,
+        IReadOnlyDictionary<string, DiscoveredFormField> mapped,
+        IReadOnlyList<(string Key, string Label, string Value)> heuristic)
+    {
         var mappedByFieldKey = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var pair in mapped)
         {
@@ -1635,20 +1994,83 @@ internal sealed class TrayLocalAgent : IDisposable
             ordered.Add((orderKey, field.BestTextHint, value));
         }
 
-        foreach (var fallback in heuristic)
+        if (ordered.All(static item => string.IsNullOrWhiteSpace(item.Value)))
         {
-            if (string.IsNullOrWhiteSpace(fallback.Value))
+            foreach (var fallback in heuristic)
             {
-                continue;
-            }
+                if (string.IsNullOrWhiteSpace(fallback.Value))
+                {
+                    continue;
+                }
 
-            if (usedOrderKeys.Add(fallback.Key))
-            {
-                ordered.Add(fallback);
+                if (usedOrderKeys.Add(fallback.Key))
+                {
+                    ordered.Add(fallback);
+                }
             }
         }
 
-        return ordered.Count > 0 ? ordered : heuristic;
+        return ordered;
+    }
+
+    private static bool IsConfidentGoogleFormsOrderedValues(IReadOnlyList<(string Key, string Label, string Value)> ordered)
+    {
+        var typed = ordered.Where(item => !string.IsNullOrWhiteSpace(item.Value)).ToList();
+        if (typed.Count == 0)
+        {
+            return false;
+        }
+
+        var compatible = typed.Count(item => IsGoogleFormsLabelCompatible(item.Key, item.Label));
+        if (compatible <= 0)
+        {
+            return false;
+        }
+
+        // Require strong evidence before trusting discovered mapping.
+        return compatible >= Math.Max(2, (int)Math.Ceiling(typed.Count * 0.75));
+    }
+
+    private static bool IsGoogleFormsLabelCompatible(string key, string? label)
+    {
+        var text = (label ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return false;
+        }
+
+        // Generic placeholders are not reliable for semantic mapping.
+        if (text.Equals("your answer", StringComparison.OrdinalIgnoreCase)
+            || text.Equals("risposta", StringComparison.OrdinalIgnoreCase)
+            || text.Equals("answer", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var normalized = text.ToLowerInvariant();
+        return key switch
+        {
+            "customer_name" => ContainsAny(normalized, "name", "nome", "full name", "customer"),
+            "customer_email" => ContainsAny(normalized, "email", "e-mail", "mail"),
+            "shipping_address" => ContainsAny(normalized, "address", "indirizzo", "shipping", "delivery"),
+            "customer_phone" => ContainsAny(normalized, "phone", "telefono", "mobile", "cell", "tel"),
+            "order_notes" => ContainsAny(normalized, "notes", "note", "comments", "comment", "message", "messaggio"),
+            _ => false
+        };
+    }
+
+    private static bool ContainsAny(string text, params string[] tokens)
+    {
+        foreach (var token in tokens)
+        {
+            if (!string.IsNullOrWhiteSpace(token)
+                && text.Contains(token, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static List<(string Key, string Label, string Value)> BuildGoogleFormsOrderedValues(OrderDraftPayload payload, string? rawText = null)
@@ -1956,9 +2378,40 @@ internal sealed class TrayLocalAgent : IDisposable
             : new List<string> { "ctrl", "a" };
     }
 
+    private static void MarkPlanStepsNoContextBinding(ActionPlan plan)
+    {
+        foreach (var step in plan.Steps)
+        {
+            step.Note = AppendPlanFlag(step.Note, "no-context-binding");
+        }
+    }
+
+    private static string AppendPlanFlag(string? note, string flag)
+    {
+        var normalizedFlag = (flag ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalizedFlag))
+        {
+            return note ?? string.Empty;
+        }
+
+        if (string.IsNullOrWhiteSpace(note))
+        {
+            return normalizedFlag;
+        }
+
+        var parts = note.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Any(part => part.Equals(normalizedFlag, StringComparison.OrdinalIgnoreCase)))
+        {
+            return note;
+        }
+
+        return $"{note};{normalizedFlag}";
+    }
+
     private async Task<SmartOrderFillPlan?> TryBuildSmartOrderFillPlanAsync(
         OrderDraftPayload payload,
         string targetUrl,
+        bool includeGenericHintCandidates,
         CancellationToken cancellationToken)
     {
         var discovered = await TryDiscoverFormFieldsFromUrlAsync(targetUrl, cancellationToken);
@@ -1999,7 +2452,10 @@ internal sealed class TrayLocalAgent : IDisposable
             }
 
             AddDiscoveredFieldSetValueCandidates(plan, pair.Key, pair.Value, field);
-            AddOptionalSetValueCandidates(plan, pair.Value, pair.Key, GetDefaultOrderFieldHints(pair.Key));
+            if (includeGenericHintCandidates)
+            {
+                AddOptionalSetValueCandidates(plan, pair.Value, pair.Key, GetDefaultOrderFieldHints(pair.Key));
+            }
         }
 
         if (plan.Steps.Count <= 2)
@@ -2378,6 +2834,15 @@ internal sealed class TrayLocalAgent : IDisposable
             }
 
             var html = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (IsGoogleFormsUrl(targetUrl))
+            {
+                var googleLoadData = ParseGoogleFormsLoadDataFields(html);
+                if (googleLoadData.Count > 0)
+                {
+                    return googleLoadData;
+                }
+            }
+
             var parsed = ParseDiscoveredFormFields(html);
             if (parsed.Count > 0)
             {
@@ -2399,6 +2864,123 @@ internal sealed class TrayLocalAgent : IDisposable
         {
             return Array.Empty<DiscoveredFormField>();
         }
+    }
+
+    private async Task<string?> TryBuildGoogleFormsPrefillUrlAsync(OrderDraftPayload payload, string targetUrl, CancellationToken cancellationToken)
+    {
+        var discovered = await TryDiscoverFormFieldsFromUrlAsync(targetUrl, cancellationToken);
+        if (discovered.Count == 0)
+        {
+            return null;
+        }
+
+        var withEntryId = discovered
+            .Where(static field => !string.IsNullOrWhiteSpace(field.EntryId))
+            .ToList();
+        if (withEntryId.Count == 0)
+        {
+            return null;
+        }
+
+        var values = BuildOrderValueMap(payload);
+        if (values.Count == 0)
+        {
+            return null;
+        }
+
+        var mapped = MapFieldsDeterministically(values.Keys.ToList(), withEntryId);
+        if (mapped.Count == 0)
+        {
+            return null;
+        }
+
+        var entryPairs = new List<(string Key, string Value)>();
+        foreach (var pair in mapped)
+        {
+            if (!values.TryGetValue(pair.Key, out var value) || string.IsNullOrWhiteSpace(value))
+            {
+                continue;
+            }
+
+            var entryId = pair.Value.EntryId?.Trim() ?? string.Empty;
+            if (!Regex.IsMatch(entryId, "^\\d+$"))
+            {
+                continue;
+            }
+
+            entryPairs.Add(($"entry.{entryId}", value.Trim()));
+        }
+
+        if (entryPairs.Count < 2)
+        {
+            return null;
+        }
+
+        var finalUrl = await TryResolveFinalUrlAsync(targetUrl, cancellationToken) ?? targetUrl;
+        return BuildGoogleFormsPrefillUrl(finalUrl, entryPairs);
+    }
+
+    private async Task<string?> TryResolveFinalUrlAsync(string targetUrl, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var client = new HttpClient { Timeout = _httpTimeout };
+            using var response = await client.GetAsync(targetUrl, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                return null;
+            }
+
+            return response.RequestMessage?.RequestUri?.AbsoluteUri;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string BuildGoogleFormsPrefillUrl(string baseUrl, IReadOnlyList<(string Key, string Value)> pairs)
+    {
+        if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var uri))
+        {
+            return baseUrl;
+        }
+
+        var existing = uri.Query.TrimStart('?');
+        var queryParts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(existing))
+        {
+            queryParts.Add(existing);
+        }
+
+        if (!Regex.IsMatch(existing, "(^|&)usp=", RegexOptions.IgnoreCase))
+        {
+            queryParts.Add("usp=pp_url");
+        }
+
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var pair in pairs)
+        {
+            if (string.IsNullOrWhiteSpace(pair.Key) || string.IsNullOrWhiteSpace(pair.Value))
+            {
+                continue;
+            }
+
+            if (!seen.Add(pair.Key))
+            {
+                continue;
+            }
+
+            queryParts.Add($"{Uri.EscapeDataString(pair.Key)}={Uri.EscapeDataString(pair.Value)}");
+        }
+
+        var basePath = uri.GetLeftPart(UriPartial.Path);
+        if (queryParts.Count == 0)
+        {
+            return basePath;
+        }
+
+        return $"{basePath}?{string.Join("&", queryParts)}";
     }
 
     private async Task<IReadOnlyList<DiscoveredFormField>> TryDiscoverFormFieldsWithLlmAsync(string html, CancellationToken cancellationToken)
@@ -2634,7 +3216,57 @@ internal sealed class TrayLocalAgent : IDisposable
                 Name: name,
                 Placeholder: placeholder,
                 Type: type,
-                AutoComplete: autocomplete));
+                AutoComplete: autocomplete,
+                EntryId: string.Empty));
+        }
+
+        return result;
+    }
+
+    private static IReadOnlyList<DiscoveredFormField> ParseGoogleFormsLoadDataFields(string html)
+    {
+        if (string.IsNullOrWhiteSpace(html))
+        {
+            return Array.Empty<DiscoveredFormField>();
+        }
+
+        var matches = Regex.Matches(
+            html,
+            "\\[(?<qid>\\d+),\"(?<label>(?:\\\\.|[^\"\\\\])*)\",null,\\d,\\[\\[(?<entry>\\d+),null,\\d",
+            RegexOptions.CultureInvariant);
+        if (matches.Count == 0)
+        {
+            return Array.Empty<DiscoveredFormField>();
+        }
+
+        var result = new List<DiscoveredFormField>();
+        var seenEntryIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var index = 0;
+        foreach (Match match in matches)
+        {
+            var entryId = match.Groups["entry"].Value.Trim();
+            if (string.IsNullOrWhiteSpace(entryId) || !seenEntryIds.Add(entryId))
+            {
+                continue;
+            }
+
+            var rawLabel = match.Groups["label"].Value;
+            var label = CleanHtmlText(Regex.Unescape(rawLabel)).Trim('*', ' ', ':');
+            if (string.IsNullOrWhiteSpace(label))
+            {
+                continue;
+            }
+
+            index++;
+            result.Add(new DiscoveredFormField(
+                Key: $"field_{index}",
+                BestTextHint: label,
+                AutomationId: string.Empty,
+                Name: $"entry.{entryId}",
+                Placeholder: string.Empty,
+                Type: "text",
+                AutoComplete: string.Empty,
+                EntryId: entryId));
         }
 
         return result;
@@ -3423,6 +4055,39 @@ internal sealed class TrayLocalAgent : IDisposable
             return new WebIntentResponse("Plan is empty.", false, null, null, null, PlanToJson(plan), GetModeLabel(plan));
         }
 
+        string preflightNote = string.Empty;
+        if (!dryRun && TryGetOrderFillTargetUrl(source, out _))
+        {
+            var status = await _desktopClient.GetStatusAsync(cancellationToken);
+            if (!status.Armed)
+            {
+                _killSwitch.Reset();
+                var armed = await _desktopClient.ArmAsync(requireUserPresence: false, cancellationToken);
+                if (!armed.Armed)
+                {
+                    return new WebIntentResponse(
+                        "Blocked: adapter is disarmed and auto-arm failed. Run `simulate presence` (or `arm`) and retry.",
+                        false,
+                        null,
+                        null,
+                        null,
+                        PlanToJson(plan),
+                        GetModeLabel(plan));
+                }
+
+                preflightNote = "Adapter auto-armed for order fill.";
+                await WriteAuditAsync(
+                    "order_fill_auto_arm",
+                    "Adapter auto-armed for order fill",
+                    cancellationToken,
+                    new
+                    {
+                        source,
+                        requireUserPresence = armed.RequireUserPresence
+                    });
+            }
+        }
+
         var beforeObservation = await CaptureObservationAsync(cancellationToken);
         var activeWindow = await _desktopClient.GetActiveWindowAsync(cancellationToken);
         var lockReason = ValidateAndApplyContextLock(plan, activeWindow);
@@ -3460,12 +4125,55 @@ internal sealed class TrayLocalAgent : IDisposable
             }
         }
 
+        var orderFillReport = BuildOrderFillExecutionReport(source, plan, result);
+        string aiRetryNote = string.Empty;
+        if (!dryRun
+            && !ContainsAllowlistBlock(result)
+            && IsGoogleFormsOrderFillSource(source)
+            && orderFillReport != null
+            && !IsAllOrderFieldsMissing(orderFillReport)
+            && orderFillReport.MissingKeys.Count > 0
+            && !(plan.Intent?.Contains("google-forms tab", StringComparison.OrdinalIgnoreCase) ?? false)
+            && _latestOrderDraft != null)
+        {
+            var retry = await TryAiRefillMissingOrderFieldsAsync(source, plan, orderFillReport, executor, cancellationToken);
+            if (retry.RecoveredResult != null)
+            {
+                result = MergeExecutionResults(result, retry.RecoveredResult);
+                aiRetryNote = retry.Note;
+                orderFillReport = BuildOrderFillExecutionReport(source, plan, result);
+            }
+        }
+        if (!dryRun
+            && orderFillReport != null
+            && result.Success
+            && IsAllOrderFieldsMissing(orderFillReport)
+            && result.Steps.Any(step => TryGetMissingRequiredGroup(step.Message, out _)))
+        {
+            result.Success = false;
+            result.Message = "Unable to focus form fields. Keep Chrome in foreground and retry.";
+        }
+
         var afterObservation = await CaptureObservationAsync(cancellationToken);
         await RecordIntentMemoryAsync(source, plan, result, beforeObservation, afterObservation, cancellationToken);
         await UpdateGoalProgressAsync(source, result, cancellationToken);
 
         var perceptionNote = BuildPerceptionNote(beforeObservation, afterObservation);
         var reply = AppendNotice(FormatExecution(result), GetRewriteNotice(plan));
+        if (ContainsAllowlistBlock(result))
+        {
+            var current = activeWindow == null
+                ? "unknown"
+                : Compact($"{activeWindow.AppId} | {activeWindow.Title}", 80);
+            var allowed = _config.AllowedApps.Count == 0
+                ? "<empty>"
+                : string.Join(", ", _config.AllowedApps.Take(8));
+            reply = $"{reply} Hint: add your browser/app to AllowedApps or clear the allowlist. Active: {current}. Allowed: {allowed}.";
+        }
+        if (ContainsContextBindingBlock(result))
+        {
+            reply = $"{reply} Hint: context binding blocked an interaction. Keep browser focused during fill, or run `unlock` / disable context lock before retry.";
+        }
         if (!string.IsNullOrWhiteSpace(perceptionNote))
         {
             reply = $"{reply} {perceptionNote}";
@@ -3474,9 +4182,16 @@ internal sealed class TrayLocalAgent : IDisposable
         {
             reply = $"{reply} {recoveryNote}";
         }
+        if (!string.IsNullOrWhiteSpace(aiRetryNote))
+        {
+            reply = $"{reply} {aiRetryNote}";
+        }
+        if (!string.IsNullOrWhiteSpace(preflightNote))
+        {
+            reply = $"{reply} {preflightNote}";
+        }
 
         var lines = ExecutionToLines(result).ToList();
-        var orderFillReport = BuildOrderFillExecutionReport(source, plan, result);
         if (orderFillReport != null)
         {
             reply = $"{reply} {orderFillReport.Summary}";
@@ -3484,6 +4199,232 @@ internal sealed class TrayLocalAgent : IDisposable
         }
 
         return new WebIntentResponse(reply, false, null, null, lines, PlanToJson(plan), GetModeLabel(plan));
+    }
+
+    private static bool ContainsAllowlistBlock(ExecutionResult result)
+    {
+        if (result.Message.Contains("allowlist", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return result.Steps.Any(step => step.Message.Contains("allowlist", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool ContainsContextBindingBlock(ExecutionResult result)
+    {
+        if (result.Message.Contains("context binding", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return result.Steps.Any(step => step.Message.Contains("context binding", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool IsGoogleFormsOrderFillSource(string source)
+    {
+        return TryGetOrderFillTargetUrl(source, out var targetUrl) && IsGoogleFormsUrl(targetUrl);
+    }
+
+    private static bool TryGetOrderFillTargetUrl(string source, out string targetUrl)
+    {
+        targetUrl = string.Empty;
+        if (string.IsNullOrWhiteSpace(source) || !source.StartsWith("order-fill:", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var candidate = source["order-fill:".Length..].Trim();
+        if (!Uri.TryCreate(candidate, UriKind.Absolute, out _))
+        {
+            return false;
+        }
+
+        targetUrl = candidate;
+        return true;
+    }
+
+    private async Task<RecoveryAttemptOutcome> TryAiRefillMissingOrderFieldsAsync(
+        string source,
+        ActionPlan originalPlan,
+        OrderFillExecutionReport report,
+        Executor executor,
+        CancellationToken cancellationToken)
+    {
+        if (_latestOrderDraft == null || report.MissingKeys.Count == 0)
+        {
+            return RecoveryAttemptOutcome.None;
+        }
+
+        if (!TryGetOrderFillTargetUrl(source, out var targetUrl) || !IsGoogleFormsUrl(targetUrl))
+        {
+            return RecoveryAttemptOutcome.None;
+        }
+
+        if (!TryParseOrderPayload(_latestOrderDraft.PayloadJson, out var payload))
+        {
+            return RecoveryAttemptOutcome.None;
+        }
+
+        payload = NormalizeOrderPayloadForFormFill(payload, _latestOrderDraft.RawText);
+        var llmOrdered = await BuildGoogleFormsOrderedValuesWithLlmAsync(payload, _latestOrderDraft.RawText, targetUrl, cancellationToken);
+        if (llmOrdered.Count == 0)
+        {
+            return RecoveryAttemptOutcome.None;
+        }
+
+        var missing = report.MissingKeys.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var retryOrdered = llmOrdered
+            .Select(item => missing.Contains(item.Key)
+                ? item
+                : (Key: item.Key, Label: item.Label, Value: string.Empty))
+            .ToList();
+
+        var toRetry = retryOrdered.Where(static item => !string.IsNullOrWhiteSpace(item.Value)).ToList();
+        if (toRetry.Count == 0)
+        {
+            return RecoveryAttemptOutcome.None;
+        }
+
+        var retryPlan = BuildGoogleFormsRefillPlan(retryOrdered, missing);
+        if (retryPlan.Steps.Count == 0)
+        {
+            return RecoveryAttemptOutcome.None;
+        }
+
+        await WriteAuditAsync(
+            "order_fill_ai_retry_plan",
+            "Google Forms AI retry plan generated",
+            cancellationToken,
+            new
+            {
+                draftId = _latestOrderDraft.Id,
+                url = targetUrl,
+                missing = report.MissingKeys,
+                retry = toRetry.Select(item => new { item.Key, item.Label, preview = Compact(item.Value, 48) }).ToArray()
+            });
+
+        var recovered = await executor.ExecutePlanAsync(retryPlan, dryRun: false, cancellationToken);
+        RebindRecoveryStepIndexes(recovered, retryPlan, originalPlan);
+        var hasEffectiveProgress = recovered.Steps.Any(IsEffectiveFillStepSuccess);
+        if (!hasEffectiveProgress)
+        {
+            return RecoveryAttemptOutcome.None;
+        }
+
+        var retriedLabels = toRetry.Select(item => GetOrderFieldDisplayName(item.Key)).Distinct(StringComparer.OrdinalIgnoreCase);
+        var note = recovered.Success
+            ? $"AI retry completed for missing fields: {string.Join(", ", retriedLabels)}."
+            : $"AI retry attempted for missing fields: {string.Join(", ", retriedLabels)}.";
+        return new RecoveryAttemptOutcome(recovered, note);
+    }
+
+    private static ActionPlan BuildGoogleFormsRefillPlan(
+        IReadOnlyList<(string Key, string Label, string Value)> orderedValues,
+        ISet<string> missingKeys)
+    {
+        var plan = new ActionPlan { Intent = "order fill google-forms retry" };
+
+        foreach (var value in orderedValues)
+        {
+            if (string.IsNullOrWhiteSpace(value.Value))
+            {
+                continue;
+            }
+
+            var key = value.Key.Trim();
+            if (!missingKeys.Contains(key))
+            {
+                continue;
+            }
+
+            var label = NormalizeGoogleFormsLabel(value.Label);
+            if (string.IsNullOrWhiteSpace(label))
+            {
+                label = ToReadableOrderKey(key);
+            }
+
+            plan.Steps.Add(new PlanStep
+            {
+                Type = ActionType.SetValue,
+                Selector = new Selector { Role = "edit", NameContains = label },
+                Text = value.Value,
+                Note = $"optional-group:{key};optional;fill-field:{key}"
+            });
+            plan.Steps.Add(new PlanStep
+            {
+                Type = ActionType.SetValue,
+                Selector = new Selector { NameContains = label },
+                Text = value.Value,
+                Note = $"optional-group:{key};optional;fill-field:{key}"
+            });
+
+            var canonicalLabel = ToReadableOrderKey(key);
+            if (!string.Equals(label, canonicalLabel, StringComparison.OrdinalIgnoreCase))
+            {
+                plan.Steps.Add(new PlanStep
+                {
+                    Type = ActionType.SetValue,
+                    Selector = new Selector { Role = "edit", NameContains = canonicalLabel },
+                    Text = value.Value,
+                    Note = $"optional-group:{key};optional;fill-field:{key}"
+                });
+                plan.Steps.Add(new PlanStep
+                {
+                    Type = ActionType.SetValue,
+                    Selector = new Selector { NameContains = canonicalLabel },
+                    Text = value.Value,
+                    Note = $"optional-group:{key};optional;fill-field:{key}"
+                });
+            }
+
+            plan.Steps.Add(new PlanStep
+            {
+                Type = ActionType.WaitFor,
+                WaitFor = TimeSpan.FromMilliseconds(120)
+            });
+        }
+
+        MarkPlanStepsNoContextBinding(plan);
+        return plan;
+    }
+
+    private static void RebindRecoveryStepIndexes(ExecutionResult recovered, ActionPlan retryPlan, ActionPlan originalPlan)
+    {
+        var originalFieldIndexes = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        for (var i = 0; i < originalPlan.Steps.Count; i++)
+        {
+            if (!TryGetFillFieldKey(originalPlan.Steps[i], out var fieldKey))
+            {
+                continue;
+            }
+
+            if (!originalFieldIndexes.ContainsKey(fieldKey))
+            {
+                originalFieldIndexes[fieldKey] = i;
+            }
+        }
+
+        foreach (var step in recovered.Steps)
+        {
+            if (step.Index < 0 || step.Index >= retryPlan.Steps.Count)
+            {
+                continue;
+            }
+
+            var retryStep = retryPlan.Steps[step.Index];
+            if (!TryGetFillFieldKey(retryStep, out var fieldKey))
+            {
+                continue;
+            }
+
+            if (!originalFieldIndexes.TryGetValue(fieldKey, out var originalIndex))
+            {
+                continue;
+            }
+
+            step.Index = originalIndex;
+        }
     }
 
     private async Task<WebLlmStatus> GetLlmStatusAsync(CancellationToken cancellationToken)
@@ -4163,7 +5104,7 @@ internal sealed class TrayLocalAgent : IDisposable
     {
         var merged = new ExecutionResult
         {
-            Success = recovered.Success,
+            Success = primary.Success || recovered.Success,
             Message = recovered.Success ? $"Recovered: {recovered.Message}" : primary.Message
         };
 
@@ -4312,8 +5253,33 @@ internal sealed class TrayLocalAgent : IDisposable
             return summary;
         }
 
-        var details = string.Join(" ", result.Steps.Select(step => $"{step.Type}:{step.Success}"));
+        var compactSteps = result.Steps
+            .Where(step => !IsLowSignalStep(step))
+            .Take(14)
+            .ToList();
+        if (compactSteps.Count == 0)
+        {
+            compactSteps = result.Steps.Take(8).ToList();
+        }
+
+        var details = string.Join(" ", compactSteps.Select(step => $"{step.Type}:{step.Success}"));
         return $"{summary} Completed Steps: {details}";
+    }
+
+    private static bool IsLowSignalStep(StepResult step)
+    {
+        if (TryGetMissingRequiredGroup(step.Message, out _))
+        {
+            return true;
+        }
+
+        if (step.Message.Contains("Skipped optional candidate", StringComparison.OrdinalIgnoreCase)
+            || step.Message.Contains("Optional step skipped", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return false;
     }
 
     private static string AppendNotice(string reply, string? notice)
@@ -4367,6 +5333,28 @@ internal sealed class TrayLocalAgent : IDisposable
         for (var i = 0; i < result.Steps.Count; i++)
         {
             var step = result.Steps[i];
+            if (TryGetMissingRequiredGroup(step.Message, out var missingGroup))
+            {
+                var start = i;
+                while (i + 1 < result.Steps.Count
+                       && TryGetMissingRequiredGroup(result.Steps[i + 1].Message, out var nextGroup)
+                       && string.Equals(nextGroup, missingGroup, StringComparison.OrdinalIgnoreCase))
+                {
+                    i++;
+                }
+
+                if (start == i)
+                {
+                    lines.Add($"{start + 1}. {step.Type} => {step.Success} ({step.Message})");
+                }
+                else
+                {
+                    lines.Add($"{start + 1}-{i + 1}. Skipped {i - start + 1} steps (missing required group: {missingGroup})");
+                }
+
+                continue;
+            }
+
             var line = $"{i + 1}. {step.Type} => {step.Success} ({step.Message})";
             if (step.Data != null)
             {
@@ -4412,6 +5400,7 @@ internal sealed class TrayLocalAgent : IDisposable
 
         var filled = new List<string>();
         var missing = new List<string>();
+        var missingKeys = new List<string>();
         foreach (var field in fieldToStepIndexes.OrderBy(static item => item.Value.Min()))
         {
             var hasFilledStep = field.Value.Any(index =>
@@ -4426,6 +5415,7 @@ internal sealed class TrayLocalAgent : IDisposable
             else
             {
                 missing.Add(label);
+                missingKeys.Add(field.Key);
             }
         }
 
@@ -4448,7 +5438,69 @@ internal sealed class TrayLocalAgent : IDisposable
             lines.Add($"Missing: {string.Join(", ", missing)}");
         }
 
-        return new OrderFillExecutionReport(summary, lines);
+        return new OrderFillExecutionReport(summary, lines, missingKeys);
+    }
+
+    private static bool IsAllOrderFieldsMissing(OrderFillExecutionReport report)
+    {
+        foreach (var line in report.Lines)
+        {
+            var match = Regex.Match(line, @"Order fill report:\s*(?<filled>\d+)\/(?<total>\d+)\s*fields filled", RegexOptions.IgnoreCase);
+            if (!match.Success)
+            {
+                continue;
+            }
+
+            if (!int.TryParse(match.Groups["filled"].Value, out var filled))
+            {
+                return false;
+            }
+
+            if (!int.TryParse(match.Groups["total"].Value, out var total))
+            {
+                return false;
+            }
+
+            return total > 0 && filled == 0;
+        }
+
+        return false;
+    }
+
+    private static bool IsMissingRequiredGroup(StepResult step, string group)
+    {
+        return TryGetMissingRequiredGroup(step.Message, out var value)
+               && string.Equals(value, group, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool TryGetMissingRequiredGroup(string? message, out string group)
+    {
+        group = string.Empty;
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            return false;
+        }
+
+        var marker = "missing required group:";
+        var idx = message.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+        if (idx < 0)
+        {
+            return false;
+        }
+
+        var tail = message[(idx + marker.Length)..].Trim();
+        if (tail.EndsWith(')'))
+        {
+            tail = tail[..^1].Trim();
+        }
+
+        if (string.IsNullOrWhiteSpace(tail))
+        {
+            return false;
+        }
+
+        group = tail;
+        return true;
     }
 
     private static bool IsEffectiveFillStepSuccess(StepResult step)
@@ -4489,12 +5541,12 @@ internal sealed class TrayLocalAgent : IDisposable
             }
 
             var value = part["fill-field:".Length..].Trim();
-            if (string.IsNullOrWhiteSpace(value))
+            if (!TryNormalizeOrderFieldKey(value, out var normalized))
             {
                 continue;
             }
 
-            key = value;
+            key = normalized;
             return true;
         }
 
@@ -4507,17 +5559,55 @@ internal sealed class TrayLocalAgent : IDisposable
             }
 
             var value = part["optional-group:".Length..].Trim();
-            if (string.IsNullOrWhiteSpace(value)
-                || value.Equals("first_focus", StringComparison.OrdinalIgnoreCase))
+            if (!TryNormalizeOrderFieldKey(value, out var normalized))
             {
                 continue;
             }
 
-            key = value;
+            key = normalized;
             return true;
         }
 
         return false;
+    }
+
+    private static bool TryNormalizeOrderFieldKey(string? raw, out string normalized)
+    {
+        normalized = string.Empty;
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return false;
+        }
+
+        var value = raw.Trim().Replace('-', '_');
+        if (value.StartsWith("focus_", StringComparison.OrdinalIgnoreCase)
+            || value.StartsWith("field_", StringComparison.OrdinalIgnoreCase)
+            || value.StartsWith("skip_", StringComparison.OrdinalIgnoreCase)
+            || value.Equals("first_focus", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        normalized = value.ToLowerInvariant() switch
+        {
+            "name" => "customer_name",
+            "email" => "customer_email",
+            "phone" => "customer_phone",
+            "phone_number" => "customer_phone",
+            "address" => "shipping_address",
+            "shipping" => "shipping_address",
+            "comments" => "order_notes",
+            "notes" => "order_notes",
+            _ => value
+        };
+
+        return normalized is "customer_name"
+            or "customer_email"
+            or "customer_phone"
+            or "shipping_address"
+            or "billing_address"
+            or "order_notes"
+            or "order_number";
     }
 
     private static string GetOrderFieldDisplayName(string key)
@@ -6312,7 +7402,7 @@ internal sealed class TrayLocalAgent : IDisposable
         public static RecoveryAttemptOutcome None { get; } = new(null, string.Empty);
     }
 
-    private sealed record OrderFillExecutionReport(string Summary, IReadOnlyList<string> Lines);
+    private sealed record OrderFillExecutionReport(string Summary, IReadOnlyList<string> Lines, IReadOnlyList<string> MissingKeys);
 
     private sealed record OrderDraft(
         string Id,
@@ -6355,7 +7445,8 @@ internal sealed class TrayLocalAgent : IDisposable
         string Name,
         string Placeholder,
         string Type,
-        string AutoComplete);
+        string AutoComplete,
+        string EntryId = "");
 
     private sealed record SmartOrderFillPlan(
         ActionPlan Plan,

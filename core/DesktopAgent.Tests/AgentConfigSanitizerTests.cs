@@ -47,4 +47,38 @@ public sealed class AgentConfigSanitizerTests
         Assert.Equal(expected, config.Ocr.Engine);
         Assert.Equal("tesseract", config.Ocr.TesseractPath);
     }
+
+    [Fact]
+    public void Normalize_ClearsLegacyStarterAllowlist_ToAllowAllAppsByDefault()
+    {
+        var config = new AgentConfig
+        {
+            AllowedApps = new List<string>
+            {
+                "notepad",
+                "calculator",
+                "calc",
+                "terminal",
+                "cmd",
+                "powershell"
+            }
+        };
+
+        AgentConfigSanitizer.Normalize(config);
+
+        Assert.Empty(config.AllowedApps);
+    }
+
+    [Fact]
+    public void Normalize_KeepsCustomAllowlist()
+    {
+        var config = new AgentConfig
+        {
+            AllowedApps = new List<string> { "chrome", "msedge" }
+        };
+
+        AgentConfigSanitizer.Normalize(config);
+
+        Assert.Equal(new[] { "chrome", "msedge" }, config.AllowedApps);
+    }
 }

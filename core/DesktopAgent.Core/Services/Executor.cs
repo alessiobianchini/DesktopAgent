@@ -111,22 +111,20 @@ public sealed class Executor : IExecutor
                 break;
             }
 
-            if (!_rateLimiter.TryAcquire())
-            {
-                var msg = "Rate limit exceeded";
-                result.Success = false;
-                result.Message = msg;
-                result.Steps.Add(new StepResult { Index = i, Type = step.Type, Success = false, Message = msg });
-                await WriteAuditAsync("rate_limit", msg, step, cancellationToken);
-                break;
-            }
-
             var activeWindow = await _client.GetActiveWindowAsync(cancellationToken);
             EnsureDefaultBinding(step, activeWindow, binding);
 
             var bindingDecision = EvaluateContextBinding(step, activeWindow, binding);
             if (!bindingDecision.Allowed)
             {
+                if (IsOptionalStep(step))
+                {
+                    var msg = $"Optional step skipped: {bindingDecision.Reason}";
+                    result.Steps.Add(new StepResult { Index = i, Type = step.Type, Success = true, Message = msg });
+                    await WriteAuditAsync("optional_skip", msg, step, cancellationToken);
+                    continue;
+                }
+
                 result.Success = false;
                 result.Message = bindingDecision.Reason;
                 result.Steps.Add(new StepResult { Index = i, Type = step.Type, Success = false, Message = bindingDecision.Reason });
@@ -137,6 +135,14 @@ public sealed class Executor : IExecutor
             var decision = _policyEngine.Evaluate(step, activeWindow);
             if (!decision.Allowed)
             {
+                if (IsOptionalStep(step))
+                {
+                    var msg = $"Optional step skipped: {decision.Reason}";
+                    result.Steps.Add(new StepResult { Index = i, Type = step.Type, Success = true, Message = msg });
+                    await WriteAuditAsync("optional_skip", msg, step, cancellationToken);
+                    continue;
+                }
+
                 result.Success = false;
                 result.Message = decision.Reason;
                 result.Steps.Add(new StepResult { Index = i, Type = step.Type, Success = false, Message = decision.Reason });
@@ -163,6 +169,16 @@ public sealed class Executor : IExecutor
                 result.Steps.Add(new StepResult { Index = i, Type = step.Type, Success = true, Message = "Dry-run" });
                 await WriteAuditAsync("dry_run", "Dry-run", step, cancellationToken);
                 continue;
+            }
+
+            if (ShouldApplyRateLimit(step.Type) && !_rateLimiter.TryAcquire())
+            {
+                var msg = "Rate limit exceeded";
+                result.Success = false;
+                result.Message = msg;
+                result.Steps.Add(new StepResult { Index = i, Type = step.Type, Success = false, Message = msg });
+                await WriteAuditAsync("rate_limit", msg, step, cancellationToken);
+                break;
             }
 
             var stepResult = await ExecuteStepAsync(step, cancellationToken);
@@ -2246,7 +2262,10 @@ public sealed class Executor : IExecutor
 
     private void EnsureDefaultBinding(PlanStep step, WindowRef? activeWindow, RuntimeBinding binding)
     {
-        if (!_config.ContextBindingEnabled || step.Type == ActionType.OpenApp || !RequiresUiContext(step.Type))
+        if (!_config.ContextBindingEnabled
+            || step.Type == ActionType.OpenApp
+            || !RequiresUiContext(step.Type)
+            || HasPlanFlag(step, "no-context-binding"))
         {
             return;
         }
@@ -2269,7 +2288,10 @@ public sealed class Executor : IExecutor
 
     private PolicyDecision EvaluateContextBinding(PlanStep step, WindowRef? activeWindow, RuntimeBinding binding)
     {
-        if (!_config.ContextBindingEnabled || step.Type == ActionType.OpenApp || !RequiresUiContext(step.Type))
+        if (!_config.ContextBindingEnabled
+            || step.Type == ActionType.OpenApp
+            || !RequiresUiContext(step.Type)
+            || HasPlanFlag(step, "no-context-binding"))
         {
             return new PolicyDecision { Allowed = true, RequiresConfirmation = false, Reason = "Context binding disabled or not applicable" };
         }
@@ -2317,7 +2339,9 @@ public sealed class Executor : IExecutor
 
     private async Task RefreshBindingAfterStepAsync(PlanStep step, RuntimeBinding binding, CancellationToken cancellationToken)
     {
-        if (!_config.ContextBindingEnabled || (!RequiresUiContext(step.Type) && step.Type != ActionType.OpenApp))
+        if (!_config.ContextBindingEnabled
+            || ((!RequiresUiContext(step.Type) && step.Type != ActionType.OpenApp))
+            || HasPlanFlag(step, "no-context-binding"))
         {
             return;
         }
@@ -2366,6 +2390,15 @@ public sealed class Executor : IExecutor
             or ActionType.ReadText
             or ActionType.CaptureScreen
             or ActionType.WaitForText;
+    }
+
+    private static bool ShouldApplyRateLimit(ActionType type)
+    {
+        return type is not ActionType.WaitFor
+            and not ActionType.Find
+            and not ActionType.ReadText
+            and not ActionType.GetClipboard
+            and not ActionType.ClipboardHistory;
     }
 
     private static bool AppIdMatches(string? actual, string? expected)
@@ -3655,6 +3688,18 @@ public sealed class Executor : IExecutor
         }
 
         return false;
+    }
+
+    private static bool HasPlanFlag(PlanStep step, string flag)
+    {
+        var note = step.Note ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(note) || string.IsNullOrWhiteSpace(flag))
+        {
+            return false;
+        }
+
+        var parts = note.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return parts.Any(part => part.Equals(flag, StringComparison.OrdinalIgnoreCase));
     }
 
     private sealed class RuntimeBinding

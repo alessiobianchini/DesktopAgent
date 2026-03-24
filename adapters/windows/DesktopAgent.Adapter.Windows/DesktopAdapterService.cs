@@ -85,6 +85,8 @@ public sealed class DesktopAdapterService : DesktopAdapter.DesktopAdapterBase
         var selector = request.Selector ?? new Selector();
         var scope = ResolveWindow(selector.WindowId) ?? _state.Automation.GetDesktop();
         var elements = new List<ElementRef>();
+        var requestedIndex = selector.Index;
+        var stopAtCount = requestedIndex > 0 ? requestedIndex + 1 : int.MaxValue;
 
         foreach (var element in Enumerate(scope, 6))
         {
@@ -92,6 +94,10 @@ public sealed class DesktopAdapterService : DesktopAdapter.DesktopAdapterBase
             {
                 var id = _state.RememberElement(element);
                 elements.Add(ToElementRef(id, element));
+                if (elements.Count >= stopAtCount)
+                {
+                    break;
+                }
             }
         }
 
@@ -563,7 +569,7 @@ public sealed class DesktopAdapterService : DesktopAdapter.DesktopAdapterBase
             return false;
         }
 
-        var rect = window.BoundingRectangle;
+        var rect = SafeBoundingRectangle(window);
         if (rect.Width <= 0 || rect.Height <= 0)
         {
             return false;
@@ -628,7 +634,7 @@ public sealed class DesktopAdapterService : DesktopAdapter.DesktopAdapterBase
 
     private static WindowRef ToWindowRef(string id, AutomationElement element)
     {
-        var rect = element.BoundingRectangle;
+        var rect = SafeBoundingRectangle(element);
         var processId = element.Properties.ProcessId.ValueOrDefault;
         var appId = string.Empty;
         if (processId > 0)
@@ -646,7 +652,7 @@ public sealed class DesktopAdapterService : DesktopAdapter.DesktopAdapterBase
         return new WindowRef
         {
             Id = id,
-            Title = element.Name ?? string.Empty,
+            Title = SafeName(element),
             AppId = appId,
             Bounds = new Rect { X = rect.Left, Y = rect.Top, Width = rect.Width, Height = rect.Height }
         };
@@ -654,28 +660,28 @@ public sealed class DesktopAdapterService : DesktopAdapter.DesktopAdapterBase
 
     private static ElementRef ToElementRef(string id, AutomationElement element)
     {
-        var rect = element.BoundingRectangle;
+        var rect = SafeBoundingRectangle(element);
         return new ElementRef
         {
             Id = id,
-            Role = element.ControlType.ToString(),
-            Name = element.Name ?? string.Empty,
-            AutomationId = element.AutomationId ?? string.Empty,
-            ClassName = element.ClassName ?? string.Empty,
+            Role = SafeControlType(element),
+            Name = SafeName(element),
+            AutomationId = SafeAutomationId(element),
+            ClassName = SafeClassName(element),
             Bounds = new Rect { X = rect.Left, Y = rect.Top, Width = rect.Width, Height = rect.Height }
         };
     }
 
     private UiNode BuildUiNode(AutomationElement element, int depthLimit)
     {
-        var rect = element.BoundingRectangle;
+        var rect = SafeBoundingRectangle(element);
         var node = new UiNode
         {
             Id = _state.RememberElement(element),
-            Role = element.ControlType.ToString(),
-            Name = element.Name ?? string.Empty,
-            AutomationId = element.AutomationId ?? string.Empty,
-            ClassName = element.ClassName ?? string.Empty,
+            Role = SafeControlType(element),
+            Name = SafeName(element),
+            AutomationId = SafeAutomationId(element),
+            ClassName = SafeClassName(element),
             Bounds = new Rect { X = rect.Left, Y = rect.Top, Width = rect.Width, Height = rect.Height }
         };
 
@@ -684,7 +690,7 @@ public sealed class DesktopAdapterService : DesktopAdapter.DesktopAdapterBase
             return node;
         }
 
-        foreach (var child in element.FindAllChildren())
+        foreach (var child in SafeChildren(element))
         {
             node.Children.Add(BuildUiNode(child, depthLimit - 1));
         }
@@ -701,7 +707,7 @@ public sealed class DesktopAdapterService : DesktopAdapter.DesktopAdapterBase
             var (element, depth) = queue.Dequeue();
             yield return element;
             if (depth >= depthLimit) continue;
-            foreach (var child in element.FindAllChildren())
+            foreach (var child in SafeChildren(element))
             {
                 queue.Enqueue((child, depth + 1));
             }
@@ -712,7 +718,7 @@ public sealed class DesktopAdapterService : DesktopAdapter.DesktopAdapterBase
     {
         if (!string.IsNullOrWhiteSpace(selector.Role))
         {
-            var role = element.ControlType.ToString();
+            var role = SafeControlType(element);
             if (!role.Contains(selector.Role, StringComparison.OrdinalIgnoreCase))
             {
                 return false;
@@ -721,7 +727,8 @@ public sealed class DesktopAdapterService : DesktopAdapter.DesktopAdapterBase
 
         if (!string.IsNullOrWhiteSpace(selector.NameContains))
         {
-            if (!element.Name.Contains(selector.NameContains, StringComparison.OrdinalIgnoreCase))
+            var name = SafeName(element);
+            if (!name.Contains(selector.NameContains, StringComparison.OrdinalIgnoreCase))
             {
                 return false;
             }
@@ -729,7 +736,8 @@ public sealed class DesktopAdapterService : DesktopAdapter.DesktopAdapterBase
 
         if (!string.IsNullOrWhiteSpace(selector.AutomationId))
         {
-            if (!string.Equals(element.AutomationId, selector.AutomationId, StringComparison.OrdinalIgnoreCase))
+            var automationId = SafeAutomationId(element);
+            if (!string.Equals(automationId, selector.AutomationId, StringComparison.OrdinalIgnoreCase))
             {
                 return false;
             }
@@ -737,7 +745,8 @@ public sealed class DesktopAdapterService : DesktopAdapter.DesktopAdapterBase
 
         if (!string.IsNullOrWhiteSpace(selector.ClassName))
         {
-            if (!string.Equals(element.ClassName, selector.ClassName, StringComparison.OrdinalIgnoreCase))
+            var className = SafeClassName(element);
+            if (!string.Equals(className, selector.ClassName, StringComparison.OrdinalIgnoreCase))
             {
                 return false;
             }
@@ -745,7 +754,7 @@ public sealed class DesktopAdapterService : DesktopAdapter.DesktopAdapterBase
 
         if (selector.BoundsHint != null && selector.BoundsHint.Width > 0 && selector.BoundsHint.Height > 0)
         {
-            var rect = element.BoundingRectangle;
+            var rect = SafeBoundingRectangle(element);
             if (!rect.IntersectsWith(new System.Drawing.Rectangle(selector.BoundsHint.X, selector.BoundsHint.Y, selector.BoundsHint.Width, selector.BoundsHint.Height)))
             {
                 return false;
@@ -753,6 +762,18 @@ public sealed class DesktopAdapterService : DesktopAdapter.DesktopAdapterBase
         }
 
         return true;
+    }
+
+    private static IEnumerable<AutomationElement> SafeChildren(AutomationElement element)
+    {
+        try
+        {
+            return element.FindAllChildren();
+        }
+        catch
+        {
+            return Array.Empty<AutomationElement>();
+        }
     }
 
     private static bool TryMapKey(string key, out VirtualKeyShort vk)
@@ -839,6 +860,66 @@ public sealed class DesktopAdapterService : DesktopAdapter.DesktopAdapterBase
 
         vk = (VirtualKeyShort)(0x70 + index - 1);
         return true;
+    }
+
+    private static string SafeName(AutomationElement element)
+    {
+        try
+        {
+            return element.Properties.Name.ValueOrDefault ?? string.Empty;
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
+    private static string SafeAutomationId(AutomationElement element)
+    {
+        try
+        {
+            return element.Properties.AutomationId.ValueOrDefault ?? string.Empty;
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
+    private static string SafeClassName(AutomationElement element)
+    {
+        try
+        {
+            return element.Properties.ClassName.ValueOrDefault ?? string.Empty;
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
+    private static string SafeControlType(AutomationElement element)
+    {
+        try
+        {
+            return element.Properties.ControlType.ValueOrDefault.ToString();
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
+    private static System.Drawing.Rectangle SafeBoundingRectangle(AutomationElement element)
+    {
+        try
+        {
+            return element.Properties.BoundingRectangle.ValueOrDefault;
+        }
+        catch
+        {
+            return System.Drawing.Rectangle.Empty;
+        }
     }
 
     private static void TryFocusProcess(Process? process, TimeSpan timeout)

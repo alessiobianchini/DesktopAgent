@@ -9,6 +9,7 @@ using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
+using Avalonia.Platform;
 using Avalonia.Threading;
 
 namespace DesktopAgent.Tray;
@@ -20,6 +21,8 @@ internal partial class QuickChatWindow : Window
     private readonly Func<Task>? _checkUpdatesNow;
     private readonly Action? _applyUpdateNow;
     private readonly Action? _forceApplyUpdateNow;
+    private readonly Action<string, bool>? _notifyOperationTooltip;
+    private readonly bool _forceBrowserFocusOnConfirm;
     private readonly Func<string>? _getUpdateStatus;
     private readonly Func<ChatUpdateBadge>? _getChatUpdateBadge;
     private readonly Func<ChatUpdateDetails>? _getChatUpdateDetails;
@@ -214,6 +217,7 @@ internal partial class QuickChatWindow : Window
     private string? _lastPlanJson;
     private string _lastSentMessage = string.Empty;
     private string _lastReply = string.Empty;
+    private bool _showExecutionTooltipOnNextResponse;
     private DateTimeOffset _lastSentAtUtc = DateTimeOffset.MinValue;
     private DateTimeOffset _lastUtilityProbeAtUtc = DateTimeOffset.MinValue;
     private DateTimeOffset _busyStartedAtUtc = DateTimeOffset.MinValue;
@@ -268,6 +272,8 @@ internal partial class QuickChatWindow : Window
         Func<Task>? checkUpdatesNow = null,
         Action? applyUpdateNow = null,
         Action? forceApplyUpdateNow = null,
+        Action<string, bool>? notifyOperationTooltip = null,
+        bool forceBrowserFocusOnConfirm = true,
         Func<string>? getUpdateStatus = null,
         Func<ChatUpdateBadge>? getChatUpdateBadge = null,
         Func<ChatUpdateDetails>? getChatUpdateDetails = null,
@@ -279,6 +285,8 @@ internal partial class QuickChatWindow : Window
         _checkUpdatesNow = checkUpdatesNow;
         _applyUpdateNow = applyUpdateNow;
         _forceApplyUpdateNow = forceApplyUpdateNow;
+        _notifyOperationTooltip = notifyOperationTooltip;
+        _forceBrowserFocusOnConfirm = forceBrowserFocusOnConfirm;
         _getUpdateStatus = getUpdateStatus;
         _getChatUpdateBadge = getChatUpdateBadge;
         _getChatUpdateDetails = getChatUpdateDetails;
@@ -1129,6 +1137,20 @@ internal partial class QuickChatWindow : Window
             return;
         }
 
+        if (approve)
+        {
+            // Keep target app in foreground without minimizing the chat window.
+            if (_forceBrowserFocusOnConfirm && ShouldForceBrowserFocusForPendingAction())
+            {
+                TryFocusBrowserForAutomationRun();
+            }
+            _showExecutionTooltipOnNextResponse = true;
+        }
+        else
+        {
+            _showExecutionTooltipOnNextResponse = false;
+        }
+
         SetBusy(true);
         SetTimeline(new[] { "[..] Waiting for response..." });
         try
@@ -1144,12 +1166,186 @@ internal partial class QuickChatWindow : Window
         }
         finally
         {
+            _showExecutionTooltipOnNextResponse = false;
             _pendingToken = null;
             ShowConfirm(false, null);
             SetBusy(false);
             await RefreshStatusAsync();
         }
     }
+
+    private void TryFocusBrowserForAutomationRun()
+    {
+        try
+        {
+            if (!OperatingSystem.IsWindows())
+            {
+                return;
+            }
+
+            if (TryBringBrowserWindowToForeground(out var focused))
+            {
+                AppendSystem($"Focus forced to {focused}.");
+            }
+            else
+            {
+                AppendSystem("Unable to force browser focus. Keep browser in foreground while running the action.");
+            }
+        }
+        catch
+        {
+            // Best effort only.
+        }
+    }
+
+    private bool ShouldForceBrowserFocusForPendingAction()
+    {
+        var source = string.Join(" ",
+            _lastSentMessage ?? string.Empty,
+            _pendingMessage ?? string.Empty,
+            _lastPlanJson ?? string.Empty);
+        if (string.IsNullOrWhiteSpace(source))
+        {
+            return false;
+        }
+
+        var text = source.ToLowerInvariant();
+        return text.Contains("http://")
+            || text.Contains("https://")
+            || text.Contains("www.")
+            || text.Contains("chrome")
+            || text.Contains("edge")
+            || text.Contains("firefox")
+            || text.Contains("form")
+            || text.Contains("open url")
+            || text.Contains("search ");
+    }
+
+    private bool TryBringBrowserWindowToForeground(out string browserName)
+    {
+        browserName = string.Empty;
+        if (!OperatingSystem.IsWindows())
+        {
+            return false;
+        }
+
+        var ownHandle = TryGetOwnWindowHandle();
+        foreach (var processName in new[] { "chrome", "msedge", "firefox" })
+        {
+            var processes = Process.GetProcessesByName(processName);
+            try
+            {
+                foreach (var process in processes)
+                {
+                    var handle = process.MainWindowHandle;
+                    if (handle == IntPtr.Zero || handle == ownHandle)
+                    {
+                        continue;
+                    }
+
+                    if (TryActivateWindow(handle))
+                    {
+                        browserName = processName;
+                        return true;
+                    }
+                }
+            }
+            finally
+            {
+                foreach (var process in processes)
+                {
+                    process.Dispose();
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private IntPtr TryGetOwnWindowHandle()
+    {
+        try
+        {
+            var handle = TryGetPlatformHandle()?.Handle;
+            return handle.HasValue ? new IntPtr(handle.Value) : IntPtr.Zero;
+        }
+        catch
+        {
+            return IntPtr.Zero;
+        }
+    }
+
+    private static bool TryActivateWindow(IntPtr target)
+    {
+        if (target == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        const int SW_RESTORE = 9;
+        ShowWindowAsync(target, SW_RESTORE);
+        var foreground = GetForegroundWindow();
+        if (foreground == target)
+        {
+            return true;
+        }
+
+        var currentThread = GetCurrentThreadId();
+        var targetThread = GetWindowThreadProcessId(target, out _);
+        var foregroundThread = foreground == IntPtr.Zero ? 0u : GetWindowThreadProcessId(foreground, out _);
+
+        var attachedForeground = false;
+        var attachedTarget = false;
+        try
+        {
+            if (foregroundThread != 0 && foregroundThread != currentThread)
+            {
+                attachedForeground = AttachThreadInput(currentThread, foregroundThread, true);
+            }
+
+            if (targetThread != 0 && targetThread != currentThread)
+            {
+                attachedTarget = AttachThreadInput(currentThread, targetThread, true);
+            }
+
+            if (!SetForegroundWindow(target))
+            {
+                return false;
+            }
+
+            return GetForegroundWindow() == target;
+        }
+        finally
+        {
+            if (attachedForeground && foregroundThread != 0)
+            {
+                AttachThreadInput(currentThread, foregroundThread, false);
+            }
+
+            if (attachedTarget && targetThread != 0)
+            {
+                AttachThreadInput(currentThread, targetThread, false);
+            }
+        }
+    }
+
+    [DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+
+    [DllImport("user32.dll")]
+    private static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+
+    [DllImport("kernel32.dll")]
+    private static extern uint GetCurrentThreadId();
 
     private async Task RenderResponseAsync(WebChatResponse response, CancellationToken cancellationToken)
     {
@@ -1198,8 +1394,42 @@ internal partial class QuickChatWindow : Window
             ShowConfirm(false, null);
         }
 
+        NotifyTrayTooltipForExecutionResult(response);
+
         UpdateQuickActionState();
         UpdatePlanEditorState();
+    }
+
+    private void NotifyTrayTooltipForExecutionResult(WebChatResponse response)
+    {
+        if (!_showExecutionTooltipOnNextResponse || _notifyOperationTooltip == null)
+        {
+            return;
+        }
+
+        var reply = response.Reply ?? string.Empty;
+        var focusIssue =
+            reply.Contains("Unable to focus", StringComparison.OrdinalIgnoreCase)
+            || reply.Contains("foreground", StringComparison.OrdinalIgnoreCase)
+            || reply.Contains("context binding", StringComparison.OrdinalIgnoreCase)
+            || reply.Contains("allowlist", StringComparison.OrdinalIgnoreCase);
+
+        if (focusIssue)
+        {
+            _notifyOperationTooltip("Action ended with focus error. Keep browser focused and retry.", true);
+            return;
+        }
+
+        if (reply.Contains("Success: True", StringComparison.OrdinalIgnoreCase))
+        {
+            _notifyOperationTooltip("Action completed successfully.", false);
+            return;
+        }
+
+        if (reply.Contains("Success: False", StringComparison.OrdinalIgnoreCase))
+        {
+            _notifyOperationTooltip(CompactSingleLine(reply, 70), true);
+        }
     }
 
     private async Task RefreshStatusAsync()
@@ -4856,6 +5086,17 @@ internal partial class QuickChatWindow : Window
         }
 
         return value;
+    }
+
+    private static string CompactSingleLine(string value, int max)
+    {
+        var compact = Regex.Replace(value ?? string.Empty, "\\s+", " ").Trim();
+        if (compact.Length <= max)
+        {
+            return compact;
+        }
+
+        return compact[..max] + "...";
     }
 
     private void OpenDataFolder()

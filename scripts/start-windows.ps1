@@ -96,12 +96,25 @@ Ensure-Command -Name "dotnet"
 $root = Split-Path -Parent $PSScriptRoot
 $adapterProject = Join-Path $root "adapters\windows\DesktopAgent.Adapter.Windows\DesktopAgent.Adapter.Windows.csproj"
 $trayProject = Join-Path $root "core\DesktopAgent.Tray\DesktopAgent.Tray.csproj"
-$agentConfig = Join-Path $root "core\DesktopAgent.Cli\appsettings.json"
+$repoAgentConfig = Join-Path $root "core\DesktopAgent.Cli\appsettings.json"
+$localAgentDir = Join-Path $env:LOCALAPPDATA "DesktopAgent"
+$agentConfig = Join-Path $localAgentDir "agentsettings.json"
 $useTray = $StartTray -or (-not $NoTray)
 
 if (-not (Test-Path $adapterProject)) { throw "Adapter project not found: $adapterProject" }
 if ($useTray -and -not (Test-Path $trayProject)) { throw "Tray project not found: $trayProject" }
-if ($useTray -and -not (Test-Path $agentConfig)) { throw "Agent config not found: $agentConfig" }
+
+if ($useTray) {
+    New-Item -Path $localAgentDir -ItemType Directory -Force | Out-Null
+    if (-not (Test-Path $agentConfig)) {
+        if (Test-Path $repoAgentConfig) {
+            Copy-Item -Path $repoAgentConfig -Destination $agentConfig -Force
+            Write-Host "Seeded local agent config: $agentConfig"
+        } else {
+            throw "Agent config not found. Expected one of: $agentConfig, $repoAgentConfig"
+        }
+    }
+}
 
 if (Test-PortInUse -Port $AdapterPort) {
     Write-Warning "Port $AdapterPort is already in use. Adapter may fail to bind."

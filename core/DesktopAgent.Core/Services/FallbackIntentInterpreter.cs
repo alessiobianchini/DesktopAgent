@@ -30,8 +30,6 @@ public sealed class FallbackIntentInterpreter : IIntentInterpreter
             return ruleBasedPlan;
         }
 
-        // Keep deterministic, safe parser behavior for explicit snapshot commands,
-        // including chained actions like "take screenshot and open notepad".
         if (ShouldPreserveDeterministicRuleBasedPlan(ruleBasedPlan))
         {
             return ruleBasedPlan;

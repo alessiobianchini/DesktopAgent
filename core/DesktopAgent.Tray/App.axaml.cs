@@ -61,6 +61,9 @@ public partial class App : Application
     private readonly SemaphoreSlim _updateGate = new(1, 1);
     private DateTimeOffset _lastUpdateCheck = DateTimeOffset.MinValue;
     private string _updateStatus = "updates disabled";
+    private string _baseTrayTooltipText = "DesktopAgent";
+    private DateTimeOffset _tooltipOverrideUntilUtc = DateTimeOffset.MinValue;
+    private CancellationTokenSource? _tooltipOverrideCts;
     private bool _updatesEnabled;
     private TrayVisualState _trayVisualState = TrayVisualState.Unknown;
 
@@ -219,7 +222,7 @@ public partial class App : Application
 
         _trayIcon = new TrayIcon
         {
-            ToolTipText = "DesktopAgent",
+            ToolTipText = _baseTrayTooltipText,
             IsVisible = true,
             Menu = menu
         };
@@ -297,6 +300,7 @@ public partial class App : Application
 
         var line = $"Status: {armedIcon} Armed {(armed ? "ON" : "OFF")} | {presenceIcon} Presence {(requirePresence ? "REQ" : "OFF")} | {detail}";
         var tooltip = $"DesktopAgent: A={(armed ? "ON" : "OFF")} P={(requirePresence ? "REQ" : "OFF")}";
+        _baseTrayTooltipText = tooltip;
 
         Dispatcher.UIThread.Post(() =>
         {
@@ -322,7 +326,7 @@ public partial class App : Application
 
             RefreshUpdateUi();
 
-            if (_trayIcon != null)
+            if (_trayIcon != null && DateTimeOffset.UtcNow >= _tooltipOverrideUntilUtc)
             {
                 _trayIcon.ToolTipText = tooltip;
             }
@@ -1156,6 +1160,8 @@ public partial class App : Application
                     () => CheckForUpdatesAsync(manual: true, _shutdown.Token),
                     ApplyPendingUpdate,
                     ForceApplyPendingUpdate,
+                    ShowOperationTooltip,
+                    _settings.ForceBrowserFocusOnConfirm,
                     GetUpdateStatusLine,
                     GetChatUpdateBadge,
                     GetChatUpdateDetails,
@@ -1172,6 +1178,47 @@ public partial class App : Application
             _quickChatWindow.WindowState = WindowState.Maximized;
             _quickChatWindow.Activate();
         });
+    }
+
+    private void ShowOperationTooltip(string message, bool isError)
+    {
+        var compact = Compact(message, 72);
+        var tooltip = isError
+            ? $"DesktopAgent: ERROR - {compact}"
+            : $"DesktopAgent: OK - {compact}";
+
+        _tooltipOverrideUntilUtc = DateTimeOffset.UtcNow.AddSeconds(10);
+        _tooltipOverrideCts?.Cancel();
+        _tooltipOverrideCts?.Dispose();
+        _tooltipOverrideCts = new CancellationTokenSource();
+        var token = _tooltipOverrideCts.Token;
+
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (_trayIcon != null)
+            {
+                _trayIcon.ToolTipText = tooltip;
+            }
+        });
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(10), token);
+                Dispatcher.UIThread.Post(() =>
+                {
+                    if (_trayIcon != null && DateTimeOffset.UtcNow >= _tooltipOverrideUntilUtc)
+                    {
+                        _trayIcon.ToolTipText = _baseTrayTooltipText;
+                    }
+                });
+            }
+            catch (OperationCanceledException)
+            {
+                // ignored
+            }
+        }, token);
     }
 
     private void UpdateTrayIconVisual(bool armed)
@@ -1835,6 +1882,8 @@ public partial class App : Application
     private void DisposeResources()
     {
         _shutdown.Cancel();
+        _tooltipOverrideCts?.Cancel();
+        _tooltipOverrideCts?.Dispose();
         _quickChatWindow?.Close();
         _updateGate.Dispose();
         _client?.Dispose();
@@ -1864,6 +1913,7 @@ internal sealed class TraySettings
     public bool AutoUpdateAutoApply { get; set; } = false;
     public bool AutoStartAdapter { get; set; } = true;
     public string AdapterStartCommand { get; set; } = "";
+    public bool ForceBrowserFocusOnConfirm { get; set; } = true;
     public bool ShowPluginWizardOnFirstRun { get; set; } = true;
     public int PluginInstallTimeoutSeconds { get; set; } = 420;
 }
